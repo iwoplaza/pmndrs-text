@@ -1,0 +1,321 @@
+---
+type: Test Plan
+title: Shaping and layout conformance plan
+description: Defines HarfBuzz, HarfRust, baked-runtime, paragraph, fuzzing, and visual correctness gates.
+tags: [conformance, shaping, layout, testing]
+timestamp: 2026-07-24T14:01:29Z
+---
+
+# Shaping and layout conformance plan
+
+Status: proposed  
+Purpose: define correctness before implementation or optimization.
+
+## Conformance target
+
+Primary target:
+
+> Match a pinned HarfRust release for valid, supported, statically instantiated OpenType fonts under identical shaping inputs.
+
+Secondary target:
+
+> Compare the same cases against the corresponding pinned HarfBuzz release and track every difference explicitly.
+
+HarfRust is not assumed to equal HarfBuzz in every case. The project must never conceal a known difference by weakening comparisons globally.
+
+## Version manifest
+
+Every fixture run records:
+
+```text
+font SHA-256
+font face index
+HarfRust version and commit
+HarfBuzz version and commit
+Unicode version
+pmndrs/text compiler version
+PMNDRS_font format version
+variation coordinates
+shaping input options
+```
+
+Reference changes require a dedicated review containing the old/new output diff and upstream release notes.
+
+## Comparison input
+
+Each case specifies:
+
+- exact source font bytes and face index;
+- UTF-8 fixture text plus unambiguous code-point dump;
+- input range and surrounding context range;
+- direction;
+- script;
+- language;
+- feature tags, values, and text ranges;
+- variation coordinates;
+- cluster level;
+- buffer flags;
+- replacement code point for invalid input;
+- expected handling of malformed UTF-16 at the JS boundary.
+
+Auto-guessed properties and explicit properties are separate cases.
+
+## Comparison output
+
+Compare all fields, not rendered appearance alone:
+
+- output glyph count;
+- packed/source glyph identity mapping;
+- glyph IDs;
+- cluster values;
+- `xAdvance` and `yAdvance`;
+- `xOffset` and `yOffset`;
+- glyph flags, including unsafe-to-break/concat where exposed;
+- direction and resolved segment properties;
+- success/error category.
+
+Design-unit integer outputs require exact equality. Floating raster/layout coordinates are tested separately with documented tolerances.
+
+## Three-way stages
+
+### Stage A — HarfBuzz versus HarfRust
+
+Purpose: establish upstream baseline differences independently of this project.
+
+Output:
+
+- passing cases;
+- allowlisted semantic differences with upstream issue/document link;
+- unsupported cases rejected before baking;
+- malformed-font behavior tracked separately from valid-font conformance.
+
+### Stage B — source font versus baked reference payload
+
+Run the same pinned HarfRust path on:
+
+1. original/static-instanced source font;
+2. the closed shaping-only static SFNT used by `PMNDRS_font`.
+
+Purpose: prove the table whitelist, metrics, glyph identity, and retained layout behavior before testing any optimized data.
+
+### Stage C — baked reference versus optimized operation
+
+For each compiled operation family, run both executors from identical pre-operation buffer state and compare post-operation state where feasible, then compare final shaped output.
+
+Operation families are enabled independently so failures identify the responsible compiler/executor.
+
+### Stage D — shaped output versus paragraph integration
+
+Verify that line fitting and boundary reshaping preserve:
+
+- cluster-safe breaks;
+- line-start/line-end shaping;
+- source-to-glyph mapping;
+- bidi visual order;
+- inserted hyphen/ellipsis mapping;
+- identical shaped glyphs across raster selection.
+
+## Required script/behavior matrix
+
+| Area | Minimum cases |
+| --- | --- |
+| Latin | kerning, `liga`, `clig`, `calt`, marks, decomposed/composed text, stylistic feature ranges |
+| Greek/Cyrillic | extended cmap, marks, language-specific substitutions where available |
+| Arabic | joining forms, lam-alef, marks, cursive attachment, RTL clusters, line-boundary reshape |
+| Hebrew | RTL order, marks, punctuation, mixed Latin |
+| Devanagari | reordering, conjuncts, pre-base vowels, marks, cluster boundaries |
+| USE script | at least one non-Devanagari USE font/script with syllable behavior |
+| Thai/Lao | marks and line-break tailoring boundary cases |
+| Hangul | precomposed and Jamo sequences |
+| CJK | `cmap` formats 12/14, supplementary Han, standardized and ideographic variation sequences, `locl` for pinned Chinese/Japanese/Korean language cases, no-space line breaking and punctuation boundaries, vertical-form data retained though vertical layout is deferred |
+| Emoji | supplementary scalars, VS15/VS16, modifiers, ZWJ sequences, flags/keycaps |
+| Icons | private-use cmap, missing glyph, no-GSUB fast/simple font, selected/full-library paging, manifest-backed standalone SVG identity, accepted fill rules, and explicit SVG rejection cases |
+| Controls | LF, CRLF, paragraph separator, tabs policy, default ignorables, ZWJ/ZWNJ, soft hyphen |
+| Invalid input | unpaired UTF-16 surrogates and replacement policy at JS boundary |
+
+The CJK and icons rows share the post-V1 large-coverage paging gate. They do not block the Latin-first slice or the bitmap/MSDF/Slug V1 renderer gate. Before V0 contracts freeze, a synthetic 65,535-glyph fixture still validates glyph-ID width, dense-record lengths, logical page indexes, external page sources, and multi-page batching without claiming full CJK product support.
+
+### Large-coverage page invariants
+
+- `u16` remains the per-face OpenType glyph-ID width; maximum-cardinality arithmetic must not overflow record lengths or offsets.
+- `page = 0xffff` means permanently absent raster data; a valid but nonresident logical page is a distinct runtime state.
+- Logical page order is independent of URI order, fetch completion, GPU array layers, bindings, and draw order.
+- Embedded and external sources produce identical decoded bytes and GPU readback for lossless variants.
+- Every external source verifies declared length and SHA-256 before decode or upload.
+- Slug curve, header, and reference resources publish atomically as one resident page.
+- A changed layout cancels or supersedes stale preparation without publishing obsolete batches.
+- CJK and icon page-walk fixtures preserve visual order and blending while pages span multiple backend batches.
+
+## Cluster-specific cases
+
+Fixtures must cover:
+
+- many characters to one glyph;
+- one character to multiple glyphs;
+- reordered glyphs;
+- combining-mark stacks;
+- zero-advance marks;
+- ligature clusters adjacent to legal line breaks;
+- monotone cluster levels for LTR and RTL;
+- style/feature boundaries inside words;
+- caret and hit-test mapping around ligatures;
+- unsafe-to-break and unsafe-to-concat flags;
+- context range larger than emitted item range.
+
+## Paragraph correctness matrix
+
+### Unicode algorithms
+
+- Run the version-matched Unicode `LineBreakTest.txt`.
+- Run `GraphemeBreakTest.txt` for extended grapheme boundaries.
+- Run the version-matched `BidiTest.txt` and `BidiCharacterTest.txt`; bidi analysis is owned by the package's JavaScript paragraph engine.
+- Record any tailoring as a named profile, never an undocumented deviation.
+
+### Reflow cases
+
+- empty paragraph and empty lines;
+- explicit hard breaks including CRLF;
+- trailing spaces and all-space lines;
+- single cluster wider than the region;
+- repeated width changes that converge on cached line boundaries;
+- max lines with clip and ellipsis;
+- soft hyphen hidden and selected;
+- inserted hyphen in Arabic and Latin;
+- mixed RTL/LTR text across lines;
+- font fallback at grapheme/cluster boundaries;
+- width change that needs zero reshapes;
+- width change that batches several boundary reshapes into one call.
+
+## Font corpus policy
+
+The checked-in corpus must be redistributable and small enough for ordinary CI. Large or restricted corpora use download manifests with hashes and run in scheduled/manual jobs.
+
+Each selected font records why it exists:
+
+- script/feature coverage;
+- source/license;
+- exact file hash;
+- expected reference engine behavior;
+- subset used for repository fixtures;
+- known upstream bugs.
+
+No fixture may silently update by URL.
+
+## Fuzzing
+
+### Structured text generation
+
+Bias generation toward:
+
+- combining-mark chains;
+- joining controls;
+- virama/consonant sequences;
+- emoji ZWJ and variation selectors;
+- bidi isolates/embeddings;
+- feature-range boundaries;
+- invalid surrogate boundaries;
+- very long clusters and repeated contexts.
+
+### Binary inputs
+
+Fuzz:
+
+- GLB chunk lengths and order;
+- JSON extension indexes;
+- section offsets, lengths, counts, and alignments;
+- integer overflow and overlapping ranges;
+- capability/format enums;
+- cmap page descriptors;
+- operation records and trie/CSR indexes;
+- atlas dimensions and row strides.
+- external page URI, length, hash, page-directory, and duplicate-request state;
+
+### Failure policy
+
+- No crash, trap, out-of-bounds read, or unbounded allocation.
+- Invalid baked data fails registration before shaping/upload.
+- Differential mismatches save the source seed, options, and both outputs.
+- Reduced reproductions become permanent regression fixtures.
+
+## Visual tests
+
+Shaping conformance is data equality; visual tests cover raster and integration.
+
+The current browser's HTML/CSS text renderer is the visual reference. Each capture uses the same browser process, font bytes, text, language, direction, feature settings, size, constraints, DPR, colors, and viewport as the candidate. Browser screenshots do not replace HarfRust/HarfBuzz field-level shaping comparisons; both gates must pass. Current Three Flatland Slug is not a visual or shaping oracle.
+
+Required views:
+
+- browser HTML/CSS reference versus Slug/MSDF/bitmap at representative sizes;
+- extreme zoom/perspective for Slug;
+- tiny text for bitmap and MSDF;
+- marks and cursive connections;
+- clipping, ellipsis, alignment, and mixed direction;
+- technique switching from one positioned run.
+
+Snapshot comparison must use a perceptual metric and retain raw difference images. Exact pixel equality is required only for deterministic CPU-generated atlases or reference equations where appropriate.
+
+## CI tiers
+
+### Pull request tier
+
+- format/unit tests;
+- small licensed corpus;
+- HarfRust differential fixtures;
+- Unicode targeted subset;
+- saved fuzz regressions;
+- no network downloads.
+
+Target duration: short enough to be required on every PR.
+
+### Nightly tier
+
+- full licensed/downloadable corpus by pinned hashes;
+- HarfBuzz three-way comparison;
+- Unicode conformance files;
+- bounded differential fuzzing;
+- native/Wasm baker parity;
+- visual snapshots on reference GPU/software environment.
+
+### Release tier
+
+- all nightly checks;
+- browser matrix;
+- package and Wasm size gates;
+- GLB backward/forward compatibility fixtures;
+
+## Allowlist rules
+
+Every allowlisted mismatch contains:
+
+- stable case identifier;
+- affected version range;
+- exact differing fields;
+- reason;
+- upstream issue or source citation;
+- owner;
+- removal condition.
+
+There is no wildcard allowlist by script, font, or output field.
+
+## Exit criteria for Phase 1
+
+- The initial corpus and licenses are documented.
+- Stage A differences are understood and allowlisted narrowly.
+- Stage B passes exactly for supported valid fonts.
+- JS/Wasm handling of UTF-16 and clusters has dedicated fixtures.
+- The conformance runner emits machine-readable and human-readable diffs.
+- Saved fixtures include all comparison inputs and version metadata.
+
+# Citations
+
+[1] [HarfBuzz shaping documentation](https://harfbuzz.github.io/shaping-opentype-features.html) — reference shaping pipeline and OpenType feature behavior.
+
+[2] [HarfBuzz test suite](https://github.com/harfbuzz/harfbuzz/tree/main/test) — upstream regression corpus and comparison precedent.
+
+[3] [HarfRust](https://github.com/harfbuzz/harfrust) — primary Rust-runtime conformance target and known-difference source.
+
+[4] Unicode [UAX #9](https://unicode.org/reports/tr9/), [UAX #14](https://unicode.org/reports/tr14/), and [UAX #29](https://unicode.org/reports/tr29/) — bidi, line-break, and text-boundary behavior.
+
+[5] [CSS Fonts Module Level 4](https://www.w3.org/TR/css-fonts-4/) and [CSS Text Module Level 3](https://www.w3.org/TR/css-text-3/) — browser font-feature and inline-text behavior exercised by the visual reference.
+
+[6] [OpenType specification](https://learn.microsoft.com/en-us/typography/opentype/spec/) — glyph-ID width, `cmap`, language-system, variation-sequence, and vertical-layout table definitions used by the CJK fixtures.
