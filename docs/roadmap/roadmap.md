@@ -3,7 +3,20 @@ type: Roadmap
 title: Canonical implementation roadmap
 description: Defines the only active implementation sequence, dependencies, effort estimates, deliverables, and exit gates for pmndrs/text.
 tags: [roadmap, implementation, milestones]
-timestamp: 2026-07-24T14:01:29Z
+sources:
+  - id: "citation-1"
+    resource: "../planning/benchmark-plan.md"
+    title: "Benchmark plan"
+  - id: "citation-2"
+    resource: "../planning/conformance-plan.md"
+    title: "Conformance plan"
+  - id: "citation-3"
+    resource: "../../README.md#benchmark-harness-wireframe"
+    title: "Repository benchmark-harness wireframe"
+
+generated:
+  by: openai-codex/gpt-5.6
+  at: "2026-07-26T06:45:24Z"
 ---
 
 # Canonical implementation roadmap
@@ -26,19 +39,23 @@ This slice is an internal integration proof, not a release candidate. The first 
 
 ## Implementation order
 
-| Order | Milestone | Effort | Depends on | Exit result |
-| ---: | --- | --- | --- | --- |
-| 0 | Accept contracts, type fixtures, and versions | S | documentation audit | Public inference and identity, ownership, package, and version decisions cannot force a redesign. |
-| 1 | Build benchmark harness and pin fixtures | L | 0 | The first executable product surface runs shared interactive/headless smoke scenarios over pinned fixtures. |
-| 2 | Build font bake core, bitmap baker package, and Node host | L | 1 | Node composes a valid core GLB and one package-owned bitmap artifact without advanced compiler work. |
-| 3 | Build baked-first loader and Worker fallback | L | 2 | Baked hits stay small; misses dynamically load the Worker path and reproduce canonical bytes. |
-| 4 | Integrate HarfRust Wasm shaping | L | 2–3 | Coarse batch calls match pinned HarfRust fixtures and expose clusters, positions, and flags. |
-| 5 | Implement paragraph reflow and the external-layout boundary | L | 4 | Allocation-light measurement and final positioned layout work in a current-uikit-shaped fixture. |
-| 6 | Prove rendering with bitmap inside the benchmark harness | L | 3, 5 | The harness produces the first real font frame on WebGPU and WebGL2 with direct bulk upload. |
-| 7 | Harden the integration proof | L | 1–6 | Identity, cancellation, limits, invalid data, package separation, and baselines pass review. |
-| 8 | Implement and validate MSDF | XL | 7 | The MTSDF-backed general-purpose raster passes visual, payload, and GPU performance gates. |
-| 9 | Port/rewrite and validate Slug | XL | 7 | Outline-accurate text passes correctness, packing, visual, and GPU performance gates. |
-| 10 | Harden the first shippable release | L | 8–9 | Bitmap, MSDF, and Slug ship as independent modules over one shaping/layout result. |
+Status key: ✅ complete · 🟡 in progress · ⬜ not started · ⛔ blocked
+
+| Order | Status | Milestone | Effort | Depends on | Exit result |
+| ---: | :---: | --- | --- | --- | --- |
+| 0 | ✅ | Accept contracts, type fixtures, and versions | S | documentation audit | Public inference and identity, ownership, package, and version decisions cannot force a redesign. |
+| 1 | ✅ | Build benchmark harness and pin fixtures | L | 0 | The first executable product surface runs shared interactive/headless smoke scenarios over pinned fixtures. |
+| 2 | ✅ | Build font bake core, bitmap baker package, and Node host | L | 1 | Node composes a valid core GLB and one package-owned bitmap artifact without advanced compiler work. |
+| 3 | ✅ | Build baked-first loader and Worker fallback | L | 2 | Baked hits stay small; misses dynamically load the Worker path and reproduce canonical bytes. |
+| 4 | ✅ | Integrate HarfRust Wasm shaping | L | 2–3 | Coarse batch calls match pinned HarfRust fixtures and expose clusters, positions, and flags. |
+| 5 | ✅ | Implement paragraph reflow and validate universal shaping assumptions | L | 4 | Allocation-light layout passes Latin, bidi/complex-script, and focused CJK source/reduced-font evidence. |
+| 6 | ⬜ | Prove rendering with bitmap inside the benchmark harness | L | 3, 5 | The harness produces the first real font frame on WebGPU and WebGL2 with direct bulk upload. |
+| 7 | ⬜ | Harden the integration proof | L | 1–6 | Identity, cancellation, limits, invalid data, package separation, and baselines pass review. |
+| 8 | ⬜ | Implement and validate MSDF | XL | 7 | The MTSDF-backed general-purpose raster passes visual, payload, and GPU performance gates. |
+| 9 | ⬜ | Port/rewrite and validate Slug | XL | 7 | Outline-accurate text passes correctness, packing, visual, and GPU performance gates. |
+| 10 | ⬜ | Harden the first shippable release | L | 8–9 | Bitmap, MSDF, and Slug ship as independent modules over one shaping/layout result. |
+
+Milestones 0–5 are closed. Milestone 6 is the next dependency and begins the first bitmap rendering proof in the benchmark harness.
 
 Do not start a milestone before its dependencies and exit evidence exist.
 
@@ -63,37 +80,70 @@ flowchart LR
 
 These rows replace the former separate backlog. Each is intended to become one focused issue or a short, explicitly linked PR sequence.
 
-| ID | Work | Size | Depends on |
-| --- | --- | :---: | --- |
-| 0.1 | Accept public core/React APIs, typed raster capabilities, URL resolution, and ESM-only exports. | S | — |
-| 0.2 | Make the initial `@pmndrs/text` contract shim preserve font/raster literals and pass positive/negative composition fixtures. | S | 0.1 |
-| 0.3 | Accept identity, GLB, Worker, and version contracts. | S | 0.2 |
-| 1.1 | Build shared benchmark target/scenario/result contracts and a deterministic synthetic smoke target. | M | 0.3 |
-| 1.2 | Add the interactive lab, headless runner, raw result export, and package-size lane over the same registry. | M | 1.1 |
-| 1.3 | Pin the source font, HarfRust/HarfBuzz shaping oracles, and browser HTML/CSS visual reference as harness fixtures. | M | 1.2 |
-| 2.1 | Implement static `defineFont` discovery, literal raster extraction, and conservative local source resolution. | M | 1.3 |
-| 2.2 | Implement the host-independent font bake request/result core. | M | 2.1 |
-| 2.3 | Emit/validate the core font and declared package-owned bitmap strikes. | M | 2.2 |
-| 2.4 | Add the Node API, CLI, deterministic bytes, and report. | M | 2.3 |
-| 3.1 | Implement baked probing, validation, and registration. | M | 2.4 |
-| 3.2 | Add the dynamically imported Worker bake path. | M | 3.1 |
-| 3.3 | Prove Node/Worker parity, cancellation, and import isolation. | M | 3.2 |
-| 4.1 | Register fonts and cache HarfRust data/plans in Wasm. | M | 2.2 |
-| 4.2 | Implement batched shape/reshape ABI and conformance fixtures. | M | 4.1 |
-| 5.1 | Build paragraph analysis, measured clusters, greedy breaks, and allocation-light `measure`. | M | 4.2 |
-| 5.2 | Add final positioned `layout`, reflow caches, and batched boundary reshaping. | M | 5.1 |
-| 5.3 | Add alignment, clipping, max-lines, ellipsis, bidi, and current-uikit adapter fixtures. | M | 5.2 |
-| 6.1 | Upload/render bitmap records and textures as the harness's first real raster target on WebGPU/WebGL2. | M | 3.3, 5.3 |
-| 6.2 | Implement the Three.js `Text` object over the bitmap proof. | M | 6.1 |
-| 6.3 | Implement `@pmndrs/text/react` as a thin reconciliation layer. | M | 6.2 |
-| 7.1 | Harden lifecycle, invalid input, limits, and package graphs. | M | 1–6 |
-| 7.2 | Record end-to-end conformance/performance baselines. | M | 7.1 |
-| 8.x | Split MSDF module, MTSDF generator, payload, shaders, quality, and perf work. | XL | 7.2 |
-| 9.x | Split Slug conversion, packing, shaders, quality, and perf work. | XL | 7.2 |
-| 10.1 | Prove raster-module switching through core and React without reflow. | M | 8.x, 9.x |
-| 10.2 | Complete release validation, guidance, and migration material. | M | 10.1 |
+| ID | Status | Work | Size | Depends on |
+| --- | :---: | --- | :---: | --- |
+| 0.1 | ✅ | Accept public core/React APIs, typed raster capabilities, URL resolution, and ESM-only exports. | S | — |
+| 0.2 | ✅ | Make the initial `@pmndrs/text` contract shim preserve font/raster literals and pass positive/negative composition fixtures. | S | 0.1 |
+| 0.3 | ✅ | Accept identity, GLB, Worker, and version contracts. | S | 0.2 |
+| 1.1 | ✅ | Build shared benchmark target/scenario/result contracts and a deterministic synthetic smoke target. | M | 0.3 |
+| 1.2 | ✅ | Add the interactive lab, headless runner, raw result export, and package-size lane over the same registry. | M | 1.1 |
+| 1.3 | ✅ | Pin the source font, HarfRust/HarfBuzz shaping oracles, and browser HTML/CSS visual reference as harness fixtures. | M | 1.2 |
+| 2.1 | ✅ | Implement static `defineFont` discovery, literal raster extraction, and conservative local source resolution. | M | 1.3 |
+| 2.2 | ✅ | Implement the host-independent font bake request/result core. | M | 2.1 |
+| 2.3 | ✅ | Emit/validate the core font and declared package-owned bitmap strikes. | M | 2.2 |
+| 2.4 | ✅ | Add the Node API, CLI, deterministic bytes, and report. | M | 2.3 |
+| 3.1 | ✅ | Implement baked probing, validation, and registration. | M | 2.4 |
+| 3.2 | ✅ | Add the dynamically imported Worker bake path. | M | 3.1 |
+| 3.3 | ✅ | Prove Node/Worker parity, cancellation, and import isolation. | M | 3.2 |
+| 4.1 | ✅ | Register fonts and cache HarfRust data/plans in Wasm. | M | 2.2 |
+| 4.2 | ✅ | Implement batched shape/reshape ABI and conformance fixtures. | M | 4.1 |
+| 5.1 | ✅ | Build paragraph analysis, measured clusters, greedy breaks, and allocation-light `measure`. | M | 4.2 |
+| 5.2 | ✅ | Add final positioned `layout`, reflow caches, and batched boundary reshaping. | M | 5.1 |
+| 5.3 | ✅ | Add alignment, clipping, max-lines, ellipsis, bidi, and current-uikit adapter fixtures. | M | 5.2 |
+| 5.4 | ✅ | Pin one redistributable pan-CJK face and prove source/reduced HarfRust, HarfBuzz, horizontal paragraph layout, fuzz, and Node/Chromium/Vitexec evidence without renderer or paging work. | L | 5.3 |
+| 6.1 | ⬜ | Upload/render bitmap records and textures as the harness's first real raster target on WebGPU/WebGL2. | M | 3.3, 5.4 |
+| 6.2 | ⬜ | Implement the Three.js `Text` object over the bitmap proof. | M | 6.1 |
+| 6.3 | ⬜ | Implement `@pmndrs/text/react` as a thin reconciliation layer. | M | 6.2 |
+| 7.1 | ⬜ | Harden lifecycle, invalid input, limits, and package graphs. | M | 1–6 |
+| 7.2 | ⬜ | Record end-to-end conformance/performance baselines. | M | 7.1 |
+| 8.x | ⬜ | Split MSDF module, MTSDF generator, payload, shaders, quality, and perf work. | XL | 7.2 |
+| 9.x | ⬜ | Split Slug conversion, packing, shaders, quality, and perf work. | XL | 7.2 |
+| 10.1 | ⬜ | Prove raster-module switching through core and React without reflow. | M | 8.x, 9.x |
+| 10.2 | ⬜ | Complete release validation, guidance, and migration material. | M | 10.1 |
 
 ## Milestone 0 — accept contracts and versions
+
+### 0.1 closure checklist
+
+- [x] Candidate core and React surfaces are documented in the [API reference](../planning/api-shapes.md#milestone-01-acceptance-evidence).
+- [x] Core font/raster capability inference and positive/negative composition cases have compile-only evidence.
+- [x] Canonical URL forms and invalid source/baked combinations have compile-only evidence.
+- [x] The current root package export is ESM-only and contains no CommonJS condition.
+- [x] Maintainer explicitly accepted D-001, D-004–009, D-067, D-068, and D-070 for V0 in the [decision register](../planning/decision-register.md#product-and-public-api).
+- [x] Item 0.2 adds the remaining React-prop and package/export contract fixtures after those public choices are accepted.
+
+Item 0.1 is closed; the 0.2 evidence is recorded below.
+
+### 0.2 closure checklist
+
+- [x] Font, raster, resource, draw-batch, option, runtime-baker, and baker-descriptor literals survive composition.
+- [x] Positive and intentional negative fixtures cover raw/composed fonts, raster options, static bitmap tuples, atomic updates, paragraph constraints, and invalid artifact pairings.
+- [x] React props derive distributively from core properties, retain raw-font/raster coupling, and accept React Three Fiber group props.
+- [x] `useFont`, preload, and lazy-raster contract types preserve exact font and raster types.
+- [x] A package test rejects CommonJS fields, `require` conditions, or non-ESM JavaScript export targets.
+
+Item 0.2 is closed; the 0.3 evidence is recorded below.
+
+### 0.3 closure checklist
+
+- [x] The maintainer accepted the identity, GLB, shaping payload, Worker boundary, loading, package-ownership, and version contracts through item 3.3.
+- [x] Font-local glyph identity is `(FontHandle, LocalGlyphId)` with one selected face per core artifact and `u16` V0 glyph IDs.
+- [x] Core and raster GLBs retain identical schemas whether embedded or external and bind through shaping/raster hashes.
+- [x] Node and module-Worker hosts share one portable core; baked hits cannot reach the Worker, Wasm baker, or optional generators.
+- [x] Exact HarfRust, HarfBuzz, Unicode, glTF schema, validator, ABI, format, and initial generator versions are recorded in the [version contract](../planning/version-contract.md).
+- [x] The generated ABI JSON exposes those pins, and Rust provenance consumes the same constants.
+
+Milestone 0 is closed. Milestone 1 is now the active dependency.
 
 Deliver:
 
@@ -110,13 +160,44 @@ The contract-only TypeScript shim may contain identity factories such as `define
 
 ## Milestone 1 — build the benchmark harness first and pin fixtures
 
+### 1.2 closure checklist
+
+- [x] The responsive Figma-backed interactive lab selects targets/scenarios, preserves URL state, reports lifecycle/correctness, and exports raw JSON.
+- [x] Interactive, Vitest, Vitexec, and browser-headless paths call the same strict target/scenario registry execution module.
+- [x] The headless CLI emits the versioned summary to stdout or an explicit output file and fails on browser console/page errors.
+- [x] Browser readiness and completion use Vite lifecycle and benchmark completion promises without sleeps, frame-count waits, retries, or polling.
+- [x] Independent library-mode builds report nonzero raw, minified, gzip, and Brotli sizes for browser core and baker JavaScript plus raw/gzip/Brotli baker Wasm.
+- [x] The future Unicode-property-table size entry is explicitly unavailable rather than reported as zero bytes.
+- [x] Vitest, production build, headless browser smoke, Vitexec GPU launch, and 390×844 Playwright navigation pass.
+
+Item 1.2 is closed. Item 1.3 is now the active dependency; it replaces local/conditional font input with licensed immutable fixtures and structured/visual oracles.
+
+### 1.3 progress checklist
+
+- [x] Inter Regular 4.1 source/archive member, release commit, OFL-1.1 text, byte sizes, and SHA-256 hashes are immutable and checked in.
+- [x] The package real-font E2E is mandatory and verifies fixture identity before invoking the compiled Wasm package.
+- [x] The shared interactive/headless baker target defaults to the canonical bytes and produces deterministic GLB output; local upload remains an explicit override.
+- [x] The UTF-16 corpus covers kerning and ligature toggles, decomposed marks, supplementary decode, variation selectors, spaces, and explicit newline.
+- [x] Repository commands generate HarfRust 0.12.0 and HarfBuzz 13.0.0 JSON oracles and refuse incompatible engine inputs.
+- [x] A differential test proves core shaping equality and fixes the exact unsafe-to-concat flag-delta inventory.
+- [x] The deterministic HTML/CSS reference records exact font/text/style/viewport/browser inputs and a hashed PNG.
+- [x] Pin the remaining bitmap, paragraph, GLB, malformed-input, GPU-readback, maximum-cardinality, and empty identity contract fixtures.
+- [x] Admit the no-retry Vitexec probe with the required repetition, fresh-lifecycle, and environment evidence.
+
+Item 1.3 and Milestone 1 are closed. The admission record binds commit `016078cecee3daaf90243c1473aa9c0168fadbc5`, the probe hash, 100 zero-retry executions, 10 fresh browser/server lifecycles, exact environment metadata, and two intentional-failure controls. Its GPU-friendly Chromium runs report WebGPU availability but correctly make no GPU-rendering claim before a renderer exists. Milestone 2 continues at item 2.3.
+
 Deliver:
 
 - the repository's first executable product surface, before any production font implementation;
+- Vite, React 19, React Compiler, modern async React resources/actions, the Figma-backed custom shadcn-derived component set, Oxlint, and Oxfmt configured as the app foundation;
 - shared target, scenario, capability, sample, result, and validation contracts;
+- the canonical [unit, package-integration, product-E2E, conformance, and performance test ownership ladder](../planning/conformance-plan.md#test-layers-and-ownership);
 - one deterministic synthetic smoke target proving interactive/headless parity without pretending to benchmark the future font engine;
+- one real portable-baker target proving Wasm startup, source-to-GLB correctness, deterministic artifacts, diagnostics, payload, and memory without pretending to render text;
 - interactive browser lab with shareable URL state and phase/result panels;
 - headless local/CI runner importing the same scenario registry and policies;
+- Vitest scenario assertions plus a Vitexec local live-probe lane for visible, stateful, and hardware-GPU behavior, reusable through headed or remote Playwright where representative;
+- committed erasable-TypeScript probes satisfying the [no-timer, no-retry determinism and admission contract](../planning/conformance-plan.md#live-probe-determinism-contract);
 - independent package-size lane and raw result export;
 - a dedicated package-size entry for the version-pinned JS Unicode property tables used by bidi, script itemization, line breaking, and grapheme segmentation;
 - authorized Inter Regular fixture with exact URL, license, version, and SHA-256;
@@ -127,9 +208,64 @@ Deliver:
 - synthetic 65,535-glyph, multi-page record/source fixture proving logical page identity without a real CJK bake;
 - empty multi-font/multi-raster contract fixtures that test identity without adding product behavior.
 
-Exit only when the lab is usable, the synthetic smoke target produces the same validated result through interactive and headless paths, and every oracle can be regenerated deterministically. Later milestones extend this harness; none creates a parallel benchmark or demo architecture.
+Exit only when the Figma-backed lab is usable, synthetic and portable-baker targets produce the same validated results through interactive and automated paths, unavailable raster targets remain honestly capability-gated, every oracle can be regenerated deterministically, and the initial live probes pass their zero-retry admission runs. Later milestones extend this harness through public package adapters and real-font scenarios; none creates a parallel benchmark or demo architecture, and no user-visible slice closes without its capability-appropriate automated or admitted local product-E2E case.
 
 ## Milestone 2 — font bake core, bitmap baker package, and Node host
+
+### 2.1 closure checklist
+
+- [x] TypeScript 7 parser and symbol APIs identify aliased `defineFont`, core `Text`, and React `Text` raw forms without regular-expression matching or application-module execution.
+- [x] The immutable evaluator follows local/imported `const` values, concatenations, templates, URL objects, source overrides, JSON raster options, and baked-only inputs.
+- [x] Module-relative, root-relative, absolute-web, and dynamic-origin path suffixes resolve conservatively through canonical configured asset roots.
+- [x] Query/fragment removal, segment-wise percent decoding, traversal rejection, missing files, ambiguity, and exact resolved spelling have executable fixtures.
+- [x] Third-party raster selection is limited to the exact imported package and an exported ESM baker entry that resolves inside that package.
+- [x] Package integration tests cover successful mappings plus dynamic input, dynamic strikes, unsafe paths, malformed manifests, CommonJS targets, and package escape attempts.
+- [x] TypeScript, TSX, JavaScript, and JSX are admitted source forms; a plain-JavaScript project fixture proves alias and immutable-constant behavior without application execution.
+- [x] One exact-version adapter owns every unstable TypeScript import and snapshot/symbol-handle operation; package tests fail on version drift or imports outside that boundary.
+
+Item 2.1 is closed. Its analyzer remains internal until item 2.4 exposes the complete `@pmndrs/text/bake` Node API and CLI; item 2.3 is the active dependency after 2.2 closed.
+
+### 2.2 closure checklist
+
+- [x] The portable TypeScript boundary accepts exactly one `FontBakeRequestV0` and returns `FontBakeResultV0`; Node's separate filesystem-oriented `bakeFont(options)` name remains reserved for item 2.4.
+- [x] One `no_std + alloc`, zero-import `wasm32-unknown-unknown` core is shared-ready for Node and Worker hosts through the generated direct-memory ABI with no WASI or binding generator.
+- [x] Fontations owns SFNT/TTC parsing and Skrifa owns maintained glyph bounds; fixtures cover invalid bytes, WOFF/WOFF2, required tables, variable/AAT shaping systems, TTC face selection, and out-of-range face indexes.
+- [x] The canonical Inter 4.1 result binds exact source, descriptor, artifact, shaping, table, metric, extent, and byte identities in its immutable fixture manifest.
+- [x] The reduced SFNT has a sorted closed table set, valid offsets, alignment, padding, table checksums, whole-font checksum, duplicated metrics, dense extents, availability bits, and domain-separated shaping hash.
+- [x] Every checked-in shaping case produces identical HarfRust 0.12.0 glyph IDs, UTF-16 clusters, positions, and flags from the source and reduced SFNT.
+- [x] Pinned Binaryen 129.0.0 `-Oz` optimization reduces the distributed module while zero-import, ABI, deterministic artifact, and real-font tests remain unchanged.
+
+Item 2.2 is closed. Item 2.3 adds the core/raster validators plus the package-owned bitmap descriptor, baker, artifact, composition seam, and goldens.
+
+### 2.3 closure checklist
+
+- [x] The core-owned validator performs strict GLB framing/range/padding checks before parsing untrusted payloads.
+- [x] Pinned Khronos glTF Validator 2.0.0-dev.3.10 runs offline and retains its report; only exact reviewed unsupported-extension and extension-owned-buffer informational messages are admitted.
+- [x] Ajv 6.15.0 evaluates the canonical Draft-04 `PMNDRS_font` schema against the vendored Khronos revision, with byte-identity and required-field/union mutation fixtures.
+- [x] Core semantic and payload validation covers buffer containment/non-overlap, versions, reciprocal raster identity, closed SFNT/checksums/metrics, dense extents, zero padding, and shaping identity.
+- [x] The canonical Inter product path uses the shipped validator, while the baker-only entry remains import-isolated from Ajv and `gltf-validator`.
+- [x] Fixed-seed Rust-input and TypeScript artifact-mutation fuzz smoke tests run in the ordinary suite; longer mutation drivers plus pinned cargo-fuzz/libFuzzer coverage promote minimized findings into permanent malformed fixtures.
+- [x] The bitmap-owned module canonicalizes static strike tuples and derives the RFC 8785 raster key without a parallel core descriptor union.
+- [x] The bitmap baker emits deterministic unhinted grayscale strikes, dense 20-byte records, lossless R8 KTX2 pages, reports, and embedded/external packaging.
+- [x] Font-scoped bitmap/page filenames bind shaping and raster identity; atlas-compatible ppem bounds and streaming glyph placement reject impossible requests without retaining a second full-face bitmap set.
+- [x] The bitmap-owned validator covers schema, reciprocal identity, exact strikes, records, pages/KTX2, limits, and one-invalid-field-at-a-time malformed artifacts.
+- [x] Canonical Inter bitmap bytes and synthetic maximum-cardinality/empty identities are pinned and round-trip through the same core used by later hosts.
+
+Item 2.3 is closed. Exact goldens bind split, combined-embedded, combined-external, and empty-raster artifacts; the generic composer proves opaque buffer-view rebasing across multiple distinct extension types.
+
+### 2.4 closure checklist
+
+- [x] `@pmndrs/text/bake` exports the filesystem-oriented `bakeFont` and discovery-oriented `bakeProject` Node APIs without adding Node built-ins to browser-safe entry points.
+- [x] The generic `bakeFont` tuple preserves each selected raster package's exact option and packaging types; compile-only fixtures reject an empty bitmap strike tuple and unsupported packaging.
+- [x] `bakeProject` consumes the canonical TypeScript discovery report, groups and deduplicates one source deterministically, and dynamically imports only each already-verified ESM baker entry.
+- [x] The thin native-ESM `pmndrs-text-bake` command covers conventional project defaults, repeatable entry/asset-root options, mirrored output roots, human output, JSON output, help, malformed arguments, and diagnostic exit status.
+- [x] Exact Inter embedded/external goldens, mixed embedded/external raster composition, and repeated project runs prove authoritative byte and output-report determinism.
+- [x] Writes use same-directory exclusive temporary files, file synchronization, atomic rename, cancellation cleanup, source/output overlap checks, unique targets, and single-filename artifact IDs.
+- [x] The completed report records phase and total timing, before/after RSS, explicitly labeled process-lifetime peak RSS, output paths/roles/bytes/hashes, container bytes, and raw/gzip/Brotli transport bytes.
+- [x] Node `Buffer` validation is repeatable and non-mutating; a regression protects SFNT `checksumAdjustment` from Buffer's aliasing `slice` semantics.
+- [x] Package and integration tests cover the public subpath/bin/manifest, exact CLI/API behavior, selected-baker loading, path escape rejection before filesystem mutation, cancellation, and deterministic output mirroring.
+
+Item 2.4 and Milestone 2 are closed. Items 3.1 and 3.2 are closed; item 3.3 is active and must prove host parity, cancellation, and package-graph isolation.
 
 Deliver:
 
@@ -147,6 +283,66 @@ Deliver:
 Explicitly exclude subsetting, shaping closure, dense remapping, compiled layout IR, MSDF, and Slug.
 
 ## Milestone 3 — baked-first loader and Worker fallback
+
+### 3.1 closure checklist
+
+- [x] String, `URL`, `{ source }`, `{ source, baked }`, and `{ baked }` inputs normalize against one base, remove fragments, preserve queries, detect baked-only GLBs, and derive exact case-insensitive TTF/OTF/WOFF/WOFF2 or extensionless siblings.
+- [x] Concurrent equivalent requests share one versioned promise key; validated shaping identity deduplicates registration within a registry while separate registries and post-disposal generations remain isolated.
+- [x] Baked hits run the shipped GLB/Khronos/schema/semantic/payload validator before registration, distinguish missing, invalid, incompatible-version, fetch, and resource-limit failures, and cannot reach the runtime baker, bitmap baker, Node host, or bake Wasm in the initial graph.
+- [x] Registration owns caller bytes, extracts the exact reduced SFNT, glyph extents, availability bits, metrics, Unicode/source provenance, and raster directory needed by later shaping without reparsing the source font.
+- [x] Loader fixtures compare every extracted shaping byte to the independently validated GLB views; milestone 4 consumes these same retained views for bit-for-bit corpus shaping rather than creating a second extraction path.
+- [x] Embedded/external delivery variants for one raster key merge without changing identity; generic attachment checks GLB framing, Khronos output, buffer ranges, reciprocal font/raster identity, artifact hash, and immutable copied views while package semantics remain module-owned.
+- [x] External companion URLs resolve relative to the exact core-asset context, application resolvers can intercept, runtime-produced assets authenticate their source bytes against provenance, and baked-only failures never fetch or bake a source.
+- [x] Development missing-sibling warnings deduplicate, production suppresses them, invalid/incompatible assets emit structured diagnostics before allowed fallback, and non-hierarchical source URLs skip sibling warnings.
+- [x] Configured artifact/view/raster limits apply before caller-byte copies and while streaming responses even without trustworthy `Content-Length`; cancellation detaches a caller without corrupting a shared completed result.
+- [x] Real Inter integration tests cover hits, injected fallback seam, registration, disposal, embedded/external rasters, hash failure, limits, and input forms; fixed-seed loader mutation fuzzing requires deterministic, non-mutating outcomes.
+
+Item 3.1 is closed. Item 3.2 is active and replaces the injected fallback seam's absent default with the dynamically imported module-Worker host over the exact portable bake core.
+
+### 3.2 closure checklist
+
+- [x] A baked miss dynamically imports `@pmndrs/text/runtime-bake`; the initial browser graph contains only the import boundary and cannot construct a Worker or reach the bake wrapper/Wasm.
+- [x] The standard host creates a named module Worker lazily, queues concurrent requests behind one active bake, reuses that instance within the burst, copies only the source transfer buffer needed to preserve loader provenance, and transfers the returned artifact buffer.
+- [x] The Worker imports the exact portable `@pmndrs/text-font-baker` wrapper, lazily instantiates the same optimized `font_baker.wasm`, accepts only the versioned face descriptor, and serializes structured failures.
+- [x] The loader routes standard fallback output through the same provenance and hostile-input validator used for baked hits before registration.
+- [x] Canonical Inter integration tests exercise the public host, default loader path, transfer lists, Worker entry, and exact portable-core artifact bytes; package tests prove the runtime host/Worker/Wasm remain outside the static entry graph.
+- [x] Independent size lanes report the runtime host, Worker JavaScript, and portable Wasm separately instead of folding lazy code or Wasm into the initial core.
+
+Item 3.2 is closed. Item 3.3 is active and adds browser-executed Node/Worker authoritative-byte parity, shared-operation cancellation, and complete packed/bundled import-isolation evidence.
+
+### 3.3 closure checklist
+
+- [x] The benchmark product has a real `font-loader-worker` target and `worker-fallback` scenario over public package surfaces; Chromium first hashes the module-Worker artifact against the canonical Node artifact, validates/registers it, and then measures the missing-sibling loader path.
+- [x] The Chromium 149 gate passes the synthetic, direct portable-baker, and public loader-Worker scenarios with three deterministic samples after one warmup; the loader scenario returns the canonical 172,140-byte payload and shaping identity on every sample.
+- [x] Concurrent callers retain one shared request; detaching one does not abort it, while detaching the final consumer aborts the underlying fetch/stream or Worker request and the next load starts fresh.
+- [x] An idle Worker with only cancelled work is terminated immediately and recreated successfully on the next request; no delay, polling, retry, or timer controls lifecycle.
+- [x] Queued cancellation removes only that job; active cancellation terminates the uncancellable bake, recreates the Worker, and resumes FIFO work. Integration tests prove one active post, while a local Vitexec probe records authenticated burst/sequential timing without a flaky threshold.
+- [x] Browser execution covers the native `fetch` receiver contract, module Worker, package-relative Wasm asset, transferred buffers, hostile-input validator, provenance check, registration, and disposal. The product test caught and permanently fixed an illegal native-fetch invocation that Node could not expose.
+- [x] Emitted-package tests prove the root loader has only dynamic runtime/validator boundaries and no static Worker, Wasm, Node-host, or raster-baker edge; independent Rollup closures report initial core, validator, runtime host, Worker JavaScript, and Wasm separately.
+- [x] Canonical source/request deduplication, missing/invalid/incompatible behavior, development warning deduplication, baked-only isolation, limits, fuzz smoke, and exact GLB shaping-view extraction remain green under the final shared-cancellation implementation.
+
+Item 3.3 and Milestone 3 are closed. Item 4.1 is active and must register the exact retained GLB-extracted SFNT in HarfRust Wasm without introducing a second font extraction path.
+
+### 4.1 closure checklist
+
+- [x] A package-owned Rust crate builds one `no_std + alloc`, no-WASI `wasm32-unknown-unknown` HarfRust module and exposes only a Rust-generated direct-memory ABI.
+- [x] The TypeScript bridge registers only the validator-retained shaping SFNT, dense glyph extents, and availability bits; it never reparses the GLB or reconstructs a source font.
+- [x] Canonical Inter registration retains exactly 171,056 shaping bytes, is idempotent for the same scoped handle, rejects cross-registry ownership, and releases Wasm state when either the font or shaper is disposed.
+- [x] Package build, export, ESM, type, unit, integration, and independent JavaScript/Wasm size lanes cover the new boundary; the optimized registration-only baseline was 91,382 bytes before batch shaping landed.
+- [x] Shape-plan cache keys include direction, script, normalized language, and HarfRust-equivalent feature tag/value/globalness; each font retains its 64 most recently used plans, equivalent calls reuse plans, non-equivalent feature plans remain distinct, and font disposal releases every plan.
+
+Item 4.1 is closed.
+
+### 4.2 closure checklist
+
+- [x] Rust generates the complete JSON ABI, including every 32-bit request/result offset, 16-byte feature record, 32-byte run record, 24-byte reshape-range record, status, and export name; the TypeScript bridge consumes and exact-version-checks that contract.
+- [x] `shapeBatch` and `reshapeRanges` each cross the boundary once per batch and return aligned borrowed SoA views with 16-bit glyph IDs, absolute UTF-16 clusters, four signed positions, and all three mapped HarfRust glyph flags.
+- [x] Every one of the eight pinned Inter HarfRust cases travels source TTF → portable baker GLB → independent hostile-input validator → `FontRegistry` shaping-view extraction → Wasm registration → both public shaping calls, then compares glyph count, IDs, clusters, advances, offsets, and flags bit-for-bit.
+- [x] A two-run fixture proves run/font indexes, absolute clusters, one-call batching, and plan reuse; UTF-16 surrogate boundaries, tags, ranges, flags, ownership, zero-import ABI identity, extents decoding, and fixed-seed raw request mutations have focused failures.
+- [x] The real benchmark product runs all eight cases as one 97-glyph Chromium batch, validates hash `dc30c21c`, records 2,412 output bytes, one boundary crossing, three plans, 171,056 retained font bytes, 1,638,400 linear-memory bytes, and raw cold/warm timings after correctness passes.
+- [x] The complete optimized module and bridge are measured independently at 692,114 raw / 257,986 gzip / 202,523 Brotli Wasm bytes and 30,630 minified / 8,794 gzip / 7,826 Brotli JavaScript bytes.
+
+Item 4.2 and Milestone 4 are closed. Item 5.1 closure evidence is recorded under Milestone 5.
 
 Deliver:
 
@@ -176,6 +372,40 @@ HarfRust reads the retained SFNT tables in Wasm. The milestone does not claim co
 
 ## Milestone 5 — JavaScript paragraph reflow
 
+### 5.1 closure checklist
+
+- [x] The public engine prepares immutable paragraph/span/style input over an active `RuntimeShaper`, validates span boundaries against extended grapheme clusters, and resolves overlapping style, font, feature, language, and explicit-direction ranges.
+- [x] Generated Unicode 17 Script and Script_Extensions tables come from the pinned official UCD package; `unicode-segmenter` 0.15.0 supplies UAX #29 boundaries and `@cto.af/linebreak` 4.0.3 supplies UAX #14 opportunities.
+- [x] Ordinary package tests verify all 766 official Unicode 17 extended-grapheme vectors and all 19,338 official line-break vectors from hash-pinned deterministic gzip fixtures; malformed UTF-16 and selected Script/Script_Extensions values have focused regressions.
+- [x] One broad HarfRust shape is copied immediately out of the borrowed Wasm arena and converted into font-scaled, letter-spaced measured grapheme clusters with unsafe-break information, explicit hard breaks, line metrics, and baselines.
+- [x] Greedy word/character wrapping handles mandatory breaks, trailing empty lines, over-wide clusters, and shaping-safe emergency boundaries. Equivalent unconstrained/at-most/exactly measurements reuse one frozen result and never materialize positioned glyph arrays.
+- [x] Canonical Inter travels source TTF → portable baker GLB → hostile-input validator → retained shaping views → HarfRust Wasm → paragraph measurement. Exact HarfRust-derived natural, 720 px, and 360 px widths are `847.625`, `696.734375`, and `356.546875`; unrelated shaper calls prove cached ownership.
+- [x] The real Chromium benchmark repeats the three exact layouts with hash `79874b9d`, one preparation shape, zero reshapes/reflow boundary crossings, zero positioned-glyph bytes, and a measured independent Unicode-analysis size lane of 139,912 minified / 42,042 gzip / 31,048 Brotli bytes.
+
+Item 5.1 is closed; the positioned output and boundary-sensitive reshape evidence that followed is recorded below.
+
+### 5.2 closure checklist
+
+- [x] `layout()` shares prepared analysis, broad shaping, and cached line plans with `measure()` while materializing paragraph-owned `fontHandles`, font slots, glyph IDs, UTF-16 clusters, font sizes, x/y positions, flags, and parallel line arrays only on demand.
+- [x] Full layouts cache by complete normalized constraints; positioned line geometry caches independently by effective line policy, so identical hot layouts reuse one object and height-only box changes reuse the exact glyph arrays without another Wasm call. Every paragraph cache retains at most its 32 most recently used variants.
+- [x] Unsafe-to-concat line fragments become one `reshapeRanges` request per changed-width layout. Canonical 720 px and 360 px layouts batch exactly two and three line ranges respectively with full-run context and line BOT/EOT flags; the natural unbroken layout reuses the broad shape with zero reshapes.
+- [x] The canonical paragraph contract owns exact measurement values, 55-glyph IDs/clusters/flags, line text/glyph ranges, Float32 baselines/advances, and registry-independent byte-level hashes `bb15bbcc`, `4f111a3f`, and `e8c0e9d5` for natural, wide, and narrow layouts.
+- [x] Integration tests derive natural x/y placement from the checked-in HarfRust glyph advances/offsets and GLB-extracted font metrics, compare every shaped identity field after boundary reshape, prove borrowed-arena invalidation cannot mutate cached layout arrays, and prove shaping-policy updates invalidate both measurement and layout caches.
+- [x] Chromium records three deterministic 3,786-byte aggregate outputs with one broad shape and two total reshape crossings; the GPU Vitexec probe runs measurement and positioned scenarios sequentially, which caught and removed registry-scoped font handles from the portable golden hash while still validating the live handle separately.
+
+Item 5.2 is closed. Item 5.3 closure evidence follows.
+
+### 5.3 closure checklist
+
+- [x] The package-owned `no_std + alloc` shaper uses `unicode-bidi` 0.3.18's maintained UAX #9 algorithm with its bundled Unicode 16 data disabled and repository-generated Unicode 17 `Bidi_Class`/paired-bracket data supplied through the crate's custom data-source seam.
+- [x] Rust executes all 770,241 direction-expanded `BidiTest.txt` cases and all 91,707 `BidiCharacterTest.txt` cases from hash-pinned Unicode 17 gzip fixtures, comparing paragraph levels, every specified resolved level, and complete visual index order; direct-memory Wasm integration separately proves UTF-16/supplementary-plane indexing and explicit/automatic direction.
+- [x] Paragraph preparation intersects resolved style/script ranges with bidi level runs, shapes each run in its resolved direction, applies line-specific UAX #9 L1/L2 ordering, and fixes exact mixed-direction glyph identity/position goldens through the retained-GLB HarfRust path.
+- [x] Start/center/end/justify alignment, clipping, max-lines, and ellipsis have exact policy fixtures, cache/invalidation evidence, mandatory-break truncation coverage, and no unreported shaping boundary crossings.
+- [x] A current-uikit-shaped fixture proves repeated allocation-light measurement, Yoga-mode translation, final content-box layout, point-scale rounding ownership, and dirtying without a Yoga dependency in core.
+- [x] The real Chromium benchmark and GPU Vitexec lane execute the bidi/policy fixtures with deterministic recorded output before item 5.3 closes.
+
+Item 5.3 is closed. The generated contract fixes two Amiri mixed-direction layouts, nine Inter line-policy layouts, and one current-uikit-shaped final content-box layout with complete glyph/line arrays and twelve portable hashes. Amiri 1.002 separately proves source-font HarfRust equals HarfRust over the reduced SFNT extracted from the validated GLB, while pinned HarfBuzz 13 agrees on every Arabic/Latin glyph field. Chromium 149 records three deterministic 8,098-byte runs with four preparation shapes and five batched reshapes; the GPU Vitexec lane repeats the same contract with WebGPU active. Item 5.4 closure evidence follows.
+
 Deliver:
 
 - paragraph, span, style, and constraint models;
@@ -191,6 +421,36 @@ Deliver:
 Width changes always reflow. Simple reflow crosses into Wasm zero times; boundary-sensitive changes cross once for the batch.
 
 The milestone is not complete until a retained-layout leaf can repeatedly measure a prepared paragraph without materializing positioned glyph arrays, then obtain final glyph positions for its resolved content box without implementing line breaking. The concrete compatibility fixture mirrors current uikit's `CustomLayouting → FlexNode/Yoga → size signal → positioned layout` flow; the production adapter remains owned by uikit.
+
+### 5.4 CJK shaping and paragraph universality
+
+This item validates the existing bake, shaping, Unicode, and paragraph contracts against CJK before rendering begins. It must not add renderer integration, raster paging, sparse glyph coverage, font fallback, or vertical layout.
+
+Deliver:
+
+- one pinned redistributable pan-CJK face with immutable bytes, license, upstream provenance, selected face index, glyph/table inventory, and source/shaping payload budgets;
+- a focused horizontal corpus covering Simplified and Traditional Chinese, Japanese kana/kanji, precomposed and Jamo Korean, CJK punctuation and ideographic spaces, mixed Latin/CJK, supplementary-plane Han, standardized variation sequences, ideographic variation sequences where the fixture supports them, and paragraphs without spaces;
+- exact HarfRust source-font oracles and exact-version HarfBuzz structured oracles with UTF-16 clusters, glyph IDs, advances, offsets, and flags;
+- source font → portable bake → validated GLB → extracted reduced SFNT → HarfRust equality, including `cmap` formats 12/14, language-sensitive `locl`, GSUB/GPOS behavior, selected-face provenance, `u16` glyph identity, and checked payload/offset arithmetic;
+- deterministic paragraph measurement and positioned-layout fixtures covering grapheme-safe spans, UAX #14 no-space line opportunities and punctuation boundaries, mixed scripts, supplementary clusters, variation sequences, width reflow, and safe batched boundary reshaping;
+- deterministic CJK-focused malformed-input and fixed-seed fuzz smoke for surrogate/variation-selector boundaries, language tags, line constraints, and repeated shaping/layout;
+- Node integration plus the shared Chromium headless and GPU-capable Vitexec lanes, reporting exact hashes, shaping calls, glyph counts, retained bytes, Wasm memory, raw/compressed shaping payload, and cold/warm timings before any rendering metric exists.
+
+Exit only when the complete horizontal corpus is byte-exact through the source and reduced-font HarfRust paths, the independent HarfBuzz oracle agrees under the documented normalization policy, and Node/Chromium/Vitexec paragraph outputs are deterministic. Any genuine mismatch in the retained SFNT profile, UTF-16 clustering, language selection, variation handling, glyph-width assumptions, or line layout blocks rendering work.
+
+Large-coverage raster paging remains in Milestone 12. Vertical-form source tables must survive baking when present, but vertical shaping/layout remains deferred.
+
+### 5.4 closure checklist
+
+- [x] Noto Sans CJK JP Regular 2.004 is checked in with immutable upstream commit, selected face index, OFL text, byte lengths, and SHA-256 identities.
+- [x] The fixture inspector uses Fontations `read-fonts` and proves 65,535 glyphs, `cmap` formats 4/6/12/14, supplementary Han, SVS, IVS, and the retained source-table inventory.
+- [x] Thirteen language-tagged CJK cases match source and reduced-font HarfRust exactly and agree field-for-field with authenticated HarfBuzz 13.0.0 output.
+- [x] `BASE`, `VORG`, `vhea`, and `vmtx` survive baking exactly when present; the baker does not fabricate them and vertical shaping/layout remains deferred.
+- [x] Four public-pipeline paragraphs produce twelve exact natural/wide/narrow layouts with contextual Script_Extensions, grapheme/UTF-16-safe clusters, no-space breaks, deterministic ownership, and zero reshapes for the fixed corpus.
+- [x] Malformed language/surrogate/variation/constraint cases and fixed-seed CJK mutations are deterministic and trap-free.
+- [x] Node integration, Chromium 149 headless, GPU-enabled Vitexec, and the mobile Playwright flow pass through the shared benchmark registry without timers, retries, renderer metrics, or paging claims.
+
+Item 5.4 and Milestone 5 are closed. Milestone 6 is next.
 
 ## Milestone 6 — first rendering proof: bitmap in the benchmark harness
 
@@ -271,25 +531,25 @@ The order below preserves lanes without pretending the work is part of V1:
 | Order | Workstream | Effort | Why next |
 | ---: | --- | --- | --- |
 | 11 | Mixed-font spans and explicit font fallback | XL | Extend the multi-font identity smoke proof into paragraph behavior. |
-| 12 | Large-coverage CJK and icons | XL | Add content-aware paging, independently resident resources, and paired CJK/icon correctness and payload gates. |
+| 12 | Large-coverage CJK raster paging and icons | XL | Add content-aware paging, independently resident resources, and paired CJK/icon correctness and payload gates without reopening item 5.4 shaping semantics. |
 | 13 | Color emoji | XL | Extend Slug vector paint/layers and bitmap color resources without changing shaping or layout. |
 | 14 | Raster effects and expanded recommendations | L | Extend outlines, colorization, shadows, and projected-size guidance with measurements. |
 | 15 | Measured optimization campaigns | ongoing | Activate autoresearch only with strict correctness and visual gates. |
 | 16 | Advanced font compiler units | XL each | Add general subsetting, remapping, normalized lookups, or SIMD only from evidence. |
 
-### Milestone 12 — large-coverage CJK and icons
+### Milestone 12 — large-coverage CJK raster paging and icons
 
-This milestone begins only after the Latin-first V1 renderer gate. CJK and icons share the page-scale implementation while retaining separate semantic fixtures.
+This milestone begins only after the Latin-first V1 renderer gate. Item 5.4 has already proven horizontal CJK shaping and paragraph semantics; this later milestone scales raster coverage, paging, residency, and icon delivery without changing those results. CJK and icons share the page-scale implementation while retaining separate semantic fixtures.
 
 Deliver:
 
-- a pinned redistributable pan-CJK face with Chinese, Japanese, and Korean language cases, supplementary Han, variation sequences, and no-space paragraph fixtures;
+- the item 5.4 pan-CJK fixture expanded into small, medium, large, and complete raster-coverage tiers without changing its source/reduced shaping contract;
 - a pinned private-use icon font, OpenType-SVG icon font, and manifest-backed standalone SVG set with selected and complete-library cases;
 - content-aware raster coverage with explicit missing-glyph diagnostics and no change to font-local `u16` glyph identity;
 - companion raster indexes whose logical pages resolve to embedded or external payloads with byte length and SHA-256 integrity;
 - raster-module page preparation, request deduplication, cancellation, atomic generation swaps, residency accounting, and deterministic eviction tests;
 - backend batching that does not equate page index with texture-array layer, binding slot, draw, or order;
-- browser visual references plus HarfRust/HarfBuzz structured CJK shaping comparisons;
+- browser visual references plus reruns of the item 5.4 HarfRust/HarfBuzz structured CJK contract over the page-walk corpus;
 - CJK/icon payload, first-use, page-walk, cache, upload, GPU-memory, and batch-count reports at increasing coverage tiers.
 
 Vertical writing remains deferred. The milestone retains vertical-form source data and tests that it survives baking, but does not add vertical paragraph layout.

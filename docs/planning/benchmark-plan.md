@@ -3,12 +3,31 @@ type: Test Plan
 title: Benchmark plan
 description: Defines the interactive benchmark lab, headless runner, and reproducible performance, memory, payload, loader, baker, paragraph, and raster measurements.
 tags: [benchmarks, performance, payload]
-timestamp: 2026-07-24T14:01:29Z
+sources:
+  - id: "citation-1"
+    resource: "https://github.com/isaac-mason/js-physics-benchmarks"
+    title: "isaac-mason/js-physics-benchmarks"
+  - id: "citation-2"
+    resource: "https://www.w3.org/TR/css-fonts-4/"
+    title: "CSS Fonts Module Level 4"
+  - id: "citation-3"
+    resource: "https://www.w3.org/TR/css-text-3/"
+    title: "CSS Text Module Level 3"
+  - id: "citation-4"
+    resource: "https://github.com/drawcall-ai/vitexec"
+    title: "Vitexec"
+  - id: "citation-5"
+    resource: "../../README.md#benchmark-harness-wireframe"
+    title: "Repository benchmark-harness wireframe"
+
+generated:
+  by: "openai-codex/gpt-5"
+  at: "2026-07-26T06:56:23Z"
 ---
 
 # Benchmark plan
 
-Status: proposed  
+Status: accepted; implementation status is tracked by gate below
 Purpose: replace performance and payload estimates with reproducible evidence.
 
 ## Principles
@@ -38,6 +57,39 @@ The useful precedent is:
 
 The pmndrs/text lab extends that pattern with correctness hashes, image diffs, cold-start automation, raw sample export, GPU/device metadata, and font/raster byte accounting.
 
+Status key: ✅ specified or available · 🟡 partial or conditional · ⬜ not started
+
+| Harness gate | Status | Evidence required to advance |
+| --- | :---: | --- |
+| Canonical architecture and scenario contract | ✅ | This plan owns one target registry, one scenario registry, and one runner contract for interactive and headless surfaces. |
+| Portable baker target | ✅ | `packages/font-baker` and the app run immutable Inter 4.1 bytes through the direct-memory Wasm API with deterministic GLB evidence. |
+| Lab shell under `apps/benchmarks` | ✅ | The responsive Figma-backed shell, local component foundations, target/scenario selection, URL state, validation status, phase results, fixture input, and raw export run from the monorepo app tree. |
+| Headless product E2E | 🟡 | A browser CLI, Vitexec, and Playwright call the same strict registry execution module; synthetic, direct-baker, loader/Worker, HarfRust, paragraph, bidi/policy/uikit, and item-5.4 CJK universality lanes pass. Milestone 6 rendering remains open. |
+| Package-size lane | ✅ | Independent library-mode entries produce nonzero raw/minified/gzip/Brotli initial-core, Unicode 17 analysis, lazy-validator, runtime-host, runtime-Worker, baker, and shaper JavaScript sizes plus raw/gzip/Brotli Wasm. Rollup static closures exclude dynamic chunks; Worker and shaper JavaScript exclude separately measured Wasm assets. The record names its measurement host: same-host output stays exact, while every foreign-host entry must satisfy the shared complete reviewed budgets. Unicode analysis is 139,912 bytes minified and the Darwin arm64 shaper record is 30,630 bytes minified JavaScript plus 692,114 bytes optimized Wasm. |
+| Browser visual reference | 🟡 | Exact font/text/style/viewport inputs, Chromium 149.0.7827.55, Playwright 1.61.1, PNG hash, and regeneration command are pinned; renderer candidates and diffs land with rendering. |
+| Stable regression baselines | ⬜ | Correctness gates pass first; then reviewed raw samples establish noise-aware thresholds. |
+
+The lab is both the benchmark product and the canonical product-level test harness described by the [test ownership ladder](conformance-plan.md#test-layers-and-ownership). A scenario first validates semantic output, artifact hashes or schema, lifecycle cleanup, and visual output where relevant; only a passing sample may contribute performance numbers. Synthetic scenarios protect contracts and stress limits, but every user-facing milestone also needs a real-font scenario through public package surfaces. A separate demo, private test hook, or mocked adapter cannot close that end-to-end gate.
+
+The harness does not wait for a raster implementation to become useful. Its deterministic synthetic target first proves registry, runner, validation, URL-state, export, and interactive/automated parity. The existing portable font-baker target then contributes real cold/warm Wasm startup, source-to-GLB correctness, payload, memory, diagnostics, and deterministic-artifact scenarios without claiming that it renders text. Bitmap, MSDF, and Slug remain visible but capability-gated and unsupported until their real adapters exist; the UI never fills unavailable panels with fabricated metrics.
+
+The completed paragraph-policy scenario consumes the generated `paragraph-bidi-layout-v0.json` contract through the same registry used by the interactive and automated surfaces. Chromium 149 repeats two complete Amiri mixed-direction layouts, nine Inter line-policy layouts, and one current-uikit-shaped final layout three times with the same twelve hashes and 8,098-byte aggregate output. The completed item-5.4 scenario adds thirteen exact Noto CJK shaping cases and twelve exact layouts across four paragraphs; Chromium and GPU-enabled Vitexec both report the same composite hash and 10,622-byte output. Neither lane claims a rendered GPU frame before Milestone 6.
+
+## Application stack
+
+| Concern | Settled harness choice |
+| --- | --- |
+| Application | A Vite browser application under `apps/benchmarks`; it remains locally runnable and statically publishable. |
+| UI runtime | React 19 with the React Compiler enabled from the first implementation. |
+| Async React | Suspense-backed resources, `use`, transitions, and action-style mutations where they match the lifecycle. Async target/scenario loading is modeled as explicit resources rather than effect-driven fetch orchestration. |
+| Components | The project-owned custom shadcn-derived component set represented by the Figma design. Existing components and tokens are reused; generic generated replacements are not accepted. |
+| Source design | The node-specific [benchmark harness Figma wireframe routed from the repository README](../../README.md#benchmark-harness-wireframe) and its extracted component/token context. The checked-in image is orientation evidence, not a substitute for design context. |
+| Formatting and linting | Oxfmt and Oxlint are authoritative. Oxlint runs React Compiler analysis, Rules of Hooks, accessibility checks, and the Oxlint-compatible `react-you-might-not-need-an-effect` rules as errors; effect-only event logic uses `useEffectEvent` instead of render-time refs. |
+| Tests | Vitest covers contracts and reusable assertions; a committed erasable-TypeScript Vitexec probe exercises the live Vite runner; Playwright exercises fixed mobile viewports and remains reusable for representative headed/GPU lanes. Browser console errors fail the wrapper even when the Vitexec CLI exits successfully. |
+| TypeScript | Strict project references extending the repository base configuration. App and probe code remains erasable TypeScript unless a build-tool configuration explicitly requires otherwise. |
+
+The visual shell follows the Figma component hierarchy and token system. Semantic CSS variables feed Tailwind utilities and the project-owned shadcn-derived primitives, so Figma values remain centralized instead of becoming scattered literal utility values. Target adapters, scenarios, runner state, validation, and result schemas stay UI-independent. React components subscribe to those contracts; they do not own benchmark execution policy or create a second result model.
+
 ## Harness architecture
 
 One registry and runner definition feeds every human and automated surface:
@@ -60,7 +112,7 @@ flowchart TD
 
 The planned repository keeps target adapters, scenarios, harness policy, UI, bundle-size entries, and result schemas as separate modules under `apps/benchmarks`; the exact directory names are implementation details rather than a second architecture contract.
 
-The interactive application and headless runner import the same target registry, scenario registry, controls, validation rules, warmup policy, and result schema. A visually convenient browser path must not become a separate benchmark definition.
+The interactive application and headless runner import the same target registry, scenario registry, controls, validation rules, warmup policy, and result schema. Every measured target call receives its real zero-based sample index; warmups are excluded from that sequence. The V0 result envelope records its schema version and exact controls, and invalid counts fail before target loading. A visually convenient browser path must not become a separate benchmark definition.
 
 ### Target adapters
 
@@ -130,8 +182,11 @@ Frame rate alone is not an accepted metric. CPU phase timings, GPU timings where
 
 ### Automation and publication
 
-- Pull requests run deterministic smoke scenarios and schema/output validation.
-- Scheduled or manually approved runs capture longer browser/device matrices because noisy GPU results should not block every pull request.
+- Pull requests run deterministic smoke scenarios, schema/output validation, and public-surface assertions for capabilities the CI environment actually provides.
+- The benchmark app exposes its scenario drivers and pure assertion/result helpers to Vitest. Maintainers run committed erasable-TypeScript Vitexec probe files against the visible Vite app for stateful, visual, multi-frame, WebGL2, and WebGPU behavior that is not soundly represented by ordinary headless CI.
+- Vitexec and headed or remote Playwright runs reuse the same target/scenario contracts, not a second E2E corpus. A probe may import real app modules, drive input, await named lifecycle/GPU completion signals, inspect runtime state, and retain screenshots, traces, profiles, or heap evidence without adding a production debug API.
+- Canonical probes follow the [live-probe determinism contract](conformance-plan.md#live-probe-determinism-contract): no timer-based readiness, arbitrary frame counts, retries, mutable network inputs, test-order dependence, or screenshot-only assertions. Runner timeouts are failure watchdogs only.
+- Scheduled or manually approved runs capture longer browser/device matrices because noisy GPU results should not block every pull request. A headless or software-rendered pass never substitutes for a milestone's required hardware-GPU result.
 - The static lab can be published from the default branch after maintainers approve the workflow.
 - Committed summaries point to raw run artifacts and the exact commit/environment; hand-edited headline numbers are not authoritative.
 - The lab must operate locally without publication, and this planning branch does not authorize deployment.
@@ -141,13 +196,14 @@ Frame rate alone is not an accepted metric. CPU phase timings, GPU timings where
 Like the reference project, bundle sizes are produced from independent import entries. Required entries include:
 
 - browser core;
+- lazy font-asset validator;
 - HarfRust shaper JavaScript glue and Wasm;
 - runtime baker loader and bake Wasm;
 - each raster runtime;
 - each raster generator;
 - combined V1 application path.
 
-Report raw, minified, gzip, and Brotli JavaScript; raw, gzip, and Brotli Wasm; and any dynamically imported transcoder separately. The interactive lab reads generated result JSON rather than estimating sizes from the development bundle.
+Report raw, minified, gzip, and Brotli JavaScript; raw, gzip, and Brotli Wasm; and every substantial dynamically imported validator, Worker host, generator, or transcoder separately. The initial entry measurement follows only static chunk imports and never adds dynamic chunks merely because they are reachable. The interactive lab reads generated result JSON rather than estimating sizes from the development bundle.
 
 ## Benchmark environments
 
@@ -182,7 +238,7 @@ Initial environments should include one current Chromium desktop reference, one 
 | emoji/ZWJ list | supplementary decode and sequence substitution |
 | repeated private-use icon labels | simple cmap/advance and cache ceiling |
 | sparse standalone-SVG icon set | name lookup, selected/full-library paging, and residency |
-| CJK paragraph without spaces | line fitting, `locl`, variation sequences, and page working set |
+| CJK paragraph without spaces | pre-render line fitting, `locl`, supplementary clusters, and variation sequences |
 | CJK page-walk document | first-use fetch/upload, cache reuse, eviction, and page churn |
 
 Each workload has unique-text and repeated-text variants.
@@ -195,7 +251,7 @@ Each workload has unique-text and repeated-text variants.
 - Devanagari or another USE-heavy font;
 - emoji-capable font subset;
 - private-use icon font and manifest-backed standalone SVG set;
-- one pinned pan-CJK face exercised as small, medium, large, and complete coverage tiers;
+- one pinned pan-CJK face exercised as a complete shaping source in item 5.4 and as small, medium, large, and complete raster-coverage tiers in Milestone 12;
 - one font with class kerning and one with many explicit pairs.
 
 ## Shaper benchmarks
@@ -286,6 +342,12 @@ Measure:
 
 Loader scenarios compare baked-hit and Worker-fallback behavior against the declared loader contract. Current Three Flatland Slug may be measured as a labeled historical target, but it does not define correctness for loading, shaping, or visual output.
 
+### Pre-render CJK universality
+
+Item 5.4 is complete through one shared-registry CJK shaping and paragraph scenario before any raster work. It records exact source/reduced HarfRust and HarfBuzz hashes, 208 UTF-16 source units, 64 oracle glyphs, eight plans, one direct batch, four paragraph shapes, zero reshapes, 1,539,372 retained font bytes, 4,587,520 Wasm-memory bytes, and 1,539,372 / 654,925 / 514,547 raw/gzip/Brotli shaping-payload bytes. The scenario passes Node integration, Chromium 149 headless, and the committed GPU-enabled Vitexec lane. It reports no first draw, texture pages, upload, GPU memory, or residency because those outputs do not exist yet.
+
+The correctness gate includes language-tagged Chinese, Japanese, and Korean cases, supplementary Han, supported standardized/ideographic variation sequences, mixed Latin/CJK, and no-space paragraph reflow. Timings are admitted only after every structured shaping field and positioned-layout hash matches the pinned contract.
+
 ### Large-coverage paging
 
 CJK and icon benchmarks share one page-stress lane. The same pinned sources are baked at 256, 2,048, 8,192, and complete selected-glyph coverage, with the final tier determined by the fixture manifest rather than assumed to fit one atlas. Report:
@@ -301,7 +363,7 @@ CJK and icon benchmarks share one page-stress lane. The same pinned sources are 
 - cancellation and stale-generation behavior when text changes during preparation;
 - selected icon subset versus complete icon-library stress case.
 
-The synthetic maximum-cardinality contract fixture and small real CJK/icon fixtures run early to protect the format. Full-face generation, long page walks, and device residency measurements belong to scheduled/manual jobs and the combined CJK/icon milestone; they do not block the Latin-first implementation or V1 renderer gate.
+The synthetic maximum-cardinality contract fixture runs early to protect the format. Full-face raster generation, long page walks, and device residency measurements belong to scheduled/manual jobs and Milestone 12; they do not block the Latin-first V1 renderer gate. Item 5.4 consumes the complete CJK source for shaping but does not create these raster tiers.
 
 ## Raster benchmarks
 
@@ -422,11 +484,3 @@ The first benchmark milestone delivers the lab shell, target/scenario contracts,
 4. What are the size and registration costs of shaping-only reference data?
 5. Does the proposed shaped-buffer ABI cause copying or allocation that dominates short strings?
 6. What baseline will later compiled lookup and SIMD experiments be required to beat?
-
-# Citations
-
-[1] [isaac-mason/js-physics-benchmarks](https://github.com/isaac-mason/js-physics-benchmarks) — adapter/scenario browser-lab precedent, phase timing, capability gating, bundle-size generation, and static deployment.
-
-[2] [CSS Fonts Module Level 4](https://www.w3.org/TR/css-fonts-4/) — browser font selection, feature control, variations, and color-font behavior represented by the HTML reference target.
-
-[3] [CSS Text Module Level 3](https://www.w3.org/TR/css-text-3/) — browser inline-text processing, spacing, white-space, and line-breaking behavior represented by the HTML reference target.

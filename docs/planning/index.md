@@ -17,10 +17,17 @@
 
 ## Verification and tooling
 
+- [V0 version pins](version-contract.md) — exact toolchain, oracle, schema, validator, ABI, format, and generator versions.
+- [Portable font baker implementation evidence](font-baker-implementation.md) — package-owned Rust/Wasm/TypeScript core evidence; roadmap status remains canonical.
+- [Wasm allocator experiment](font-baker-allocator.md) — allocator candidates, representative workloads, and selection gate.
 - [Benchmark plan](benchmark-plan.md) — benchmark harness and performance evidence.
 - [Conformance plan](conformance-plan.md) — correctness oracles and acceptance gates.
 - [Tooling fixtures](tooling-fixtures.md) — reproducible sources, goldens, and validators.
 - [Autoresearch protocol](autoresearch.md) — controlled optimization workflow.
+
+## Shaping research
+
+- [Shaping compilation and execution research](shaping-compilation-research.md) — closed-corpus baking, semantic bytecode, per-font CPU/Wasm specialization, and WebGPU execution research.
 
 ## Rendering analysis
 
@@ -34,4 +41,3 @@
 
 - [Decision register](decision-register.md) — architectural decision status.
 - [Open questions](open-questions.md) — unresolved decisions and required experiments.
-

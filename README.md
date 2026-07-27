@@ -2,9 +2,9 @@
 
 `pmndrs/text` is a planned ESM-only, Three.js-first text system for JavaScript, WebGPU, and WebGL. It shapes Unicode text once, reflows it inside constrained regions, and renders the same positioned glyphs through an explicitly selected bitmap, MSDF, or Slug raster module. The MSDF engine uses MTSDF atlas encoding in V1.
 
-This repository is currently a design fixture. The public API, implementation order, and binary contracts are being reviewed before production code begins.
+The repository has completed the accepted contracts, benchmark foundation, portable font and bitmap baking, static project discovery, Node and Worker delivery, universal HarfRust shaping, and horizontal paragraph layout through the CJK universality gate. Rendering remains intentionally capability-gated; Milestone 6 adds the first bitmap frame. Use the [canonical roadmap](docs/roadmap/roadmap.md) for checkbox status and the [workspace package catalog](docs/packages/index.md) for usable package boundaries.
 
-The first compile-only package scaffold lives in `packages/text`. It establishes the inferred raster/baker capability types, the synchronous paragraph/constraint boundary, and their positive and negative type fixtures; it does not yet implement font loading, shaping, layout, baking, or rendering.
+The public runtime and Node tooling live in `packages/text`; the package-owned portable shaping-data baker lives in `packages/font-baker`; and the shared product, browser, Vitexec, and benchmark evidence lives in `apps/benchmarks`. The [font baker package reference](docs/packages/font-baker.md) records its current interface and verification evidence.
 
 ## The API we intend to ship
 
@@ -128,7 +128,7 @@ Select the preview to open the editable [benchmark harness wireframe in Figma](h
 
 The benchmark harness is the first executable product surface, not a reporting layer added afterward. Every later implementation enters through its target/scenario contracts, and the first bitmap frame is rendered in that harness. Bitmap is the easiest end-to-end proof, not the eventual universal default. The package does not ship until bitmap, MSDF, and Slug pass their gates. See the [canonical roadmap](docs/roadmap/roadmap.md) for dependencies, deliverables, issue-sized work, and exit criteria.
 
-After that Latin-first V1 gate, the first additive milestone lands CJK and icons together over the paging contract already protected by V0 fixtures; color emoji remains the following independent milestone.
+After that Latin-first V1 gate, the first additive milestone expands the already-proven horizontal CJK shaping/layout fixture into large-coverage CJK and icon raster paging; color emoji remains the following independent milestone.
 
 ### uikit and layout integrations
 
@@ -165,7 +165,7 @@ The [renderer capability matrix](docs/planning/renderer-capabilities.md) records
 
 Supporting evidence is intentionally outside that path: [RESEARCH.md](RESEARCH.md) is the attributed bibliography; the [decision register](docs/planning/decision-register.md) records proposed choices; [open questions](docs/planning/open-questions.md) records unresolved blockers; and the benchmark, conformance, payload, compression, and Slug audit documents explain how claims will be verified.
 
-The planning corpus under [`docs`](docs/index.md) is an [Open Knowledge Format v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle: reserved indexes provide progressive disclosure, frontmatter and links make concepts portable to agents, and Diátaxis keeps each page focused on a reader task.
+The knowledge corpus under [`docs`](docs/index.md) is an [Open Knowledge Format v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle: reserved indexes provide progressive disclosure, while frontmatter provenance and links make product documentation, plans, decisions, specifications, and package references portable to agents. Diátaxis informs reader-facing documentation without forcing internal project artifacts into a four-part template.
 
 ## Work locally
 
@@ -175,4 +175,24 @@ pnpm install
 pnpm check
 ```
 
-Use mise to install the pinned toolchains, or supply compatible Node.js and Rust toolchains through the platform tools you already use.
+Use mise to install the exact root Node.js, pnpm, and stable Rust pins. Those canonical versions are required; do not substitute merely compatible local toolchains. The optional coverage-guided font-baker fuzzer is isolated
+under `packages/font-baker/fuzz`; its nested mise configuration provisions the exact dated nightly and
+`cargo-fuzz` release required by that workspace when `fuzz:rust` runs.
+
+Run the Figma-backed benchmark product from the monorepo app tree:
+
+```sh
+pnpm benchmarks
+```
+
+The pinned [GitHub Actions workflow](.github/workflows/ci.yml) runs the ordinary `pnpm check` path on pull requests and `main`. This deterministic CI-safe lane includes headless Chromium product scenarios but makes no hardware-GPU claim. The maintainer-local browser lane is intentionally explicit because it starts real GPU-enabled browsers:
+
+```sh
+pnpm --filter @pmndrs/text-benchmarks test:live
+```
+
+Run the package-owned coverage-guided Rust fuzzer locally with:
+
+```sh
+pnpm --filter @pmndrs/text-font-baker fuzz:rust
+```

@@ -3,7 +3,26 @@ type: Budget Model
 title: Font payload budget
 description: Separates shaping bytes, raster records, transport bytes, decoded textures, and GPU residency.
 tags: [payload, memory, fonts]
-timestamp: 2026-07-24T14:01:29Z
+sources:
+  - id: "citation-1"
+    resource: "https://github.com/thejustinwalsh/three-flatland/tree/c596ac2313e33cace825fe197a6d730269019175"
+    title: "Three Flatland main at the measured revision"
+  - id: "citation-2"
+    resource: "https://github.com/thejustinwalsh/three-flatland/tree/2935a89fcd9999e8a8b3d3b733f7f7302285cd60"
+    title: "Three Flatland uikit fork at the measured revision"
+  - id: "citation-3-1"
+    resource: "https://github.com/thejustinwalsh/three-flatland/blob/2935a89fcd9999e8a8b3d3b733f7f7302285cd60/planning/superpowers/plans/svg-bake-pipeline.md"
+    title: "SVG bake pipeline"
+  - id: "citation-3-2"
+    resource: "https://github.com/thejustinwalsh/three-flatland/blob/2935a89fcd9999e8a8b3d3b733f7f7302285cd60/planning/perf/glyph-paging-design.md"
+    title: "glyph paging design"
+  - id: "citation-4"
+    resource: "gpu-compression.md"
+    title: "GPU compression design"
+
+generated:
+  by: openai-codex/gpt-5.6
+  at: "2026-07-26T05:40:22Z"
 ---
 
 # Font payload budget
@@ -38,17 +57,18 @@ Measured source revisions:
 - Three Flatland `main`: `c596ac2313e33cace825fe197a6d730269019175`;
 - Three Flatland `feat/uikit-fork`: `2935a89fcd9999e8a8b3d3b733f7f7302285cd60`.
 
-Measurements read the checked-in TTF/GLB bytes and their accessor ranges directly. Compression figures use gzip and Brotli quality 11 over the complete file. Derived Slug GPU figures apply the texture formats and power-of-two packing rules in the reviewed fork; modeled atlas figures are identified separately.
+Measurements read the checked-in TTF/GLB bytes and their accessor ranges directly. Legacy/Latin fixture compression figures use gzip and Brotli quality 11 over the complete file; the full 16 MiB Noto lane uses explicit gzip 9 and Brotli 9 to keep generation memory bounded. Derived Slug GPU figures apply the texture formats and power-of-two packing rules in the reviewed fork; modeled atlas figures are identified separately.
 
 | Fixture | Kind | Coverage |
 | --- | --- | ---: |
-| Inter Regular | UI font | 2,871 source; 907 legacy Slug glyphs |
+| Inter Regular 4.1 | UI font | 2,937 source; 907 legacy Slug glyphs |
+| Noto Sans CJK JP 2.004 | Shaping/paragraph conformance | 65,535 source glyphs; no raster |
 | Font Awesome Solid | Icon font | 1,403 source; 350 legacy Slug glyphs |
 | Lucide | SVG icons | 1,594 baked shapes |
 
 Inter exposes the difference between source/shaping coverage and a smaller raster artifact. Font Awesome combines trivial PUA shaping with substantial outline complexity. The checked-in Lucide bake is a realistic full-library Slug stress case.
 
-The first integration fixture remains one pinned Inter file. Font Awesome and Lucide are payload/tooling fixtures; they do not expand the first vertical slice into automatic icon discovery or a second shaping system.
+The first rendering fixture remains pinned Inter. Noto is the pre-render CJK shaping/paragraph conformance fixture; Font Awesome and Lucide are payload/tooling fixtures and do not expand the first rendering slice into automatic icon discovery.
 
 ## Shared glyph and shaping data
 
@@ -56,17 +76,19 @@ V0 uses the closed [`opentype-sfnt-harfrust-v0`](shaping-data-contract.md) profi
 
 | Fixture | Full source font | Canonical shaping SFNT | Dense extents + availability | V0 raw shaping payload |
 | --- | ---: | ---: | ---: | ---: |
-| Inter, 2,871 glyphs | 324,820 B | 145,344 B | 23,327 B | 168,671 B (164.7 KiB) |
+| Inter 4.1, 2,937 glyphs | 411,640 B | 147,192 B | 23,864 B | 171,056 B (167.0 KiB) |
 | Font Awesome, 1,403 glyphs | 426,112 B | 24,624 B | 11,400 B | 36,024 B (35.2 KiB) |
+| Noto Sans CJK JP 2.004, 65,535 glyphs | 16,467,736 B | 1,006,900 B | 532,472 B | 1,539,372 B (1.47 MiB) |
 
-Transport measurements for the source and earlier shaping-only experiment remain compression proxies; the canonical V0 SFNT plus font-function views must be recompressed by the first baker:
+The Inter and Noto rows measure the canonical V0 SFNT plus font-function views outside the portable Wasm core. Font Awesome remains the earlier shaping-only proxy until that licensed fixture enters the canonical baker lane:
 
-| Fixture | Full source gzip | Full source Brotli | Earlier shaping-only gzip | Earlier shaping-only Brotli |
+| Fixture | Full source gzip | Full source Brotli | V0/proxy shaping gzip | V0/proxy shaping Brotli |
 | --- | ---: | ---: | ---: | ---: |
-| Inter | 153,302 B | 122,540 B | 58,610 B | 44,006 B |
+| Inter 4.1 | 200,540 B | 157,517 B | 75,789 B | 55,586 B |
 | Font Awesome | 172,729 B | 147,594 B | 11,234 B | 8,017 B |
+| Noto Sans CJK JP 2.004 (gzip 9 / Brotli 9) | 13,629,545 B | 12,365,597 B | 654,925 B | 514,547 B |
 
-The canonical SFNT figures are reconstructed directly from the pinned source table directories using the V0 whitelist. Dense extents and the one-bit-per-glyph availability view are exact contract costs. Sample shaping-only `hb-shape` outputs matched, but the finalized reconstruction and three-way corpus still require fixture proof. Every bake report lists directory, per-table, extents, and availability bytes.
+The canonical SFNT figures are reconstructed directly from the pinned source table directories using the V0 whitelist. Dense extents and the one-bit-per-glyph availability view are exact contract costs. Inter and Noto prove their complete checked-in HarfRust corpora are identical between source and reduced SFNT; Noto additionally agrees with HarfBuzz 13 on every field. Every bake report lists directory, per-table, extents, and availability bytes. The complete Noto core GLB is 1,540,460 raw bytes, 655,920 gzip-9 bytes, and 515,421 Brotli-9 bytes.
 
 Lucide is not a font and has no shaping payload. Its shared records are icon identity, view box, fill/paint, and shape indexes. The existing artifact spends 237,704 B on GLB JSON, largely for named icon metadata; the pmndrs format should measure a compact binary name/index representation rather than inherit that JSON cost by default.
 
@@ -125,9 +147,9 @@ Relevant prior art:
 - [Glyph paging design](https://github.com/thejustinwalsh/three-flatland/blob/2935a89fcd9999e8a8b3d3b733f7f7302285cd60/planning/perf/glyph-paging-design.md)
 - [uikit Lucide package](https://github.com/thejustinwalsh/three-flatland/tree/2935a89fcd9999e8a8b3d3b733f7f7302285cd60/packages/uikit-lucide)
 
-## Modeled bitmap and MSDF budgets
+## Measured bitmap and modeled MSDF budgets
 
-These are capacity estimates, not measured baker outputs. They make proposed defaults and fixture expectations reviewable before implementation. Exact atlas dimensions, occupancy, edge padding, distance range, and transport compression become benchmark results as soon as the generators exist.
+The Inter 16 ppem bitmap row is now an exact generator result. Remaining rows are capacity estimates and stay labeled as such. Exact MSDF atlas dimensions, occupancy, distance range, and transport compression become benchmark results only when that generator exists.
 
 Assumptions:
 
@@ -148,6 +170,23 @@ The distance-field ranges span a 1024² to 2048×1024 page for the font fixtures
 
 Bitmap strikes scale independently. A `[16, 24, 32]` R8 set is not “one 32 px atlas times three”: smaller strikes pack into smaller pages. The baker must report every strike and page separately. RGBA color emoji must likewise be reported separately from grayscale glyph strikes.
 
+The canonical full-face Inter 4.1 bitmap at 16 ppem measures:
+
+| Component | Exact result |
+| --- | ---: |
+| Dense records | 58,740 B; SHA-256 `8baad38084b89f93756ee70c994e4e0d30d6854b1c001af6618e0be413a5f60d` |
+| Present / absent glyphs | 2,915 / 22 |
+| R8 page | 1024 × 679 = 695,296 GPU B |
+| Lossless KTX2 | 695,444 B |
+| Embedded raster GLB | 755,064 B |
+| External raster index GLB | 59,744 B |
+| External index + page | 755,188 B |
+| Combined core + embedded raster GLB | 927,148 B |
+| Core with external directory | 172,476 B |
+| Optimized bitmap baker Wasm | 657,942 B raw; 238,727 B gzip; 182,925 B Brotli q11 |
+
+The embedded and external forms have byte-identical records and KTX2 texels. External packaging costs 124 additional serialized bytes for the authenticated URI/length/hash directory.
+
 Useful exact formulas:
 
 ```text
@@ -160,13 +199,13 @@ Mipmaps add approximately one third to the base texture size when a full chain i
 
 ## Planning totals
 
-For the non-subsetted 2,871-glyph Inter V0 face, the shared cost is fixed while raster textures require first-generator measurement:
+For the non-subsetted 2,937-glyph Inter V0 face, the shared cost is fixed and the bitmap generator now supplies its first exact measurement:
 
 | Selected raster | Shared raw baseline | Raster GPU storage | Notes |
 | --- | ---: | ---: | --- |
-| Generated bitmap, one strike | 164.7 KiB | generator report required | 20 B × 2,871 = 57,420 B records. |
-| MSDF | 164.7 KiB | generator report required | MTSDF RGBA8; 57,420 B records; legacy subset was modeled at 4–8 MiB. |
-| Slug | 164.7 KiB | generator report required | 40 B × 2,871 = 114,840 B records; legacy subset derived near 2 MiB. |
+| Generated bitmap, 16 ppem | 167.0 KiB | 695,296 B | 58,740 B records; 755,064 B embedded companion GLB. |
+| MSDF | 167.0 KiB | generator report required | MTSDF RGBA8; 58,740 B records; legacy subset was modeled at 4–8 MiB. |
+| Slug | 167.0 KiB | generator report required | 40 B × 2,937 = 117,480 B records; legacy subset derived near 2 MiB. |
 
 For the non-subsetted 1,403-glyph Font Awesome V0 face:
 
@@ -186,7 +225,7 @@ Dense records scale predictably even when page payloads are sparse or independen
 | MSDF | 1,310,700 | 1.25 MiB | `20 × 65,535`; independent of MTSDF atlas residency. |
 | Slug | 2,621,400 | 2.50 MiB | `40 × 65,535`; independent of curve/header/reference page residency. |
 
-These are metadata envelopes, not estimates of CJK texture cost. The combined CJK/icon milestone reports the companion index separately from embedded/external page bytes, first-layout bytes fetched, peak/resident GPU bytes, page churn, and complete-library stress payload. A selected icon subset and complete icon library are always separate results.
+These are metadata envelopes, not estimates of CJK texture cost. Item 5.4 reports only the complete pan-CJK shaping source, retained data, Wasm memory, output, and transport sizes; it creates no texture or residency result. Milestone 12 later reports the companion index separately from embedded/external page bytes, first-layout bytes fetched, peak/resident GPU bytes, page churn, and complete-library stress payload. A selected icon subset and complete icon library are always separate results.
 
 These columns are intentionally not added into a fake single “download size.” Shared raw bytes, compressed transport, and GPU allocations have different lifetimes and compression behavior.
 
@@ -235,13 +274,3 @@ The benchmark corpus must eventually produce this report for:
 No modeled number becomes a product claim until a checked-in generator, descriptor, source hash, visual reference, and raw report reproduce it.
 
 Plain RGB MSDF is not part of the V1 totals. A later compression experiment may compare an RGB-capable native block format against the MTSDF baseline, including transport bytes, GPU residency, visual error, effect loss, and extra batch/module complexity. It becomes a supported encoding only if that complete comparison proves a material win.
-
-# Citations
-
-[1] [Three Flatland main at the measured revision](https://github.com/thejustinwalsh/three-flatland/tree/c596ac2313e33cace825fe197a6d730269019175) — measured source font and legacy Slug artifacts.
-
-[2] [Three Flatland uikit fork at the measured revision](https://github.com/thejustinwalsh/three-flatland/tree/2935a89fcd9999e8a8b3d3b733f7f7302285cd60) — optimized Slug texture layout and Lucide SVG artifact.
-
-[3] [SVG bake pipeline](https://github.com/thejustinwalsh/three-flatland/blob/2935a89fcd9999e8a8b3d3b733f7f7302285cd60/planning/superpowers/plans/svg-bake-pipeline.md) and [glyph paging design](https://github.com/thejustinwalsh/three-flatland/blob/2935a89fcd9999e8a8b3d3b733f7f7302285cd60/planning/perf/glyph-paging-design.md) — prior artifact structure and paging assumptions.
-
-[4] [GPU compression design](gpu-compression.md) — repository-local transport/GPU byte model and quality gates.

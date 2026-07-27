@@ -3,7 +3,26 @@ type: Data Contract
 title: Raster data contract V0
 description: Defines packaging-neutral bitmap, MTSDF-backed MSDF, and Slug raster records and GPU resources.
 tags: [data, bitmap, mtsdf, slug, gpu]
-timestamp: 2026-07-24T14:01:29Z
+sources:
+  - id: "citation-1"
+    resource: "https://www.rfc-editor.org/rfc/rfc8785.html"
+    title: "RFC 8785: JSON Canonicalization Scheme"
+  - id: "citation-2"
+    resource: "https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html"
+    title: "glTF 2.0 specification"
+  - id: "citation-3"
+    resource: "https://registry.khronos.org/KTX/specs/2.0/ktxspec.v2.html"
+    title: "KTX 2.0 specification"
+  - id: "citation-4"
+    resource: "https://gpuweb.github.io/gpuweb/"
+    title: "WebGPU specification"
+  - id: "citation-5"
+    resource: "https://github.com/Chlumsky/msdfgen"
+    title: "msdfgen"
+
+generated:
+  by: "openai-codex/gpt-5"
+  at: "2026-07-26T02:40:00Z"
 ---
 
 # Raster data contract V0
@@ -43,7 +62,8 @@ interface RasterReference {
   version: number
   source:
     | { type: 'embedded' }
-    | { type: 'external'; uri?: string; artifactHash?: string }
+    | { type: 'external'; uri: string; artifactHash: string }
+    | { type: 'external'; artifactHash?: string }
 }
 ```
 
@@ -60,7 +80,7 @@ interface RasterReference {
 
 The package supplies the actual `descriptor`. It MUST include every option that changes required payload content and its generator compatibility version; it MUST contain only JSON values and MUST reject non-finite numbers before canonicalization. For bitmap it includes the complete canonical strike tuple. Object member order in source code is irrelevant because RFC 8785 defines the hashed serialization. Callers do not author keys. A baker, runtime module, and static source analyzer given the same definition MUST derive the same key. `kind` is an open module-owned identifier; core does not enumerate first-party or external raster techniques. `extension` names the companion glTF extension that defines that raster's payload, and `version` selects that companion contract. The three companion extensions below are the packages currently planned by this project, not a closed registry.
 
-An external `uri` uses RFC 3986 URI syntax and glTF's relative-URI resolution rules, but remains a custom extension field rather than a core glTF resource property. If `uri` is absent, the application must provide the raster through its resolver API. `artifactHash`, when present, is lowercase SHA-256 of the complete external artifact. It is REQUIRED when the resolved artifact is cross-origin and RECOMMENDED for every external artifact. glTF `extensionsRequired`, not a duplicated raster flag, determines whether unsupported embedded extensions invalidate a combined asset.
+An external `uri` uses RFC 3986 URI syntax and glTF's relative-URI resolution rules, but remains a custom extension field rather than a core glTF resource property. Every URI-addressed artifact carries a lowercase SHA-256 `artifactHash` over the complete external artifact and is authenticated before registration. If `uri` is absent, the application must provide the raster through its resolver API; a hash may still be supplied to authenticate those bytes. glTF `extensionsRequired`, not a duplicated raster flag, determines whether unsupported embedded extensions invalidate a combined asset.
 
 A combined GLB may embed at most one raster for a given companion extension name because a glTF root has only one value for each extension key. Additional raster definitions using that extension MUST be external. Registration verifies that the embedded extension root's `rasterKey` equals the elected directory entry; an unrelated root object never satisfies an embedded reference.
 
@@ -87,6 +107,7 @@ interface RasterBindingV0 {
 - Shared advances, kerning, clusters, and line metrics never occur in a raster.
 - Record buffer views are aligned to their widest member, tightly packed, and have exactly `glyphCount × recordStride` bytes. Bitmap/distance-field records are two-byte aligned with 20-byte stride; Slug records are four-byte aligned with 40-byte stride.
 - Extension-owned record and texture buffer views MUST omit core glTF `byteStride` and `target`; their layout is defined only by the companion extension.
+- Every integer property that references a glTF buffer view MUST be named exactly `bufferView` or end in `BufferView`. The generic Node/Worker composer uses this convention to range-check and rebase opaque package-owned extension JSON without maintaining a closed extension registry.
 - Texture resources declare dimensions, mip count, exact GPU format, encoding, and an embedded or independently addressable KTX2 source.
 
 ## Texture resource
@@ -191,7 +212,7 @@ RGBA8 base level = Σ(width × height × 4)
 full mip chain ≈ base × 4/3
 ```
 
-For the non-subsetted V0 fixtures, records are 57,420 bytes for 2,871-glyph Inter and 28,060 bytes for 1,403-glyph Font Awesome. A 1024² R8 page is 1,048,576 GPU bytes before mips; actual full-face page counts remain generator outputs.
+For the non-subsetted V0 fixtures, records are 58,740 bytes for the pinned 2,937-glyph Inter 4.1 face and 28,060 bytes for 1,403-glyph Font Awesome. A 1024² R8 page is 1,048,576 GPU bytes before mips; actual full-face page counts remain generator outputs.
 
 ## `PMNDRS_font_distance_field` V0
 
@@ -223,7 +244,7 @@ RGBA8 base level = Σ(width × height × 4)
 full mip chain ≈ base × 4/3
 ```
 
-The older 4–8 MiB capacity estimates covered the 907/350-glyph raster subsets, not the non-subsetted V0 faces. V0 records are exactly 57,420 B for Inter and 28,060 B for Font Awesome; full-face texture bytes are intentionally reported by the generator rather than extrapolated from an invalid coverage count.
+The older 4–8 MiB capacity estimates covered the 907/350-glyph raster subsets, not the non-subsetted V0 faces. V0 records are exactly 58,740 B for pinned Inter 4.1 and 28,060 B for Font Awesome; full-face texture bytes are generator outputs rather than extrapolations from an invalid coverage count.
 
 ## `PMNDRS_font_slug` V0
 
@@ -361,15 +382,3 @@ Every raster format requires golden-byte, range, and GPU-readback fixtures cover
 - misaligned bitmap/distance-field two-byte records and Slug four-byte records;
 - Slug header/reference overflow, page-boundary, row-padding, and exact address reconstruction;
 - Node/Worker bake parity for records and decoded texture pixels.
-
-# Citations
-
-[1] [RFC 8785: JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785.html) — deterministic raster descriptor serialization.
-
-[2] [glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) — extension, GLB, buffer-view, alignment, and URI rules.
-
-[3] [KTX 2.0 specification](https://registry.khronos.org/KTX/specs/2.0/ktxspec.v2.html) — texture container, format, and mip-level validation.
-
-[4] [WebGPU specification](https://gpuweb.github.io/gpuweb/) — texture format features, device limits, and upload constraints.
-
-[5] [msdfgen](https://github.com/Chlumsky/msdfgen) — MSDF/MTSDF channel semantics and generator reference.

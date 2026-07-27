@@ -3,7 +3,26 @@ type: glTF Extension Specification
 title: PMNDRS_font
 description: Defines the core font, shaping payload, metrics, provenance, and raster directory extension.
 tags: [gltf, extension, font, shaping]
-timestamp: 2026-07-24T14:01:29Z
+sources:
+  - id: "citation-1"
+    resource: "https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html"
+    title: "glTF 2.0 specification"
+  - id: "citation-2"
+    resource: "../../shaping-data-contract.md"
+    title: "V0 shaping data contract"
+  - id: "citation-3"
+    resource: "../../raster-data-contract.md"
+    title: "V0 raster data contract"
+  - id: "citation-4-1"
+    resource: "../../api-shapes.md"
+    title: "Runtime and bake API fixture"
+  - id: "citation-4-2"
+    resource: "../../payload-budget.md"
+    title: "payload budget"
+
+generated:
+  by: "openai-codex/gpt-5"
+  at: "2026-07-26T02:40:00Z"
 ---
 
 <!-- Copyright 2026 Poimandres contributors. SPDX-License-Identifier: CC-BY-4.0 -->
@@ -50,7 +69,7 @@ This extension does not define text strings, paragraph layout, line breaking, ra
         }
       },
       "metrics": {
-        "glyphCount": 2871,
+        "glyphCount": 2937,
         "glyphIdWidth": 16,
         "unitsPerEm": 2048,
         "ascender": 1984,
@@ -63,7 +82,7 @@ This extension does not define text strings, paragraph layout, line breaking, ra
         "bakerVersion": "0.1.0",
         "harfrustVersion": "0.12.0",
         "harfbuzzReferenceVersion": "13.0.0",
-        "unicodeVersion": "17.0"
+        "unicodeVersion": "17.0.0"
       },
       "rasters": [
         {
@@ -90,7 +109,7 @@ This extension does not define text strings, paragraph layout, line breaking, ra
 
 `shaping.bufferView` MUST contain exactly one static, single-face SFNT conforming to profile `opentype-sfnt-harfrust-v0`.
 
-Required tables are `head`, `maxp`, `cmap`, `hhea`, `hmtx`, and `OS/2`. `GDEF`, `GSUB`, `GPOS`, and `kern` are retained when present. The profile excludes outlines, vertical-only tables, hinting, font-authored raster data, variable-font tables, AAT, Graphite, collections, WOFF, and WOFF2.
+Required tables are `head`, `maxp`, `cmap`, `hhea`, `hmtx`, and `OS/2`. `GDEF`, `GSUB`, `GPOS`, `kern`, `BASE`, `vhea`, `vmtx`, and `VORG` are retained when present. The profile does not fabricate optional tables and excludes outlines, hinting, font-authored raster data, variable-font tables, AAT, Graphite, collections, WOFF, and WOFF2. Retaining vertical-form source data does not enable vertical shaping or paragraph layout.
 
 `fontFunctions` preserves the optional glyph-extents query used by HarfRust fallback positioning after outlines are removed. `glyphExtentsBufferView` contains one dense 8-byte `(xMin, yMin, xMax, yMax)` i16 record per glyph. `glyphExtentsAvailabilityBufferView` contains exactly one bit per glyph, rounded up to a byte; a clear bit makes the adapter return no extents and requires a zeroed record. HarfRust 0.12.0 exposes no contour-point callback, so Anchor Format 2 point records are not serialized.
 
@@ -108,7 +127,7 @@ When `OS/2.fsSelection.USE_TYPO_METRICS` is set, the serialized line metrics com
 
 Raster keys MUST be unique within the font. A key is the lowercase deterministic SHA-256 over the raster kind, companion extension/version, and canonical package-owned descriptor defined by the [raster contract](../../raster-data-contract.md); it is not a caller-authored alias. `kind` is an open identifier owned by the raster module. `extension` names the companion glTF extension that defines its data, and `version` selects that companion contract. Core consumers MUST NOT reject an otherwise valid font merely because the directory contains an unknown optional raster kind. `rasterKey`, `kind`, `extension`, and `version` MUST agree with an attached raster that the consumer elects to load.
 
-An embedded raster is stored at the root `extensions` object in the same GLB. Because glTF permits one root value per extension name, a combined GLB MUST NOT embed more than one raster using the same companion extension; additional entries using that extension MUST be external. The embedded root's reciprocal `rasterKey` MUST equal its elected directory entry. An external source URI resolves relative to the core GLB. When an external source omits `uri`, the application supplies bytes through its resolver. `artifactHash`, when present, is lowercase SHA-256 over the complete external artifact; it is REQUIRED for cross-origin artifacts and RECOMMENDED for all external artifacts.
+An embedded raster is stored at the root `extensions` object in the same GLB. Because glTF permits one root value per extension name, a combined GLB MUST NOT embed more than one raster using the same companion extension; additional entries using that extension MUST be external. The embedded root's reciprocal `rasterKey` MUST equal its elected directory entry. An external source URI resolves relative to the core GLB and MUST carry `artifactHash`, the lowercase SHA-256 over the complete external artifact. When an external source omits `uri`, the application supplies bytes through its resolver and MAY still declare a hash for authentication.
 
 Companion extensions own a logical raster-page directory. Page payloads may remain embedded in the companion asset or use independently addressed URI, byte-length, and SHA-256 sources relative to that companion asset. Core does not interpret those pages or equate their indexes with GPU binding state.
 
@@ -127,13 +146,3 @@ The extension adds a `PMNDRS_font` object to the root glTF `extensions` object. 
 - [`pmndrs/text`](https://github.com/pmndrs/text) — reference implementation in development.
 
 Three Flatland Slug is prior art for baked GLB font delivery but does not implement this extension.
-
-# Citations
-
-[1] [glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) — extension placement, buffers, buffer views, URI resolution, and required-extension behavior.
-
-[2] [V0 shaping data contract](../../shaping-data-contract.md) — normative shaping profile, metrics, identity hash, and validation rules.
-
-[3] [V0 raster data contract](../../raster-data-contract.md) — raster directory, keys, reciprocal bindings, and packaging rules.
-
-[4] [Runtime and bake API fixture](../../api-shapes.md) and [payload budget](../../payload-budget.md) — repository-local loading contract and byte accounting.

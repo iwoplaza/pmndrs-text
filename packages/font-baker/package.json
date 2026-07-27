@@ -1,0 +1,55 @@
+{
+  "name": "@pmndrs/text-font-baker",
+  "version": "0.0.0",
+  "private": true,
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./validate": {
+      "types": "./dist/validator.d.ts",
+      "import": "./dist/validator.js"
+    },
+    "./contract": {
+      "types": "./dist/contract.d.ts",
+      "import": "./dist/contract.js"
+    },
+    "./wasm-url": {
+      "types": "./dist/wasm-url.d.ts",
+      "import": "./dist/wasm-url.js"
+    },
+    "./font-baker.wasm": "./dist/font_baker.wasm",
+    "./abi.json": "./dist/font-baker-abi-v0.json",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "node ./scripts/build.mjs",
+    "build:rust": "cargo build --manifest-path rust/Cargo.toml --target wasm32-unknown-unknown --release --locked --no-default-features",
+    "generate:abi": "cargo run --manifest-path rust/Cargo.toml --bin generate-abi --locked --quiet",
+    "generate:shaping-oracle": "cargo run --manifest-path rust/Cargo.toml --bin generate-shaping-oracle --features oracle --locked --quiet --",
+    "inspect:font-fixture": "cargo run --manifest-path rust/Cargo.toml --bin inspect-font-fixture --features oracle --locked --quiet --",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm build && pnpm test:unit && pnpm test:integration && pnpm test:fuzz-smoke && pnpm test:e2e",
+    "test:unit": "cargo test --manifest-path rust/Cargo.toml --lib --locked",
+    "test:integration": "cargo test --manifest-path rust/Cargo.toml --tests --locked && node --test tests/integration/*.test.mjs",
+    "test:fuzz-smoke": "node --test tests/fuzz/*.test.mjs",
+    "test:e2e": "node --test tests/e2e/*.test.mjs",
+    "fuzz:validator": "pnpm build && node scripts/fuzz-validator.mjs",
+    "fuzz:rust": "node scripts/fuzz-rust.mjs",
+    "fuzz:rust-mutation": "node scripts/fuzz-rust-mutation.mjs"
+  },
+  "dependencies": {
+    "ajv": "6.15.0",
+    "gltf-validator": "2.0.0-dev.3.10"
+  },
+  "devDependencies": {
+    "binaryen": "129.0.0",
+    "typescript": "7.0.2"
+  }
+}

@@ -3,7 +3,9 @@ type: Question Register
 title: Open questions
 description: Tracks unresolved decisions, blockers, and prototype questions for the contracts and roadmap.
 tags: [questions, governance, blockers]
-timestamp: 2026-07-24T14:01:29Z
+generated:
+  by: openai-codex/gpt-5.6
+  at: "2026-07-25T18:00:06Z"
 ---
 
 # Open questions
@@ -12,10 +14,10 @@ Status: unresolved unless marked otherwise.
 
 ## Blocking before Phase 1
 
-1. Which exact HarfRust, HarfBuzz, and Unicode versions become the first reference set?
-2. Which authorized Poimandres maintainer will submit the prepared [`PMNDRS` prefix request](gltf-extension-registration.md), and should the registry identify the project as `Poimandres` or `pmndrs`?
-3. Which source-font licenses permit checked-in fixtures and generated derivatives in CI?
-4. Which browsers and GPU APIs define the initial support matrix?
+- [x] Pin HarfRust `0.12.0`, HarfBuzz `13.0.0`, and Unicode `17.0.0` in the [version contract](version-contract.md).
+- [ ] Identify the authorized Poimandres maintainer who will submit the prepared [`PMNDRS` prefix request](gltf-extension-registration.md), and whether the registry should identify the project as `Poimandres` or `pmndrs`.
+- [ ] Confirm which source-font licenses permit checked-in fixtures and generated derivatives in CI.
+- [ ] Fix the initial browser and GPU API support matrix.
 
 ## Baker
 
@@ -34,6 +36,8 @@ Status: unresolved unless marked otherwise.
 3. Should independently fetched raster artifacts support progressive range requests beyond whole-resource loading?
 
 ## Shaper and compiled data
+
+The [shaping compilation research note](shaping-compilation-research.md) owns the candidate architecture, break-even model, research ladder, and acceptance matrix. This register retains only the unresolved decisions.
 
 1. What internal HarfRust boundary can accept baked cmap, metrics, classes, and lookup execution without a long-lived fork?
 2. Which HarfRust behaviors rely on source table structure rather than lookup semantics?
@@ -75,4 +79,4 @@ V1 owns UAX #9 bidi analysis/reordering, UAX #14 break opportunities, UAX #24 sc
 - Upload raw and compressed atlas candidates through target WebGL/WebGPU paths.
 - Bake one font natively and in a worker, comparing deterministic sections.
 - Reflow a Latin and Arabic paragraph while recording Wasm call counts.
-- Compare shaping-only OpenType versus one compiled lookup representation for size and speed.
+- Compare shaping-only OpenType versus one semantic-bytecode and one specialized CPU/Wasm lowering for total portfolio size, speed, and layout-ready latency.

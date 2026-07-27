@@ -1,5 +1,5 @@
 ---
-okf_version: "0.1"
+okf_version: "0.2"
 ---
 
 # pmndrs/text knowledge bundle
@@ -21,6 +21,9 @@ okf_version: "0.1"
 
 ## Verification and evidence
 
+- [Workspace package catalog](packages/index.md) — enforced package roles, boundaries, status, and source-freshness digests.
+- [Portable font baker implementation evidence](planning/font-baker-implementation.md) — package-owned Rust/Wasm/TypeScript core evidence.
+- [Wasm allocator experiment](planning/font-baker-allocator.md) — evidence plan for the ABI-private Wasm allocator choice.
 - [Benchmark plan](planning/benchmark-plan.md) — interactive/headless harness, scenarios, metrics, and reports.
 - [Conformance plan](planning/conformance-plan.md) — shaping, layout, visual, binary, and runtime correctness gates.
 - [Tooling fixtures](planning/tooling-fixtures.md) — pinned sources, goldens, malformed inputs, and package tests.
@@ -29,8 +32,10 @@ okf_version: "0.1"
 
 ## Research and governance
 
+- [Engineering house style](engineering/code-style.md) — canonical Rust, TypeScript, React, boundary, testing, and maintenance conventions.
+- [Shaping compilation research](planning/shaping-compilation-research.md) — static shaping, semantic bytecode, per-font specialization, MLIR, and WebGPU hypotheses and gates.
 - [Research bibliography](../RESEARCH.md) — attributed external sources and extracted findings.
 - [Decision register](planning/decision-register.md) — proposed and settled architectural choices.
 - [Open questions](planning/open-questions.md) — unresolved blockers and required prototypes.
 - [Planning index](planning/index.md) — complete planning-document inventory.
-
+- [Knowledge bundle log](log.md) — newest-first record of knowledge-bundle changes.

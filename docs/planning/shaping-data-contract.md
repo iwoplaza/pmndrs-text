@@ -3,7 +3,23 @@ type: Data Contract
 title: Shaping data contract V0
 description: Defines the complete reduced SFNT shaping payload, font-function data, batch ABI, byte accounting, and validation.
 tags: [data, shaping, harfrust, wasm, sfnt]
-timestamp: 2026-07-24T14:01:29Z
+sources:
+  - id: "citation-1"
+    resource: "https://learn.microsoft.com/en-us/typography/opentype/spec/"
+    title: "OpenType specification"
+  - id: "citation-2"
+    resource: "https://github.com/harfbuzz/harfrust"
+    title: "HarfRust"
+  - id: "citation-3"
+    resource: "https://harfbuzz.github.io/shaping-and-shape-plans.html"
+    title: "HarfBuzz shaping documentation"
+  - id: "citation-4"
+    resource: "https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html"
+    title: "glTF 2.0 specification"
+
+generated:
+  by: "openai-codex/gpt-5.6"
+  at: "2026-07-26T05:40:22Z"
 ---
 
 # Shaping data contract V0
@@ -54,7 +70,7 @@ The font artifact does not duplicate Unicode or script-shaper tables. The dynami
 
 Its Unicode and HarfBuzz-equivalence versions are pinned in the package and repeated in font provenance so an incompatible font/runtime pairing can be diagnosed. Script, language, direction, features, cluster level, and buffer flags are request data, not font data. Bidi resolution, line-break data, and paragraph policy live outside the font artifact.
 
-A compile-only feasibility spike using Rust 1.97.1, HarfRust 0.12.0 with `default-features = false` and `libm`, `dlmalloc`, `panic = abort`, and `wasm32-unknown-unknown` produced a 499 KiB raw / 141 KiB Brotli module. `wasm-opt -Oz` reduced it to 374 KiB raw / 127 KiB Brotli. The spike exported a real HarfRust shape call and custom-extents adapter, but it is not the product ABI or a performance benchmark. It proves the specified `no_std + alloc` module is buildable and places the earlier size envelope on measured footing. Production reports still record raw, Brotli, instantiated code, Unicode-table, and retained linear-memory costs separately.
+The package-owned runtime uses Rust 1.97.1, HarfRust 0.12.0 with `default-features = false` and `libm`, matching `read-fonts` 0.41.0, `dlmalloc`, `panic = abort`, and `wasm32-unknown-unknown`. Its Rust-generated V0 ABI has no imports or WASI surface and describes every request/result record and offset consumed by TypeScript. Result serialization computes its full aligned layout and reserves both wire bytes and arena words fallibly before writing. Each font retains at most its 64 most recently used plans. Canonical path remapping and pinned Binaryen 129.0.0 `-Oz` produce a 692,114-byte complete module (257,986 gzip; 202,523 Brotli). Canonical Inter proves that only the exact GLB-extracted 147,192-byte SFNT, 23,496-byte dense-extents view, and 368-byte availability view enter HarfRust-owned state, then matches all eight source-oracle cases bit-for-bit through `shapeBatch` and `reshapeRanges`. The Chromium product record keeps correctness ahead of timing and reports one boundary crossing, 97 glyphs, three cached plans, 1,703,936 linear-memory bytes, a 2.6 ms cold initialization, and approximately 0.1 ms warm shaping calls in that captured environment.
 
 ### Required tables
 
@@ -75,6 +91,8 @@ A compile-only feasibility spike using Rust 1.97.1, HarfRust 0.12.0 with `defaul
 | `GSUB` | Retain when present. All supported scripts, language systems, features, lookups, and feature variations remain intact. |
 | `GPOS` | Retain when present. All supported scripts, language systems, features, lookups, anchors, value records, and variation references remain intact. |
 | `kern` | Retain only when present and not made redundant by the bake policy. HarfRust remains authoritative about when legacy kerning applies. |
+| `BASE` | Retain when present so baseline data survives the shaping artifact even though V0 paragraph layout uses the explicit serialized horizontal metrics. |
+| `vhea`, `vmtx`, `VORG` | Retain each table exactly when present so vertical advances/origins survive baking. V0 does not fabricate missing tables or expose vertical paragraph layout. |
 
 OpenType extension lookup types are retained inside `GSUB` or `GPOS`; they are not separate tables. All GSUB lookup types 1–8 and GPOS lookup types 1–9 that HarfRust supports remain representable because their original normative table encoding is preserved.
 
@@ -82,7 +100,7 @@ OpenType extension lookup types are retained inside `GSUB` or `GPOS`; they are n
 
 One asset represents one fixed variation instance. The initial fixture is a non-variable static font. Variable input is rejected until the baker can deterministically instantiate outlines, metrics, cmap/layout feature variations, and raster data to the same coordinates.
 
-Consequently, V0 shaping payloads MUST NOT contain `fvar`, `avar`, `gvar`, `cvar`, `HVAR`, `VVAR`, `MVAR`, or `STAT`. Adding runtime variation axes is a format revision, not an undocumented optional path.
+Consequently, V0 shaping payloads MUST NOT contain `fvar`, `avar`, `gvar`, `cvar`, `HVAR`, `VVAR`, `MVAR`, or `STAT`. Adding runtime variation axes is a format revision, not an undocumented optional path. On input, `STAT` alone is accepted because it can describe a static family member without defining an axis; any actual axis or delta table still rejects the source, and `STAT` is dropped from the reduced payload.
 
 ### Excluded tables
 
@@ -91,7 +109,6 @@ The shaping payload MUST NOT contain:
 - outline and hinting data: `glyf`, `loca`, `CFF `, `CFF2`, `VARC`, `cvt `, `fpgm`, `prep`, `gasp`;
 - source glyph-art tables: `COLR`, `CPAL`, `SVG `, `CBDT`, `CBLC`, `EBDT`, `EBLC`, `sbix`;
 - metadata unused by shaping: `name`, `post`, `DSIG`;
-- vertical-only tables: `vhea`, `vmtx`, `VORG`;
 - Apple Advanced Typography tables: `morx`, `kerx`, `ankr`, `trak`, `feat`, `ltag`;
 - Graphite tables and deprecated `mort`.
 
@@ -159,13 +176,28 @@ The metric selection policy is fixed: when `OS/2.fsSelection.USE_TYPO_METRICS` i
 
 ### Large-coverage faces
 
-CJK does not require a wider per-face glyph ID: OpenType glyph IDs and `maxp.numGlyphs` remain 16-bit, and V0 supports `glyphCount` through 65,535. Every byte-length and offset calculation uses checked `u32`/`usize` arithmetic before allocation; no implementation may multiply dense record counts in `u16`. A TTC/OTC or other collection still registers one selected face per `PMNDRS_font`, identified by the existing face index and source provenance.
+CJK does not require a wider per-face glyph ID: OpenType glyph IDs and `maxp.numGlyphs` remain 16-bit, and V0 supports `glyphCount` through 65,535. Implementations MUST use checked `u32`/`usize` arithmetic for caller-derived byte lengths, offsets, alignment, and aggregate report sizes before allocation; checked arithmetic and fallible reservation are separate obligations. No implementation may multiply dense record counts in `u16`. A TTC/OTC or other collection still registers one selected face per `PMNDRS_font`, identified by the existing face index and source provenance.
 
-The shaping payload remains complete for the selected face in V0. Raster paging and sparse raster availability do not change cmap, shaping behavior, clusters, or glyph identity. Later source-font subsetting may reduce a large CJK shaping payload only after shaping closure and differential conformance are proven; the Latin-first implementation does not depend on that compiler work.
+The shaping payload remains complete for the selected face in V0. Raster paging and sparse raster availability do not change cmap, shaping behavior, clusters, or glyph identity. Roadmap item 5.4 has proven this contract with Noto Sans CJK JP Regular 2.004 at 65,535 glyphs through exact source/reduced HarfRust and HarfBuzz agreement plus horizontal paragraph layout. Later source-font subsetting may reduce a large CJK shaping payload only after shaping closure and differential conformance are proven; the Latin-first implementation does not depend on that compiler work.
 
 ## Runtime shape ABI
 
 JavaScript and Wasm exchange one batch, never one glyph. All integers are little-endian in Wasm linear memory. Offsets are 32-bit byte offsets from the start of the request or result arena and MUST meet the component alignment of the referenced array.
+
+### Shape request header — 32 bytes
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u32` | UTF-16 text byte offset |
+| 4 | `u32` | UTF-16 code-unit count |
+| 8 | `u32` | run-record byte offset |
+| 12 | `u32` | run count |
+| 16 | `u32` | feature-record byte offset |
+| 20 | `u32` | feature count |
+| 24 | `u32` | language-table byte offset |
+| 28 | `u32` | language-table byte length |
+
+The reshape request begins with the same 32 bytes and appends `rangesOffset: u32` at byte 32 and `rangeCount: u32` at byte 36, for a 40-byte header.
 
 ### Feature record — 16 bytes
 
@@ -214,6 +246,39 @@ V0 buffer flags are a bitset; unlisted bits MUST be zero:
 | 5 | `0x20` | `VERIFY` |
 | 6 | `0x40` | `PRODUCE_UNSAFE_TO_CONCAT` |
 | 7 | `0x80` | `PRODUCE_SAFE_TO_INSERT_TATWEEL` |
+
+### Reshape range record — 24 bytes
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u32` | index of the source run record |
+| 4 | `u32` | item UTF-16 start, inclusive |
+| 8 | `u32` | item UTF-16 end, exclusive |
+| 12 | `u32` | context UTF-16 start, inclusive |
+| 16 | `u32` | context UTF-16 end, exclusive |
+| 20 | `u32` | buffer flags for this reshape |
+
+Every item lies inside its context and every context lies inside its referenced run. The range flags replace the broad run's flags so the paragraph engine can declare beginning/end-of-text semantics for the selected line boundary. Pre-context is passed to HarfRust in reverse code-point order as required by its low-overhead API; post-context remains forward. One output run is emitted per range in request order.
+
+### Result header — 60 bytes
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u32` | complete result byte length |
+| 4 | `u32` | font-handle table offset |
+| 8 | `u32` | font-handle count |
+| 12 | `u32` | run-font-slot array offset |
+| 16 | `u32` | run-glyph-start array offset |
+| 20 | `u32` | run-glyph-count array offset |
+| 24 | `u32` | output run count |
+| 28 | `u32` | glyph-ID array offset |
+| 32 | `u32` | cluster array offset |
+| 36 | `u32` | x-advance array offset |
+| 40 | `u32` | y-advance array offset |
+| 44 | `u32` | x-offset array offset |
+| 48 | `u32` | y-offset array offset |
+| 52 | `u32` | glyph-flag array offset |
+| 56 | `u32` | glyph count |
 
 ### Result structure-of-arrays
 
@@ -265,32 +330,34 @@ interface ShapingPayloadReportV0 {
     paddedBytes: number
   }[]
   totalRawBytes: number
-  gzipBytes: number
-  brotliBytes: number
+  gzipBytes?: number
+  brotliBytes?: number
 }
 ```
 
-The pinned source files provide exact initial costs. Inter contains 2,871 source glyphs and Font Awesome contains 1,403; the smaller 907/350 counts in existing Slug GLBs are raster subsets and are not valid V0 cardinalities because V0 does not yet compute shaping closure.
+The portable `no_std` Wasm core reports every authoritative raw field and omits `gzipBytes`/`brotliBytes`; it does not carry transport compressors into the browser fallback. A Node or reporting host MUST add both compressed measurements before presenting a completed offline bake report. The corresponding container `transport` list follows the same rule: raw is always present, while gzip and Brotli entries are host-enriched measurements.
+
+The pinned source files provide exact initial costs. Inter 4.1 contains 2,937 source glyphs and Font Awesome contains 1,403; the smaller 907/350 counts in existing Slug GLBs are raster subsets and are not valid V0 cardinalities because V0 does not yet compute shaping closure.
 
 | Retained item | Inter raw | Font Awesome raw |
 | --- | ---: | ---: |
 | SFNT directory | 156 B | 108 B |
 | `head` | 54 B | 54 B |
 | `maxp` | 32 B | 32 B |
-| `cmap` | 25,500 B | 18,682 B |
+| `cmap` | 25,900 B | 18,682 B |
 | `hhea` | 36 B | 36 B |
-| `hmtx` | 11,484 B | 5,612 B |
+| `hmtx` | 11,748 B | 5,612 B |
 | `OS/2` | 96 B | 96 B |
-| `GDEF` | 1,006 B | — |
-| `GSUB` | 16,078 B | — |
-| `GPOS` | 90,894 B | — |
-| Four-byte table padding | 8 B | 4 B |
-| **Canonical shaping SFNT** | **145,344 B** | **24,624 B** |
-| Dense glyph extents | 22,968 B | 11,224 B |
-| Extents availability | 359 B | 176 B |
-| **V0 shaping payload** | **168,671 B** | **36,024 B** |
+| `GDEF` | 1,036 B | — |
+| `GSUB` | 24,406 B | — |
+| `GPOS` | 83,724 B | — |
+| Four-byte table padding | 4 B | 4 B |
+| **Canonical shaping SFNT** | **147,192 B** | **24,624 B** |
+| Dense glyph extents | 23,496 B | 11,224 B |
+| Extents availability | 368 B | 176 B |
+| **V0 shaping payload** | **171,056 B** | **36,024 B** |
 
-The source files are 324,820 B and 426,112 B respectively. The reduced SFNT removes 179,476 B from Inter and 401,488 B from Font Awesome before adding extents and their availability bits. The conformance corpus proves the canonical reconstruction.
+The source files are 411,640 B and 426,112 B respectively. The reduced SFNT removes 264,448 B from Inter and 401,488 B from Font Awesome before adding extents and their availability bits. The conformance corpus proves the canonical reconstruction.
 
 For capacity planning, a shaped batch with 1,000 V0 glyphs costs 24,000 bytes for glyph arrays plus 10 bytes per run, arena headers, font slots, and alignment. This transient memory is separate from the serialized SFNT and GPU raster memory.
 
@@ -320,13 +387,3 @@ For the same static face, text, direction, script, language, features, cluster l
 3. canonical `PMNDRS_font` through the Wasm ABI.
 
 The comparison includes glyph count, IDs, clusters, all four positions, and mapped flags. Any optimized font-function or lookup path added later runs against the same canonical input and MUST be bit-for-bit equivalent to path 2 for the supported corpus.
-
-# Citations
-
-[1] [OpenType specification](https://learn.microsoft.com/en-us/typography/opentype/spec/) — normative SFNT, cmap, metrics, GSUB, GPOS, GDEF, variation, and glyph-data definitions.
-
-[2] [HarfRust](https://github.com/harfbuzz/harfrust) — runtime shaper, font-function surface, and OpenType behavior baseline.
-
-[3] [HarfBuzz shaping documentation](https://harfbuzz.github.io/shaping-and-shape-plans.html) — shape-plan, buffer, cluster, and positioning model used for comparison.
-
-[4] [glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) — buffer-view containment and GLB serialization rules.

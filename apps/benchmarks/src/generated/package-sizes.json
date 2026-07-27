@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 0,
+  "measurementHost": {
+    "platform": "darwin",
+    "architecture": "arm64"
+  },
+  "entries": [
+    {
+      "id": "browser-core",
+      "label": "Browser core",
+      "status": "measured",
+      "format": "javascript",
+      "rawBytes": 271037,
+      "minifiedBytes": 211127,
+      "gzipBytes": 62751,
+      "brotliBytes": 47995
+    },
+    {
+      "id": "font-validator-js",
+      "label": "Lazy font validator JS",
+      "status": "measured",
+      "format": "javascript",
+      "rawBytes": 740114,
+      "minifiedBytes": 584255,
+      "gzipBytes": 137585,
+      "brotliBytes": 112927
+    },
+    {
+      "id": "runtime-baker-host-js",
+      "label": "Runtime baker host JS",
+      "status": "measured",
+      "format": "javascript",
+      "rawBytes": 5234,
+      "minifiedBytes": 3831,
+      "gzipBytes": 1473,
+      "brotliBytes": 1314
+    },
+    {
+      "id": "runtime-baker-worker-js",
+      "label": "Runtime baker Worker JS",
+      "status": "measured",
+      "format": "javascript",
+      "rawBytes": 13273,
+      "minifiedBytes": 8968,
+      "gzipBytes": 3025,
+      "brotliBytes": 2661
+    },
+    {
+      "id": "text-shaper-js",
+      "label": "Text shaper JS",
+      "status": "measured",
+      "format": "javascript",
+      "rawBytes": 43926,
+      "minifiedBytes": 30630,
+      "gzipBytes": 8794,
+      "brotliBytes": 7826
+    },
+    {
+      "id": "text-shaper-wasm",
+      "label": "Text shaper Wasm",
+      "status": "measured",
+      "format": "wasm",
+      "rawBytes": 692114,
+      "minifiedBytes": 692114,
+      "gzipBytes": 257986,
+      "brotliBytes": 202523
+    },
+    {
+      "id": "portable-baker-js",
+      "label": "Portable baker JS",
+      "status": "measured",
+      "format": "javascript",
+      "rawBytes": 10034,
+      "minifiedBytes": 6641,
+      "gzipBytes": 2333,
+      "brotliBytes": 2058
+    },
+    {
+      "id": "portable-baker-wasm",
+      "label": "Portable baker Wasm",
+      "status": "measured",
+      "format": "wasm",
+      "rawBytes": 433755,
+      "minifiedBytes": 433755,
+      "gzipBytes": 168251,
+      "brotliBytes": 136793
+    },
+    {
+      "id": "unicode-analysis-js",
+      "label": "Unicode 17 analysis JS",
+      "status": "measured",
+      "format": "javascript",
+      "rawBytes": 164702,
+      "minifiedBytes": 139912,
+      "gzipBytes": 42042,
+      "brotliBytes": 31048
+    }
+  ]
+}

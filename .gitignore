@@ -1,5 +1,7 @@
 .DS_Store
 node_modules/
 dist/
+target/
 *.tsbuildinfo
 coverage/
+apps/benchmarks/.cache/
