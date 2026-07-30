@@ -10,8 +10,8 @@ extern crate alloc as std;
 mod abi_contract;
 mod error;
 mod glb;
-mod ktx;
 mod model;
+mod progress;
 mod rasterize;
 
 #[cfg(all(target_arch = "wasm32", not(feature = "std")))]
@@ -29,7 +29,6 @@ pub fn abi_json() -> &'static str {
     include_str!(concat!(env!("OUT_DIR"), "/bitmap-baker-abi-v0.json"))
 }
 
-use sha2::{Digest, Sha256};
 use std::{
     string::{String, ToString},
     vec::Vec,
@@ -58,15 +57,23 @@ pub fn bake_bitmap(
     }
 
     let mut strikes = Vec::with_capacity(request.descriptor.strikes.len());
-    for ppem in request.descriptor.strikes.iter().copied() {
+    let progress_total = u32::from(request.glyph_count)
+        .checked_mul(u32::try_from(request.descriptor.strikes.len()).unwrap_or(u32::MAX))
+        .unwrap_or(u32::MAX);
+    for (strike_index, ppem) in request.descriptor.strikes.iter().copied().enumerate() {
         let strike = rasterize::rasterize_strike(
             source,
             request.font_face_index,
             request.glyph_count,
             ppem,
+            u32::try_from(strike_index)
+                .unwrap_or(u32::MAX)
+                .saturating_mul(u32::from(request.glyph_count)),
+            progress_total,
         )?;
         strikes.push(strike);
     }
+    progress::report(progress_total, progress_total);
     let metadata_bytes = strikes
         .iter()
         .map(|strike| strike.records.len())
@@ -89,15 +96,15 @@ pub fn bake_bitmap(
     let mut page_reports = Vec::with_capacity(built.pages.len());
     let mut gpu_bytes = 0_usize;
     for page in built.pages {
-        let mip_bytes = usize::from(page.width) * usize::from(page.height);
+        let page_gpu_bytes = usize::from(page.width) * usize::from(page.height);
         gpu_bytes = gpu_bytes
-            .checked_add(mip_bytes)
+            .checked_add(page_gpu_bytes)
             .ok_or_else(error::overflow)?;
         page_reports.push(BitmapPageReportV0 {
             width: page.width,
             height: page.height,
             format: "r8unorm".into(),
-            mip_bytes,
+            gpu_bytes: page_gpu_bytes,
             source: if page.embedded {
                 "embedded".into()
             } else {
@@ -146,13 +153,7 @@ pub fn descriptor_raster_key(descriptor: &BitmapDescriptorV0) -> String {
 }
 
 pub(crate) fn hex_sha256(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut output = String::with_capacity(64);
-    for byte in digest {
-        use core::fmt::Write;
-        let _ = write!(output, "{byte:02x}");
-    }
-    output
+    pmndrs_text_raster_artifact::sha256_hex(bytes)
 }
 
 fn validate_hash(name: &str, value: &str) -> Result<(), BitmapBakeError> {
@@ -241,6 +242,8 @@ mod tests {
             record_bytes(&embedded_a.artifacts[0].bytes),
             record_bytes(&external.artifacts[0].bytes),
         );
+        assert_eq!(plane_units_per_em(&embedded_a.artifacts[0].bytes), 16);
+        assert_native_pixel_geometry(&record_bytes(&embedded_a.artifacts[0].bytes));
     }
 
     #[test]
@@ -277,10 +280,7 @@ mod tests {
     }
 
     fn record_bytes(glb: &[u8]) -> Vec<u8> {
-        assert_eq!(&glb[..4], b"glTF");
-        let json_len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
-        assert_eq!(&glb[16..20], b"JSON");
-        let root: serde_json::Value = serde_json::from_slice(&glb[20..20 + json_len]).unwrap();
+        let (root, bin_start) = glb_root(glb);
         let extension = &root["extensions"]["PMNDRS_font_bitmap"];
         assert_eq!(extension["version"], 0);
         let view_index = extension["strikes"][0]["recordBufferView"]
@@ -289,8 +289,41 @@ mod tests {
         let view = &root["bufferViews"][view_index];
         let offset = view["byteOffset"].as_u64().unwrap() as usize;
         let length = view["byteLength"].as_u64().unwrap() as usize;
+        glb[bin_start + offset..bin_start + offset + length].to_vec()
+    }
+
+    fn plane_units_per_em(glb: &[u8]) -> u64 {
+        let (root, _) = glb_root(glb);
+        root["extensions"]["PMNDRS_font_bitmap"]["strikes"][0]["planeUnitsPerEm"]
+            .as_u64()
+            .unwrap()
+    }
+
+    fn glb_root(glb: &[u8]) -> (serde_json::Value, usize) {
+        assert_eq!(&glb[..4], b"glTF");
+        let json_len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        assert_eq!(&glb[16..20], b"JSON");
+        let root = serde_json::from_slice(&glb[20..20 + json_len]).unwrap();
         let bin_header = 20 + json_len;
         assert_eq!(&glb[bin_header + 4..bin_header + 8], b"BIN\0");
-        glb[bin_header + 8 + offset..bin_header + 8 + offset + length].to_vec()
+        (root, bin_header + 8)
+    }
+
+    fn assert_native_pixel_geometry(records: &[u8]) {
+        for record in records.chunks_exact(20) {
+            if u16::from_le_bytes(record[16..18].try_into().unwrap()) == 0xffff {
+                continue;
+            }
+            let left = i16::from_le_bytes(record[0..2].try_into().unwrap());
+            let bottom = i16::from_le_bytes(record[2..4].try_into().unwrap());
+            let right = i16::from_le_bytes(record[4..6].try_into().unwrap());
+            let top = i16::from_le_bytes(record[6..8].try_into().unwrap());
+            let atlas_left = u16::from_le_bytes(record[8..10].try_into().unwrap());
+            let atlas_top = u16::from_le_bytes(record[10..12].try_into().unwrap());
+            let atlas_right = u16::from_le_bytes(record[12..14].try_into().unwrap());
+            let atlas_bottom = u16::from_le_bytes(record[14..16].try_into().unwrap());
+            assert_eq!(i32::from(right - left), i32::from(atlas_right - atlas_left));
+            assert_eq!(i32::from(top - bottom), i32::from(atlas_bottom - atlas_top));
+        }
     }
 }

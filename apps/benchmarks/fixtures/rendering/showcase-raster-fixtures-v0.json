@@ -1,0 +1,175 @@
+{
+  "schemaVersion": 0,
+  "strikePpems": [16],
+  "packaging": {
+    "artifact": "embedded",
+    "pages": "embedded"
+  },
+  "artifacts": [
+    {
+      "fontFixture": "inter",
+      "file": "inter-bitmap-16.font.glb",
+      "bytes": 927164,
+      "sha256": "55e0f03fcd9cec9312b03f58de112d299982e82db368d9a666db120ef8a4f471",
+      "raster": {
+        "decodedGpuBytes": 695296,
+        "pages": [
+          {
+            "index": 0,
+            "width": 1024,
+            "height": 679,
+            "encodedBytes": 695444,
+            "decodedGpuBytes": 695296
+          }
+        ]
+      }
+    },
+    {
+      "fontFixture": "amiri",
+      "file": "amiri-bitmap-16.font.glb",
+      "bytes": 1987848,
+      "sha256": "d031b766ae12cc83b4369d08695d8f6295d43cec65ca2b754dc5548fe7618bdd",
+      "raster": {
+        "decodedGpuBytes": 1673216,
+        "pages": [
+          {
+            "index": 0,
+            "width": 1024,
+            "height": 1024,
+            "encodedBytes": 1048724,
+            "decodedGpuBytes": 1048576
+          },
+          {
+            "index": 1,
+            "width": 1024,
+            "height": 610,
+            "encodedBytes": 624788,
+            "decodedGpuBytes": 624640
+          }
+        ]
+      }
+    },
+    {
+      "fontFixture": "noto-sans-devanagari",
+      "file": "noto-sans-devanagari-bitmap-16.font.glb",
+      "bytes": 312248,
+      "sha256": "4772ac45c29fdc705e0eea25879994afe95802b85c0904f933a77e3110921555",
+      "raster": {
+        "decodedGpuBytes": 233472,
+        "pages": [
+          {
+            "index": 0,
+            "width": 1024,
+            "height": 228,
+            "encodedBytes": 233620,
+            "decodedGpuBytes": 233472
+          }
+        ]
+      }
+    },
+    {
+      "fontFixture": "dot-gothic-16",
+      "file": "dot-gothic-16-bitmap-16.font.glb",
+      "bytes": 3294384,
+      "sha256": "20d46619345575e7c36a94248293e375a433eb9fa0f973dc040cc7499270d53c",
+      "raster": {
+        "decodedGpuBytes": 2808832,
+        "pages": [
+          {
+            "index": 0,
+            "width": 1024,
+            "height": 1013,
+            "encodedBytes": 1037460,
+            "decodedGpuBytes": 1037312
+          },
+          {
+            "index": 1,
+            "width": 1024,
+            "height": 1008,
+            "encodedBytes": 1032340,
+            "decodedGpuBytes": 1032192
+          },
+          {
+            "index": 2,
+            "width": 1024,
+            "height": 722,
+            "encodedBytes": 739476,
+            "decodedGpuBytes": 739328
+          }
+        ]
+      }
+    },
+    {
+      "fontFixture": "font-awesome-free-6.7.2",
+      "file": "font-awesome-free-6.7.2-bitmap-16.font.glb",
+      "bytes": 596580,
+      "sha256": "2a0ae9f5d025566f43233c94300f9e59f910b231b40acf61c9a33b96ed81e571",
+      "raster": {
+        "decodedGpuBytes": 530432,
+        "pages": [
+          {
+            "index": 0,
+            "width": 1024,
+            "height": 518,
+            "encodedBytes": 530580,
+            "decodedGpuBytes": 530432
+          }
+        ]
+      }
+    },
+    {
+      "fontFixture": "noto-sans-cjk-showcase",
+      "file": "noto-sans-cjk-showcase-bitmap-16.font.glb",
+      "bytes": 65996,
+      "sha256": "3567e1cf4b3739ef746822c20084b79e886d35bf81bfb51053d2f3b4e9251511",
+      "raster": {
+        "decodedGpuBytes": 55440,
+        "pages": [
+          {
+            "index": 0,
+            "width": 1008,
+            "height": 55,
+            "encodedBytes": 55588,
+            "decodedGpuBytes": 55440
+          }
+        ]
+      }
+    },
+    {
+      "fontFixture": "source-serif-4",
+      "file": "source-serif-4-bitmap-16.font.glb",
+      "bytes": 468784,
+      "sha256": "81ec296517f7dd91a2d1b5e5280cc2a43a6793c15a8ea35fe3a567bbccef3cf5",
+      "raster": {
+        "decodedGpuBytes": 302080,
+        "pages": [
+          {
+            "index": 0,
+            "width": 1024,
+            "height": 295,
+            "encodedBytes": 302228,
+            "decodedGpuBytes": 302080
+          }
+        ]
+      }
+    },
+    {
+      "fontFixture": "dancing-script",
+      "file": "dancing-script-bitmap-16.font.glb",
+      "bytes": 291556,
+      "sha256": "4f9120e970b7a5697a9cc8336576eca5bae567444e93abecaf472c8ea2258e8b",
+      "raster": {
+        "decodedGpuBytes": 226304,
+        "pages": [
+          {
+            "index": 0,
+            "width": 1024,
+            "height": 221,
+            "encodedBytes": 226452,
+            "decodedGpuBytes": 226304
+          }
+        ]
+      }
+    }
+  ]
+}

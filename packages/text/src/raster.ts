@@ -1,8 +1,9 @@
 import type { RegisteredFont } from './font.js'
 import type { ParagraphLayout } from './layout.js'
 import type { FontHandle, FontSlot, RasterHandle, RasterKey, Sha256Hex } from './identity.js'
-import type { RasterBakeArtifact } from './bake.js'
+import type { BakeProgressListener, RasterBakeArtifact } from './bake.js'
 import type { GlyphPaint } from './paint.js'
+import type { Object3D } from 'three/webgpu'
 
 export type RasterKind = string
 
@@ -14,8 +15,13 @@ export type JsonValue =
   | readonly JsonValue[]
   | { readonly [key: string]: JsonValue }
 
-export type RasterOptionsArgument<Options> =
-  [Options] extends [never] ? undefined : Options
+export type RasterOptionsArgument<Options> = [Options] extends [never] ? undefined : Options
+
+type RasterOptionsOptional<Options> = [Options] extends [never]
+  ? true
+  : undefined extends Options
+    ? true
+    : false
 
 export type StaticNumberTuple<Values extends readonly [number, ...number[]]> =
   number extends Values[number] ? never : Values
@@ -41,6 +47,15 @@ export interface RasterReference<Kind extends string = string> {
   readonly source: RasterSource
 }
 
+export type RasterResourceSource =
+  | { readonly type: 'bufferView'; readonly bufferView: number }
+  | {
+      readonly type: 'external'
+      readonly uri: string
+      readonly byteLength: number
+      readonly artifactHash: Sha256Hex
+    }
+
 export interface RasterSelection<Kind extends string = string> {
   readonly rasterKey: RasterKey | string
   readonly kind?: Kind
@@ -57,11 +72,14 @@ export interface RegisteredRaster<Kind extends string = string> {
   readonly extensionData: JsonValue
   /** Return a bounds-checked immutable view of an artifact bufferView. */
   view(bufferView: number): Uint8Array
+  /** Resolve an embedded or authenticated external extension resource. */
+  resource(source: RasterResourceSource, signal?: AbortSignal): Promise<Uint8Array>
   dispose(): void
 }
 
 export interface RasterLoadOptions {
   readonly resolve?: RasterResolver
+  readonly resolveResource?: RasterResourceResolver
   readonly signal?: AbortSignal
 }
 
@@ -75,18 +93,28 @@ export type RasterResolver = (
   context: RasterResolverContext,
 ) => Promise<ArrayBufferView | undefined>
 
+export interface RasterResourceResolverContext {
+  readonly font: RegisteredFont
+  readonly reference: RasterReference
+  readonly source: Extract<RasterResourceSource, { readonly type: 'external' }>
+  readonly signal?: AbortSignal
+}
+
+export type RasterResourceResolver = (
+  context: RasterResourceResolverContext,
+) => Promise<ArrayBufferView | undefined>
+
 interface RuntimeRasterBakeRequestBase {
   readonly source: Uint8Array
   readonly font: RegisteredFont
   readonly fontFaceIndex: number
   readonly rasterKey: RasterKey | string
   readonly signal?: AbortSignal
+  readonly onProgress?: BakeProgressListener
 }
 
 export type RuntimeRasterBakeRequest<Options> = RuntimeRasterBakeRequestBase &
-  ([Options] extends [never]
-    ? { readonly options?: never }
-    : { readonly options: Options })
+  ([Options] extends [never] ? { readonly options?: never } : { readonly options: Options })
 
 export interface RuntimeRasterBakerModule<Kind extends string, Options> {
   readonly kind: Kind
@@ -101,7 +129,7 @@ export type RuntimeRasterBakerLoader<Kind extends string, Options> = () => Promi
 export interface RasterModule<
   Kind extends string,
   Resource,
-  DrawBatch,
+  DrawBatch extends RasterDrawBatch,
   Options = never,
 > {
   readonly kind: Kind
@@ -129,12 +157,17 @@ export interface RasterModule<
     resource: Resource,
     fontSlot: FontSlot,
     paint: GlyphPaint,
+    rasterPixelRatio: number,
   ): DrawBatch
+  validatePaint?(paint: GlyphPaint): void
   updatePaint(batch: DrawBatch, paint: GlyphPaint, fontSlot: FontSlot): void
   dispose(resource: Resource): void
 }
 
-export type AnyRasterModule = RasterModule<string, any, any, any>
+// Deliberately erase every module parameter at heterogeneous token/cache boundaries.
+// Keeping `Kind` as `string` makes the mutable-in-position module surface invariant,
+// so a concrete `RasterModule<'bitmap', ...>` no longer satisfies this erasure.
+export type AnyRasterModule = RasterModule<any, any, any, any>
 
 export type RasterKindOf<Module extends AnyRasterModule> =
   Module extends RasterModule<infer Kind, any, any, any> ? Kind : never
@@ -152,14 +185,15 @@ type RasterRequestBase<Module extends AnyRasterModule> = {
   readonly module: Module
 }
 
-export type RasterRequest<Module extends AnyRasterModule> =
-  RasterRequestBase<Module> &
-    ([RasterOptionsOf<Module>] extends [never]
-      ? { readonly options?: never }
+export type RasterRequest<Module extends AnyRasterModule> = RasterRequestBase<Module> &
+  ([RasterOptionsOf<Module>] extends [never]
+    ? { readonly options?: never }
+    : undefined extends RasterOptionsOf<Module>
+      ? { readonly options?: RasterOptionsOf<Module> }
       : { readonly options: RasterOptionsOf<Module> })
 
 export type RasterInput<Module extends AnyRasterModule> =
-  [RasterOptionsOf<Module>] extends [never]
+  RasterOptionsOptional<RasterOptionsOf<Module>> extends true
     ? Module | RasterRequest<Module>
     : RasterRequest<Module>
 
@@ -176,18 +210,16 @@ export interface LoadedRaster<Module extends AnyRasterModule> {
   readonly resource: RasterResourceOf<Module>
 }
 
-export interface RasterRuntime {
-  load<const Module extends AnyRasterModule>(
-    font: RegisteredFont,
-    request: RasterRequest<Module>,
-    options?: RasterLoadOptions,
-  ): Promise<LoadedRaster<Module>>
+/** Minimum lifecycle surface core needs from every raster-owned batch. */
+export interface RasterDrawBatch {
+  readonly object: Object3D
+  dispose(): void
 }
 
 export function defineRaster<
   const Kind extends string,
   Resource,
-  DrawBatch,
+  DrawBatch extends RasterDrawBatch,
   Options = never,
 >(
   module: RasterModule<Kind, Resource, DrawBatch, Options>,

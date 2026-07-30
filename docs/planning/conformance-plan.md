@@ -36,8 +36,8 @@ sources:
     title: "Vitexec"
 
 generated:
-  by: "openai-codex/gpt-5"
-  at: "2026-07-26T06:08:31Z"
+  by: "openai-codex/gpt-5.6"
+  at: "2026-07-29T15:36:00Z"
 ---
 
 # Shaping and layout conformance plan
@@ -174,7 +174,7 @@ call; an unrelated subsequent shaper call proves the layout owns its arrays.
 | Controls | LF, CRLF, paragraph separator, tabs policy, default ignorables, ZWJ/ZWNJ, soft hyphen |
 | Invalid input | unpaired UTF-16 surrogates and replacement policy at JS boundary |
 
-The CJK row is split across two gates. Roadmap item 5.4 now proves exact horizontal CJK source/reduced HarfRust and HarfBuzz agreement, UTF-16 clustering, language-sensitive substitutions, variation handling, and paragraph layout. It conditionally retains source `BASE`, `VORG`, `vhea`, and `vmtx` without fabrication while leaving vertical layout deferred. It does not require CJK raster coverage. Milestone 12 later combines large-coverage CJK raster paging with icon paging, residency, and payload stress; that later work does not block the Latin-first bitmap/MSDF/Slug V1 renderer gate. Before those raster contracts freeze, a synthetic 65,535-glyph fixture still validates glyph-ID width, dense-record lengths, logical page indexes, external page sources, and multi-page batching without claiming full CJK rendering support.
+The CJK row is split across two gates. Roadmap item 5.4 now proves exact horizontal CJK source/reduced HarfRust and HarfBuzz agreement, UTF-16 clustering, language-sensitive substitutions, variation handling, and paragraph layout. It conditionally retains source `BASE`, `VORG`, `vhea`, and `vmtx` without fabrication while leaving vertical layout deferred. It does not require CJK raster coverage. Milestone 13 later combines large-coverage CJK raster paging with icon paging, residency, and payload stress; that later work does not block the Latin-first bitmap/MSDF/Slug V1 renderer gate. Before those raster contracts freeze, a synthetic 65,535-glyph fixture still validates glyph-ID width, dense-record lengths, logical page indexes, external page sources, and multi-page batching without claiming full CJK rendering support.
 
 ### Large-coverage page invariants
 
@@ -387,6 +387,8 @@ Status: ✅ implemented by [`.github/workflows/ci.yml`](../../.github/workflows/
 The workflow installs the exact repository Node, pnpm, stable Rust, and Wasm target pins through mise, installs dependencies from the frozen lockfile, and runs `pnpm check` with headless Chromium. Third-party actions use immutable commit SHAs annotated with their verified current release. Vitexec, hardware-GPU claims, timing gates, and coverage-guided nightly fuzzing remain outside this tier.
 
 Wasm runtime portability is verified through the generated ABI and exact source-to-product behavior. Release builds also remap checkout and Cargo paths and enforce exact optimized sizes. An exact Wasm hash identifies output from the canonical release builder: pinned native Rust/Binaryen builds on macOS arm64 and Ubuntu x64 can encode equivalent modules with different internal function-index order, even though the modules have equal length and produce byte-identical artifacts. CI retains failed Wasm outputs for seven days so any future divergence can be compared directly rather than inferred from a hash alone.
+
+GPU framebuffer hashes are portable gates only when an independent byte-level oracle proves exact composition. Filtered analytic coverage may vary across native drivers and SwiftShader while remaining correct. MTSDF and Slug therefore require stable pixels across samples from one renderer invocation, authenticated inputs and resource invariants, and bounded error against their independent scalar CPU reconstructions; hardware-specific hashes remain labeled observations rather than CI expectations.
 
 - formatting and package-owned unit tests;
 - compiled-artifact package integration tests;

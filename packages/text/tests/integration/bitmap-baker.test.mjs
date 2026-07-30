@@ -18,11 +18,12 @@ const fontUrl = new URL(
 )
 const shapingHash = '6a96d9c6f9e59fd6aeb51848413bd4dd8711730a5479a7d004979d80f3b3cd09'
 const publishedAbi = JSON.parse(await readFile(abiUrl, 'utf8'))
+const progressImports = { env: { pmndrs_text_bake_progress() {} } }
 
 async function setup() {
   const [wasm, source] = await Promise.all([readFile(wasmUrl), readFile(fontUrl)])
   const module = await WebAssembly.compile(wasm)
-  const instance = await WebAssembly.instantiate(module, {})
+  const instance = await WebAssembly.instantiate(module, progressImports)
   const core = await createBitmapBaker(module)
   return { wasm, source: new Uint8Array(source), module, instance, core }
 }
@@ -44,12 +45,18 @@ async function bake(core, source, pages) {
   })
 }
 
-test('ships a zero-import optimized Wasm module with its generated ABI', async () => {
+test('ships one generated progress import and bundles its generated ABI in TypeScript', async () => {
   const { module, instance } = await setup()
-  assert.deepEqual(WebAssembly.Module.imports(module), [])
-  const embedded = readBitmapBakerAbi(instance)
-  assert.deepEqual(embedded, publishedAbi)
-  assert.deepEqual(embedded.versions, {
+  assert.deepEqual(WebAssembly.Module.imports(module), [
+    { module: 'env', name: 'pmndrs_text_bake_progress', kind: 'function' },
+  ])
+  const generated = readBitmapBakerAbi(instance)
+  assert.deepEqual(generated, publishedAbi)
+  assert.equal(
+    WebAssembly.Module.exports(module).some(({ name }) => name.includes('abi_')),
+    false,
+  )
+  assert.deepEqual(generated.versions, {
     bitmapFormat: 0,
     generator: '0.0.0',
     ktx2: '0.5.0',
@@ -132,13 +139,13 @@ test('direct-memory allocations reject forged releases and recover after invalid
     memory,
     pmndrs_bitmap_baker_alloc: allocate,
     pmndrs_bitmap_baker_dealloc: deallocate,
-    pmndrs_bitmap_baker_bake: bake,
+    pmndrs_bitmap_baker_bake: bakeExport,
     pmndrs_bitmap_baker_result_len: resultLength,
   } = instance.exports
   assert.ok(memory instanceof WebAssembly.Memory)
   assert.equal(typeof allocate, 'function')
   assert.equal(typeof deallocate, 'function')
-  assert.equal(typeof bake, 'function')
+  assert.equal(typeof bakeExport, 'function')
   assert.equal(typeof resultLength, 'function')
 
   assert.equal(allocate(64 * 1024 * 1024 + 1), 0)
@@ -147,7 +154,7 @@ test('direct-memory allocations reject forged releases and recover after invalid
   new Uint8Array(memory.buffer, pointer, 8).fill(0x20)
   deallocate(pointer + 1, 7)
   deallocate(pointer, 7)
-  const response = bake(pointer, 8, pointer, 8)
+  const response = bakeExport(pointer, 8, pointer, 8)
   const responseLength = resultLength()
   assert.notEqual(response, 0)
   assert.ok(responseLength > 0)
@@ -220,28 +227,11 @@ test('the direct-memory shim releases an allocation whose memory copy fails', ()
   )
 })
 
-test('the bitmap ABI reader rejects malformed nested function contracts', () => {
-  const malformed = structuredClone(publishedAbi)
-  malformed.functions.bake.parameters = ['wrong']
-  assert.throws(
-    () => readBitmapBakerAbi(fakeBitmapBakerInstance({ abi: malformed })),
-    /unsupported bitmap baker ABI/,
-  )
-})
-
-function fakeBitmapBakerInstance({
-  abi = publishedAbi,
-  allocate = () => 0,
-  deallocate = () => undefined,
-} = {}) {
+function fakeBitmapBakerInstance({ allocate = () => 0, deallocate = () => undefined } = {}) {
   const memory = new WebAssembly.Memory({ initial: 1 })
-  const abiBytes = new TextEncoder().encode(JSON.stringify(abi))
-  new Uint8Array(memory.buffer, 0, abiBytes.byteLength).set(abiBytes)
   return {
     exports: {
       memory,
-      pmndrs_bitmap_baker_abi_ptr: () => 0,
-      pmndrs_bitmap_baker_abi_len: () => abiBytes.byteLength,
       pmndrs_bitmap_baker_alloc: allocate,
       pmndrs_bitmap_baker_dealloc: deallocate,
       pmndrs_bitmap_baker_bake: () => 0,

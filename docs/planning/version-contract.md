@@ -11,6 +11,15 @@ sources:
   - id: harfbuzz
     resource: https://github.com/harfbuzz/harfbuzz/releases/tag/13.0.0
     title: HarfBuzz 13.0.0
+  - id: harfbuzz-utilities-build
+    resource: https://github.com/harfbuzz/harfbuzz/blob/a0fc099681a69ae40665fbea74982a2e9d7a5260/util/meson.build
+    title: HarfBuzz 13.0.0 utility build definition
+  - id: meson
+    resource: https://github.com/mesonbuild/meson/releases/tag/1.11.1
+    title: Meson 1.11.1
+  - id: ninja
+    resource: https://github.com/ninja-build/ninja/releases/tag/v1.13.2
+    title: Ninja 1.13.2
   - id: unicode
     resource: https://www.unicode.org/versions/Unicode17.0.0/
     title: Unicode 17.0.0
@@ -61,7 +70,7 @@ sources:
     title: libfuzzer-sys 0.4.13
 generated:
   by: openai-codex/gpt-5
-  at: "2026-07-26T03:29:05Z"
+  at: "2026-07-29T17:18:36Z"
 ---
 
 # V0 toolchain and format version pins
@@ -73,8 +82,10 @@ These values are exact fixture and provenance inputs. “Latest” is never a va
 | Surface | Pin | Source identity |
 | --- | --- | --- |
 | Rust toolchain | `1.97.1` | `rust-toolchain.toml` |
+| HarfBuzz build system | Meson `1.11.1` + Ninja `1.13.2` | exact root `mise.toml` pins; used to build the authenticated HarfBuzz oracle utilities from source |
 | HarfRust | `0.12.0` | tag commit `60b28ea22b5261710018d69c168a762bcb28794c` |
 | HarfBuzz oracle | `13.0.0` | tag commit `a0fc099681a69ae40665fbea74982a2e9d7a5260` |
+| MTSDF quality oracle | Chlumsky `msdfgen` `1.13.0` | tag `v1.13`, commit `1874bcf7d9624ccc85b4bc9a85d78116f690f35b`; source archive SHA-256 `93cd1ad8918c1a78c5c96e82d4f4c77f0eb86c2e7e8579a0967e54196c4b7167` |
 | Unicode | `17.0.0` | versioned UCD and UAX data |
 | Unicode Script/Script_Extensions data | `@unicode/unicode-17.0.0` `1.6.17` | build-only generated range-table source |
 | UAX #29 implementation | `unicode-segmenter` `0.15.0` | Unicode 17 extended-grapheme segmentation |
@@ -99,6 +110,8 @@ These values are exact fixture and provenance inputs. “Latest” is never a va
 | Bitmap outline rasterizer | Zeno `0.3.3` | unhinted grayscale mask generation from Skrifa outline commands |
 | KTX2 Rust model/parser | `ktx2` `0.5.0` | compile-time R8 DFD generation plus native artifact validation |
 | KTX2 JavaScript parser | `ktx-parse` `1.1.0` | package-owned artifact and runtime page validation |
+
+GLib development metadata is a native build-host prerequisite, not a fixture identity input. HarfBuzz 13.0.0 gates its `hb-shape` and `hb-subset` targets on `HAVE_GLIB`; the provisioner therefore requires `-Dglib=enabled`, and the pinned Ubuntu 24.04 CI job installs `libglib2.0-dev` explicitly and prints the resolved `glib-2.0` version. Every unrelated optional HarfBuzz backend is disabled explicitly so host-installed FreeType, Cairo, ICU, CoreText, or experimental raster/vector dependencies cannot change the source-build graph. GLib owns the utility frontend, while the authenticated HarfBuzz source and exact generated-byte comparison remain authoritative for fixture semantics.
 
 ## Generated contract
 

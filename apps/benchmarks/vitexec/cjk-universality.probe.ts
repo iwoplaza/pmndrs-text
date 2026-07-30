@@ -13,7 +13,7 @@ const result = await runRegisteredBenchmark({
   targetId: 'cjk-universality',
   scenarioId: 'cjk-universality',
   input: {},
-  controls: { samples: 3, warmup: 1 },
+  controls: { dpr: 1, samples: 3, warmup: 1 },
   environment,
 })
 const expectedHash =
@@ -38,7 +38,7 @@ if (
       metrics.retainedFontBytes !== 1_539_372 ||
       metrics.wasmMemoryBytes !== 4_587_520 ||
       metrics.sourceFontBytes !== 16_467_736 ||
-      metrics.artifactBytes !== 1_540_460 ||
+      metrics.artifactBytes !== 1_540_480 ||
       metrics.shapingPayloadRawBytes !== 1_539_372 ||
       metrics.shapingPayloadGzipBytes !== 654_925 ||
       metrics.shapingPayloadBrotliBytes !== 514_547

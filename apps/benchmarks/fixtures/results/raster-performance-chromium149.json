@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 0,
+  "kind": "raster-performance-observation",
+  "capturedAt": "2026-07-28T19:45:59.723Z",
+  "backend": "webgpu",
+  "dpr": 1,
+  "workload": "paint-effects",
+  "steadyStateReportCount": 12,
+  "environment": {
+    "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36",
+    "hardwareConcurrency": 10,
+    "webgpu": true,
+    "crossOriginIsolated": false
+  },
+  "gpuAdapter": {},
+  "observations": [
+    {
+      "technique": "bitmap",
+      "rendererInitMs": 7.100000001490116,
+      "fontLoadMs": 91.10000000149012,
+      "textReadyMs": 22.099999997764826,
+      "firstDrawSubmitMs": 24,
+      "uploadFrameCompleteMs": 27.600000001490116,
+      "uploadFrameGpuMs": 0.065368,
+      "startupMs": 148.10000000149012,
+      "framesPerSecond": 120.4819277108433,
+      "medianSubmitMs": 0.30000001192092896,
+      "p95SubmitMs": 0.4000000059604645,
+      "medianGpuMs": 0.34436899423599243,
+      "p95GpuMs": 1.5991829633712769,
+      "glyphCount": 268,
+      "drawCount": 18,
+      "artifactBytes": 3149648,
+      "atlasGpuBytes": 2857709,
+      "totalGpuBytes": 3878669
+    },
+    {
+      "technique": "mtsdf",
+      "rendererInitMs": 7.699999999254942,
+      "fontLoadMs": 160.30000000074506,
+      "textReadyMs": 37.5,
+      "firstDrawSubmitMs": 28.299999997019768,
+      "uploadFrameCompleteMs": 46.29999999701977,
+      "uploadFrameGpuMs": 0.062661,
+      "startupMs": 251.79999999701977,
+      "framesPerSecond": 120.06196746707944,
+      "medianSubmitMs": 0.20000000298023224,
+      "p95SubmitMs": 0.30000001192092896,
+      "medianGpuMs": 0.1582469940185547,
+      "p95GpuMs": 0.4102430045604706,
+      "glyphCount": 268,
+      "drawCount": 1,
+      "artifactBytes": 6979370,
+      "atlasGpuBytes": 55924040,
+      "totalGpuBytes": 56945000
+    },
+    {
+      "technique": "slug",
+      "rendererInitMs": 4.900000002235174,
+      "fontLoadMs": 117.89999999850988,
+      "textReadyMs": 12.5,
+      "firstDrawSubmitMs": 11.400000002235174,
+      "uploadFrameCompleteMs": 18.100000001490116,
+      "uploadFrameGpuMs": 0.241933,
+      "startupMs": 153.40000000223517,
+      "framesPerSecond": 119.76047904191617,
+      "medianSubmitMs": 0.20000000298023224,
+      "p95SubmitMs": 0.4000000059604645,
+      "medianGpuMs": 0.3333689868450165,
+      "p95GpuMs": 0.4847019910812378,
+      "glyphCount": 268,
+      "drawCount": 1,
+      "artifactBytes": 618487,
+      "atlasGpuBytes": 3162112,
+      "totalGpuBytes": 4183072,
+      "slugCurveGpuBytes": 2097152,
+      "slugHeaderGpuBytes": 376832,
+      "slugReferenceGpuBytes": 688128
+    }
+  ],
+  "bundleIsolation": [
+    {
+      "id": "browser-core",
+      "rawBytes": 322444,
+      "gzipBytes": 71778,
+      "brotliBytes": 55012
+    },
+    {
+      "id": "text-shaper-wasm",
+      "rawBytes": 680312,
+      "gzipBytes": 253568,
+      "brotliBytes": 199365
+    },
+    {
+      "id": "bitmap-runtime-js",
+      "rawBytes": 355863,
+      "gzipBytes": 77736,
+      "brotliBytes": 60134
+    },
+    {
+      "id": "mtsdf-runtime-js",
+      "rawBytes": 361894,
+      "gzipBytes": 78879,
+      "brotliBytes": 61120
+    },
+    {
+      "id": "slug-runtime-js",
+      "rawBytes": 376572,
+      "gzipBytes": 80963,
+      "brotliBytes": 62879
+    },
+    {
+      "id": "bitmap-baker-wasm",
+      "rawBytes": 607003,
+      "gzipBytes": 226695,
+      "brotliBytes": 173793
+    },
+    {
+      "id": "mtsdf-baker-wasm",
+      "rawBytes": 516720,
+      "gzipBytes": 201090,
+      "brotliBytes": 157059
+    },
+    {
+      "id": "slug-baker-wasm",
+      "rawBytes": 465377,
+      "gzipBytes": 186725,
+      "brotliBytes": 146689
+    }
+  ]
+}

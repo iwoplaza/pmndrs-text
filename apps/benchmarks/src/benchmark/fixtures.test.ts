@@ -103,7 +103,7 @@ describe('canonical Inter fixtures', () => {
       targetId: 'harfrust-shaper',
       scenarioId: 'shaping-conformance',
       status: 'passed',
-      controls: { samples: 3, warmup: 1 },
+      controls: { dpr: 1, samples: 3, warmup: 1 },
     })
     expect(result.measurements).toHaveLength(3)
     expect(new Set(result.measurements.map(({ hash }: { hash: string }) => hash))).toEqual(
@@ -207,6 +207,76 @@ describe('canonical Inter fixtures', () => {
           metrics.uikitLayoutCount === 1 &&
           metrics.shapeBoundaryCrossings === 4 &&
           metrics.reshapeBoundaryCrossings === 5,
+      ),
+    ).toBe(true)
+  })
+})
+
+describe('advanced-shaping result', () => {
+  it('records every authored public Text frame with exact layout and batch identity', async () => {
+    const result = JSON.parse(
+      await readFile(
+        new URL('results/advanced-shaping-conformance-chromium149.json', fixtureRoot),
+        'utf8',
+      ),
+    )
+    expect(result).toMatchObject({
+      schemaVersion: 0,
+      targetId: 'advanced-shaping-conformance',
+      scenarioId: 'advanced-shaping-conformance',
+      status: 'passed',
+      controls: { dpr: 1, samples: 3, warmup: 1 },
+      outputBytes: 17_362,
+    })
+    expect(result.measurements).toHaveLength(3)
+    expect(
+      result.measurements.every(
+        ({ hash, metrics }: { hash: string; metrics: Record<string, number> }) =>
+          hash === '51ba1d14' &&
+          metrics.caseCount === 5 &&
+          metrics.frameCount === 68 &&
+          metrics.layoutBytes === 17_362 &&
+          metrics.glyphCount === 709 &&
+          metrics.missingGlyphCount === 0 &&
+          metrics.renderedGlyphCount === 625 &&
+          metrics.drawCount === 72,
+      ),
+    ).toBe(true)
+  })
+})
+
+describe('advanced-shaping performance observation', () => {
+  it('labels the environment and retains consumer costs for every showcase lane', async () => {
+    const result = JSON.parse(
+      await readFile(
+        new URL('results/advanced-shaping-performance-chromium149.json', fixtureRoot),
+        'utf8',
+      ),
+    )
+    expect(result).toMatchObject({
+      schemaVersion: 0,
+      kind: 'live-performance-observation',
+      backend: 'webgpu',
+      dpr: 1,
+      steadyStateReportCount: 12,
+      environment: { hardwareConcurrency: 10, webgpu: true },
+      gpuAdapter: { architecture: 'metal-3', vendor: 'apple' },
+    })
+    expect(result.cases.map(({ id }: { id: string }) => id)).toEqual([
+      'latin-features',
+      'arabic-joining',
+      'indic-reordering',
+      'mixed-bidi',
+      'cjk-line-breaks',
+    ])
+    expect(
+      result.cases.every((entry: Record<string, unknown>) =>
+        Object.entries(entry).every(
+          ([name, value]) =>
+            name === 'id' ||
+            name === 'fontFixture' ||
+            (typeof value === 'number' && Number.isFinite(value) && value >= 0),
+        ),
       ),
     ).toBe(true)
   })
@@ -380,7 +450,7 @@ describe('canonical Noto Sans CJK fixtures', () => {
           metrics.retainedFontBytes === 1539372 &&
           metrics.wasmMemoryBytes === 4587520 &&
           metrics.sourceFontBytes === 16467736 &&
-          metrics.artifactBytes === 1540460 &&
+          metrics.artifactBytes === 1540480 &&
           metrics.shapingPayloadRawBytes === 1539372 &&
           metrics.shapingPayloadGzipBytes === 654925 &&
           metrics.shapingPayloadBrotliBytes === 514547,

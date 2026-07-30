@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { BenchmarkScenario, BenchmarkTarget } from './contracts'
+import type { BenchmarkScenario, BenchmarkTarget, RunnerEvent } from './contracts'
 import { missingCapabilities, runBenchmark } from './runner'
 
 const target: BenchmarkTarget = {
@@ -24,7 +24,7 @@ const scenario: BenchmarkScenario = {
 
 describe('shared benchmark runner', () => {
   it('reports accepted samples through one lifecycle', async () => {
-    const phases: string[] = []
+    const events: RunnerEvent[] = []
     const sampleIndexes: number[] = []
     const result = await runBenchmark({
       target: {
@@ -36,23 +36,34 @@ describe('shared benchmark runner', () => {
       },
       scenario,
       input: {},
-      controls: { warmup: 1, samples: 3 },
+      controls: { dpr: 2, warmup: 1, samples: 3 },
       environment: {
         browser: 'vitest',
         hardwareConcurrency: 1,
         webgpu: false,
         crossOriginIsolated: false,
       },
-      onEvent: (event) => phases.push(event.phase),
+      onEvent: (event) => events.push(event),
     })
 
     expect(result.status).toBe('passed')
     expect(result.schemaVersion).toBe(0)
-    expect(result.controls).toEqual({ warmup: 1, samples: 3 })
+    expect(result.controls).toEqual({ dpr: 2, warmup: 1, samples: 3 })
     expect(result.measurements).toHaveLength(3)
     expect(result.measurements.every(({ metrics }) => metrics?.boundaryCrossings === 1)).toBe(true)
     expect(result.validation).toBe('3 accepted')
-    expect(phases).toContain('complete')
+    expect(events.map(({ phase }) => phase)).toContain('complete')
+    expect(
+      events
+        .filter(({ phase, latest }) => phase === 'sampling' && latest !== undefined)
+        .map(({ completed }) => completed),
+    ).toEqual([1, 2, 3])
+    expect(events.at(-1)).toMatchObject({
+      phase: 'complete',
+      completed: 3,
+      medianMs: expect.any(Number),
+      p95Ms: expect.any(Number),
+    })
     expect(sampleIndexes).toEqual([0, 0, 1, 2])
   })
 
@@ -62,7 +73,7 @@ describe('shared benchmark runner', () => {
         target,
         scenario,
         input: {},
-        controls: { warmup: 0, samples: 0 },
+        controls: { dpr: 1, warmup: 0, samples: 0 },
         environment: {
           browser: 'vitest',
           hardwareConcurrency: 1,
@@ -71,6 +82,23 @@ describe('shared benchmark runner', () => {
         },
       }),
     ).rejects.toThrow('samples must be a positive safe integer')
+  })
+
+  it('rejects an invalid DPR before loading a target', async () => {
+    await expect(
+      runBenchmark({
+        target,
+        scenario,
+        input: {},
+        controls: { dpr: 0, warmup: 0, samples: 1 },
+        environment: {
+          browser: 'vitest',
+          hardwareConcurrency: 1,
+          webgpu: false,
+          crossOriginIsolated: false,
+        },
+      }),
+    ).rejects.toThrow('DPR must be finite')
   })
 
   it('lists capabilities instead of coercing unsupported targets', () => {
@@ -99,7 +127,7 @@ describe('shared benchmark runner', () => {
         target: failingTarget,
         scenario,
         input: {},
-        controls: { warmup: 0, samples: 1 },
+        controls: { dpr: 1, warmup: 0, samples: 1 },
         environment: {
           browser: 'vitest',
           hardwareConcurrency: 1,

@@ -14,7 +14,7 @@ describe('registered benchmark execution', () => {
       targetId: 'synthetic',
       scenarioId: 'overview',
       input: {},
-      controls: { samples: 3, warmup: 1 },
+      controls: { dpr: 1, samples: 3, warmup: 1 },
       environment,
     })
 
@@ -27,6 +27,15 @@ describe('registered benchmark execution', () => {
       'd9384dc5',
       'd9384dc5',
     ])
+
+    const next = await runRegisteredBenchmark({
+      targetId: 'synthetic',
+      scenarioId: 'overview',
+      input: {},
+      controls: { dpr: 1, samples: 1, warmup: 0 },
+      environment,
+    })
+    expect(next.executionId).not.toBe(summary.executionId)
   })
 
   it('rejects unknown registry identities instead of silently changing a run', async () => {
@@ -35,7 +44,7 @@ describe('registered benchmark execution', () => {
         targetId: 'missing',
         scenarioId: 'overview',
         input: {},
-        controls: { samples: 1, warmup: 0 },
+        controls: { dpr: 1, samples: 1, warmup: 0 },
         environment,
       }),
     ).rejects.toThrow('Unknown benchmark target: missing')

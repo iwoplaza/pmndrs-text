@@ -1,16 +1,27 @@
 use std::{env, fs, path::PathBuf};
 
-use ktx2::{Format, dfd::Block};
 use serde_json::json;
+
+mod abi_contract {
+    include!("src/abi_contract.rs");
+}
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src/abi_contract.rs");
     let contract = json!({
         "name": "pmndrs-text-bitmap-baker",
         "version": 0,
         "endianness": "little",
         "pointerWidth": 32,
         "memory": "memory",
+        "imports": {
+            "progress": {
+                "module": "env",
+                "name": "pmndrs_text_bake_progress",
+                "parameters": ["completed", "total"],
+            },
+        },
         "versions": {
             "generator": env!("CARGO_PKG_VERSION"),
             "bitmapFormat": 0,
@@ -41,13 +52,15 @@ fn main() {
             },
         },
         "response": {
-            "headerByteLength": 16,
-            "magic": "PMBM",
-            "statusOffset": 4,
-            "metadataByteLengthOffset": 8,
-            "artifactByteLengthOffset": 12,
-            "payloadOffset": 16,
-            "successStatus": 0,
+            "headerByteLength": abi_contract::RESPONSE_HEADER_BYTES,
+            "headerAlignment": abi_contract::RESPONSE_HEADER_ALIGNMENT,
+            "magic": abi_contract::RESPONSE_MAGIC,
+            "magicOffset": abi_contract::RESPONSE_MAGIC_OFFSET,
+            "statusOffset": abi_contract::RESPONSE_STATUS_OFFSET,
+            "metadataByteLengthOffset": abi_contract::RESPONSE_METADATA_LEN_OFFSET,
+            "artifactByteLengthOffset": abi_contract::RESPONSE_ARTIFACT_LEN_OFFSET,
+            "payloadOffset": abi_contract::RESPONSE_PAYLOAD_OFFSET,
+            "successStatus": abi_contract::RESPONSE_SUCCESS_STATUS,
         },
     });
     let output_directory = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set"));
@@ -57,13 +70,4 @@ fn main() {
         serde_json::to_vec_pretty(&contract).expect("serialize bitmap ABI"),
     )
     .expect("write bitmap ABI");
-
-    let (basic, type_size) = ktx2::dfd::Basic::from_format(Format::R8_UNORM)
-        .expect("KTX2 crate supports the canonical R8 format");
-    assert_eq!(type_size, 1);
-    fs::write(
-        output_directory.join("r8-dfd.bin"),
-        Block::Basic(basic).to_vec(),
-    )
-    .expect("write canonical R8 DFD");
 }

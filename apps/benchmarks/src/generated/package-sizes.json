@@ -10,90 +10,200 @@
       "label": "Browser core",
       "status": "measured",
       "format": "javascript",
-      "rawBytes": 271037,
-      "minifiedBytes": 211127,
-      "gzipBytes": 62751,
-      "brotliBytes": 47995
+      "rawBytes": 322612,
+      "minifiedBytes": 246050,
+      "gzipBytes": 71799,
+      "brotliBytes": 55000
     },
     {
       "id": "font-validator-js",
       "label": "Lazy font validator JS",
       "status": "measured",
       "format": "javascript",
-      "rawBytes": 740114,
-      "minifiedBytes": 584255,
-      "gzipBytes": 137585,
-      "brotliBytes": 112927
+      "rawBytes": 740645,
+      "minifiedBytes": 584479,
+      "gzipBytes": 137637,
+      "brotliBytes": 112898
     },
     {
       "id": "runtime-baker-host-js",
       "label": "Runtime baker host JS",
       "status": "measured",
       "format": "javascript",
-      "rawBytes": 5234,
-      "minifiedBytes": 3831,
-      "gzipBytes": 1473,
-      "brotliBytes": 1314
+      "rawBytes": 11437,
+      "minifiedBytes": 9524,
+      "gzipBytes": 3819,
+      "brotliBytes": 3428
     },
     {
       "id": "runtime-baker-worker-js",
       "label": "Runtime baker Worker JS",
       "status": "measured",
       "format": "javascript",
-      "rawBytes": 13273,
-      "minifiedBytes": 8968,
-      "gzipBytes": 3025,
-      "brotliBytes": 2661
+      "rawBytes": 12908,
+      "minifiedBytes": 8936,
+      "gzipBytes": 3003,
+      "brotliBytes": 2671
     },
     {
       "id": "text-shaper-js",
       "label": "Text shaper JS",
       "status": "measured",
       "format": "javascript",
-      "rawBytes": 43926,
-      "minifiedBytes": 30630,
-      "gzipBytes": 8794,
-      "brotliBytes": 7826
+      "rawBytes": 52985,
+      "minifiedBytes": 36966,
+      "gzipBytes": 10099,
+      "brotliBytes": 8981
     },
     {
       "id": "text-shaper-wasm",
       "label": "Text shaper Wasm",
       "status": "measured",
       "format": "wasm",
-      "rawBytes": 692114,
-      "minifiedBytes": 692114,
-      "gzipBytes": 257986,
-      "brotliBytes": 202523
+      "rawBytes": 680312,
+      "minifiedBytes": 680312,
+      "gzipBytes": 253568,
+      "brotliBytes": 199365
+    },
+    {
+      "id": "bitmap-runtime-js",
+      "label": "Bitmap runtime JS graph",
+      "status": "measured",
+      "format": "javascript",
+      "rawBytes": 356055,
+      "minifiedBytes": 267440,
+      "gzipBytes": 77756,
+      "brotliBytes": 60181
+    },
+    {
+      "id": "mtsdf-runtime-js",
+      "label": "MTSDF runtime JS graph",
+      "status": "measured",
+      "format": "javascript",
+      "rawBytes": 366429,
+      "minifiedBytes": 273040,
+      "gzipBytes": 79396,
+      "brotliBytes": 61592
+    },
+    {
+      "id": "slug-runtime-js",
+      "label": "Slug runtime JS graph",
+      "status": "measured",
+      "format": "javascript",
+      "rawBytes": 378760,
+      "minifiedBytes": 279145,
+      "gzipBytes": 81179,
+      "brotliBytes": 62985
+    },
+    {
+      "id": "bitmap-baker-wasm",
+      "label": "Bitmap fixed baker Wasm",
+      "status": "measured",
+      "format": "wasm",
+      "rawBytes": 606995,
+      "minifiedBytes": 606995,
+      "gzipBytes": 226695,
+      "brotliBytes": 174100
+    },
+    {
+      "id": "bitmap-baker-js",
+      "label": "Bitmap fixed baker host JS",
+      "status": "measured",
+      "format": "javascript",
+      "rawBytes": 17478,
+      "minifiedBytes": 11682,
+      "gzipBytes": 3893,
+      "brotliBytes": 3448
+    },
+    {
+      "id": "mtsdf-generator-js",
+      "label": "MTSDF generator host JS",
+      "status": "measured",
+      "format": "javascript",
+      "rawBytes": 11543,
+      "minifiedBytes": 8466,
+      "gzipBytes": 2658,
+      "brotliBytes": 2364
+    },
+    {
+      "id": "mtsdf-generator-wasm",
+      "label": "MTSDF admitted generator kernel",
+      "status": "measured",
+      "format": "wasm",
+      "rawBytes": 52633,
+      "minifiedBytes": 52633,
+      "gzipBytes": 23116,
+      "brotliBytes": 19744
+    },
+    {
+      "id": "mtsdf-baker-wasm",
+      "label": "MTSDF fixed baker Wasm",
+      "status": "measured",
+      "format": "wasm",
+      "rawBytes": 534709,
+      "minifiedBytes": 534709,
+      "gzipBytes": 208473,
+      "brotliBytes": 163470
+    },
+    {
+      "id": "mtsdf-baker-js",
+      "label": "MTSDF fixed baker host JS",
+      "status": "measured",
+      "format": "javascript",
+      "rawBytes": 21809,
+      "minifiedBytes": 15430,
+      "gzipBytes": 4701,
+      "brotliBytes": 4176
+    },
+    {
+      "id": "slug-baker-wasm",
+      "label": "Slug fixed baker Wasm",
+      "status": "measured",
+      "format": "wasm",
+      "rawBytes": 465369,
+      "minifiedBytes": 465369,
+      "gzipBytes": 186718,
+      "brotliBytes": 146609
+    },
+    {
+      "id": "slug-baker-js",
+      "label": "Slug fixed baker host JS",
+      "status": "measured",
+      "format": "javascript",
+      "rawBytes": 18751,
+      "minifiedBytes": 12943,
+      "gzipBytes": 4133,
+      "brotliBytes": 3682
     },
     {
       "id": "portable-baker-js",
       "label": "Portable baker JS",
       "status": "measured",
       "format": "javascript",
-      "rawBytes": 10034,
-      "minifiedBytes": 6641,
-      "gzipBytes": 2333,
-      "brotliBytes": 2058
+      "rawBytes": 9012,
+      "minifiedBytes": 6077,
+      "gzipBytes": 2175,
+      "brotliBytes": 1937
     },
     {
       "id": "portable-baker-wasm",
       "label": "Portable baker Wasm",
       "status": "measured",
       "format": "wasm",
-      "rawBytes": 433755,
-      "minifiedBytes": 433755,
-      "gzipBytes": 168251,
-      "brotliBytes": 136793
+      "rawBytes": 422538,
+      "minifiedBytes": 422538,
+      "gzipBytes": 164319,
+      "brotliBytes": 134012
     },
     {
       "id": "unicode-analysis-js",
       "label": "Unicode 17 analysis JS",
       "status": "measured",
       "format": "javascript",
-      "rawBytes": 164702,
-      "minifiedBytes": 139912,
-      "gzipBytes": 42042,
-      "brotliBytes": 31048
+      "rawBytes": 164786,
+      "minifiedBytes": 139936,
+      "gzipBytes": 42047,
+      "brotliBytes": 30989
     }
   ]
 }

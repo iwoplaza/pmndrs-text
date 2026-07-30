@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 0,
+  "kind": "mtsdf-simd-decision",
+  "decision": {
+    "selected": "scalar",
+    "reason": "scalar remains fastest for the bounded Node and browser corpus; explicit simd128 improves the complete Inter stress pass by 5.7% but requires a target feature and alternate artifact"
+  },
+  "toolchain": {
+    "rust": "1.97.1",
+    "binaryen": "129.0.0",
+    "node": "24.18.0",
+    "browser": "Chromium 149",
+    "platform": "darwin-arm64"
+  },
+  "quality": {
+    "oracle": "native-oracle-v0.json",
+    "allSevenCandidateHashesExact": true,
+    "completeInterChecksumExact": true
+  },
+  "variants": {
+    "scalar": {
+      "targetFeatures": [],
+      "optimizedBytes": 52633,
+      "gzipBytes": 23116,
+      "brotliBytes": 19744,
+      "optimizedSha256": "f5cc21b17d49d0482ed7afb8242b003ff649b366bc229ddd800635efd0e70d7d",
+      "nodeSevenCaseWarmMedianMs": 46.462,
+      "browserSevenCaseWarmMedianMs": 47.6,
+      "interColdMs": 45375.622,
+      "interWarmMs": 48125.482
+    },
+    "auto-vectorized": {
+      "targetFeatures": ["simd128"],
+      "optimizedBytes": 52417,
+      "gzipBytes": 22676,
+      "brotliBytes": 19505,
+      "optimizedSha256": "3ebbfcd6eaae70042df73c12156b9eb11abb251f8601cb246e41f703ab6dd185",
+      "nodeSevenCaseWarmMedianMs": 47.254,
+      "browserSevenCaseWarmMedianMs": 48.5,
+      "interColdMs": 46338.22,
+      "interWarmMs": 47005.323
+    },
+    "explicit-simd128": {
+      "targetFeatures": ["simd128"],
+      "optimizedBytes": 52189,
+      "gzipBytes": 22638,
+      "brotliBytes": 19447,
+      "optimizedSha256": "54677c176a62ea959c4a75ce29c3d626fda34eaa27e3b4d6d73e8f4fb5e2ec86",
+      "nodeSevenCaseWarmMedianMs": 47.079,
+      "browserSevenCaseWarmMedianMs": 48.1,
+      "interColdMs": 45031.933,
+      "interWarmMs": 45382.427
+    }
+  },
+  "completeInter": {
+    "fixture": "apps/benchmarks/fixtures/fonts/inter-v4.1/Inter-Regular.ttf",
+    "glyphSlots": 2937,
+    "requestSkippedGlyphs": 0,
+    "generatedGlyphs": 2915,
+    "rejectedGlyphs": 22,
+    "rejectedGlyphIds": [
+      1,
+      1422,
+      1423,
+      1424,
+      1777,
+      1778,
+      1779,
+      1780,
+      1781,
+      1782,
+      1783,
+      1784,
+      1785,
+      1786,
+      1787,
+      1788,
+      1789,
+      1790,
+      1791,
+      1792,
+      2572,
+      2728
+    ],
+    "checksum": "a5a6aa6e",
+    "compositeSha256": "f6381c2f7ed4da3aafad8d693acb53b99b6eb948e68b3325c5ff91f356b1eef6"
+  },
+  "allocation": {
+    "requestAllocationsPerCall": 1,
+    "ownedOutputCopiesPerCall": 1,
+    "warmSevenCaseCorpus": {
+      "allocations": 7,
+      "reallocations": 0,
+      "deallocations": 7
+    },
+    "steadyStateWasmMemoryGrowthBytes": 0,
+    "coreCornerScratchReused": true
+  }
+}

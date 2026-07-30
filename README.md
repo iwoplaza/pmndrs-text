@@ -167,6 +167,8 @@ Supporting evidence is intentionally outside that path: [RESEARCH.md](RESEARCH.m
 
 The knowledge corpus under [`docs`](docs/index.md) is an [Open Knowledge Format v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle: reserved indexes provide progressive disclosure, while frontmatter provenance and links make product documentation, plans, decisions, specifications, and package references portable to agents. Diátaxis informs reader-facing documentation without forcing internal project artifacts into a four-part template.
 
+Repository agents consult the local `evidence-first` skill as default style guidance across chat, reviews, handoffs, PRs, READMEs, and technical docs. It provides situational cues rather than a fixed template, operating inside Open Knowledge Format's bundle and provenance rules and Diátaxis's document purposes.
+
 ## Work locally
 
 ```sh
@@ -175,7 +177,7 @@ pnpm install
 pnpm check
 ```
 
-Use mise to install the exact root Node.js, pnpm, and stable Rust pins. Those canonical versions are required; do not substitute merely compatible local toolchains. The optional coverage-guided font-baker fuzzer is isolated
+Use mise to install the exact root Node.js, pnpm, stable Rust, Meson, and Ninja pins. Meson and Ninja build the authenticated HarfBuzz oracle utilities used by the clean-checkout fixture gates. HarfBuzz gates those command-line utilities on GLib development metadata, so the build host must also provide `glib-2.0` through `pkg-config` (`libglib2.0-dev` on Ubuntu or `glib` on macOS with Homebrew). CI declares that native prerequisite and prints the selected GLib version before checks run. The canonical mise versions are required; do not substitute merely compatible local toolchains. The optional coverage-guided font-baker fuzzer is isolated
 under `packages/font-baker/fuzz`; its nested mise configuration provisions the exact dated nightly and
 `cargo-fuzz` release required by that workspace when `fuzz:rust` runs.
 

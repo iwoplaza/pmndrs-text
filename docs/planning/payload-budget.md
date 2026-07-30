@@ -22,7 +22,7 @@ sources:
 
 generated:
   by: openai-codex/gpt-5.6
-  at: "2026-07-26T05:40:22Z"
+  at: "2026-07-27T01:29:13Z"
 ---
 
 # Font payload budget
@@ -88,7 +88,7 @@ The Inter and Noto rows measure the canonical V0 SFNT plus font-function views o
 | Font Awesome | 172,729 B | 147,594 B | 11,234 B | 8,017 B |
 | Noto Sans CJK JP 2.004 (gzip 9 / Brotli 9) | 13,629,545 B | 12,365,597 B | 654,925 B | 514,547 B |
 
-The canonical SFNT figures are reconstructed directly from the pinned source table directories using the V0 whitelist. Dense extents and the one-bit-per-glyph availability view are exact contract costs. Inter and Noto prove their complete checked-in HarfRust corpora are identical between source and reduced SFNT; Noto additionally agrees with HarfBuzz 13 on every field. Every bake report lists directory, per-table, extents, and availability bytes. The complete Noto core GLB is 1,540,460 raw bytes, 655,920 gzip-9 bytes, and 515,421 Brotli-9 bytes.
+The canonical SFNT figures are reconstructed directly from the pinned source table directories using the V0 whitelist. Dense extents and the one-bit-per-glyph availability view are exact contract costs. Inter and Noto prove their complete checked-in HarfRust corpora are identical between source and reduced SFNT; Noto additionally agrees with HarfBuzz 13 on every field. Every bake report lists directory, per-table, extents, and availability bytes. The complete Noto core GLB is 1,540,480 raw bytes, 654,597 gzip-9 bytes, and 515,676 Brotli-9 bytes.
 
 Lucide is not a font and has no shaping payload. Its shared records are icon identity, view box, fill/paint, and shape indexes. The existing artifact spends 237,704 B on GLB JSON, largely for named icon metadata; the pmndrs format should measure a compact binary name/index representation rather than inherit that JSON cost by default.
 
@@ -147,9 +147,9 @@ Relevant prior art:
 - [Glyph paging design](https://github.com/thejustinwalsh/three-flatland/blob/2935a89fcd9999e8a8b3d3b733f7f7302285cd60/planning/perf/glyph-paging-design.md)
 - [uikit Lucide package](https://github.com/thejustinwalsh/three-flatland/tree/2935a89fcd9999e8a8b3d3b733f7f7302285cd60/packages/uikit-lucide)
 
-## Measured bitmap and modeled MSDF budgets
+## Measured bitmap and MTSDF budgets
 
-The Inter 16 ppem bitmap row is now an exact generator result. Remaining rows are capacity estimates and stay labeled as such. Exact MSDF atlas dimensions, occupancy, distance range, and transport compression become benchmark results only when that generator exists.
+The Inter 16 ppem bitmap row and six full-face MTSDF fixtures are exact generator results. Rows explicitly labeled modeled remain capacity estimates.
 
 Assumptions:
 
@@ -174,16 +174,16 @@ The canonical full-face Inter 4.1 bitmap at 16 ppem measures:
 
 | Component | Exact result |
 | --- | ---: |
-| Dense records | 58,740 B; SHA-256 `8baad38084b89f93756ee70c994e4e0d30d6854b1c001af6618e0be413a5f60d` |
+| Dense records | 58,740 B; SHA-256 `06af881cc3c2b6df60abd4a946ad63f8bd12aed6541cca9b1d90826723ef798a` |
 | Present / absent glyphs | 2,915 / 22 |
 | R8 page | 1024 × 679 = 695,296 GPU B |
 | Lossless KTX2 | 695,444 B |
 | Embedded raster GLB | 755,064 B |
-| External raster index GLB | 59,744 B |
-| External index + page | 755,188 B |
-| Combined core + embedded raster GLB | 927,148 B |
+| External raster index GLB | 59,808 B |
+| External index + page | 755,252 B |
+| Combined core + embedded raster GLB | 927,164 B |
 | Core with external directory | 172,476 B |
-| Optimized bitmap baker Wasm | 657,942 B raw; 238,727 B gzip; 182,925 B Brotli q11 |
+| Optimized bitmap baker Wasm | 606,995 B raw; 226,695 B gzip; 174,100 B Brotli q11 |
 
 The embedded and external forms have byte-identical records and KTX2 texels. External packaging costs 124 additional serialized bytes for the authenticated URI/length/hash directory.
 
@@ -191,11 +191,11 @@ Useful exact formulas:
 
 ```text
 bitmap GPU bytes = Σ(pageWidth × pageHeight × bytesPerPixel)
-MSDF GPU bytes   = Σ(pageWidth × pageHeight × 4) // MTSDF RGBA8
+MTSDF GPU bytes  = textureArrayWidth × textureArrayHeight × pageCount × 4
 metadata bytes   = glyphRecordStride × representedGlyphCount + page directory
 ```
 
-Mipmaps add approximately one third to the base texture size when a full chain is resident. Report them explicitly rather than hiding them in an atlas total.
+MTSDF uploads only its authenticated base level. Bilinear field sampling and screen derivatives reconstruct coverage without conventional mip generation. Reports present download bytes, decoded artifact bytes, unpadded page texels, layer padding, and exact base-array GPU memory separately. Independently authored size tiers remain strike atlases or texture-array layers rather than conventional mip levels.
 
 ## Planning totals
 
@@ -204,7 +204,7 @@ For the non-subsetted 2,937-glyph Inter V0 face, the shared cost is fixed and th
 | Selected raster | Shared raw baseline | Raster GPU storage | Notes |
 | --- | ---: | ---: | --- |
 | Generated bitmap, 16 ppem | 167.0 KiB | 695,296 B | 58,740 B records; 755,064 B embedded companion GLB. |
-| MSDF | 167.0 KiB | generator report required | MTSDF RGBA8; 58,740 B records; legacy subset was modeled at 4–8 MiB. |
+| MTSDF | 167.0 KiB | 41,943,040 B | 10-page full-face Inter padded base texture array; 6,798,412 B gzip transport and 39,347,712 B decoded GLB. |
 | Slug | 167.0 KiB | generator report required | 40 B × 2,937 = 117,480 B records; legacy subset derived near 2 MiB. |
 
 For the non-subsetted 1,403-glyph Font Awesome V0 face:
@@ -212,7 +212,7 @@ For the non-subsetted 1,403-glyph Font Awesome V0 face:
 | Selected raster | Shared raw baseline | Raster GPU storage | Notes |
 | --- | ---: | ---: | --- |
 | Generated bitmap, one strike | 35.2 KiB | generator report required | 20 B × 1,403 = 28,060 B records. |
-| MSDF | 35.2 KiB | generator report required | MTSDF RGBA8; 28,060 B records; legacy subset was modeled at 4–8 MiB. |
+| MSDF | 35.2 KiB | 36,347,904 B | Nine-page full-face MTSDF RGBA8 padded base texture array; 28,060 B records, 7,227,824 B gzip transport, and 32,580,900 B decoded GLB. |
 | Slug | 35.2 KiB | generator report required | 40 B × 1,403 = 56,120 B records; legacy subset derived near 1 MiB. |
 
 ## Large-coverage CJK and icon envelope
@@ -225,7 +225,7 @@ Dense records scale predictably even when page payloads are sparse or independen
 | MSDF | 1,310,700 | 1.25 MiB | `20 × 65,535`; independent of MTSDF atlas residency. |
 | Slug | 2,621,400 | 2.50 MiB | `40 × 65,535`; independent of curve/header/reference page residency. |
 
-These are metadata envelopes, not estimates of CJK texture cost. Item 5.4 reports only the complete pan-CJK shaping source, retained data, Wasm memory, output, and transport sizes; it creates no texture or residency result. Milestone 12 later reports the companion index separately from embedded/external page bytes, first-layout bytes fetched, peak/resident GPU bytes, page churn, and complete-library stress payload. A selected icon subset and complete icon library are always separate results.
+These are metadata envelopes, not estimates of CJK texture cost. Item 5.4 reports only the complete pan-CJK shaping source, retained data, Wasm memory, output, and transport sizes; it creates no texture or residency result. Milestone 13 later reports the companion index separately from embedded/external page bytes, first-layout bytes fetched, peak/resident GPU bytes, page churn, and complete-library stress payload. A selected icon subset and complete icon library are always separate results.
 
 These columns are intentionally not added into a fake single “download size.” Shared raw bytes, compressed transport, and GPU allocations have different lifetimes and compression behavior.
 
@@ -246,7 +246,7 @@ interface FontPayloadReport {
       width: number
       height: number
       format: string
-      mipBytes: number
+      gpuBytes: number
       source: 'embedded' | 'external'
       encodedBytes: number
     }>

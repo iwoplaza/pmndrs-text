@@ -24,20 +24,27 @@
 - [Conformance plan](conformance-plan.md) — correctness oracles and acceptance gates.
 - [Tooling fixtures](tooling-fixtures.md) — reproducible sources, goldens, and validators.
 - [Autoresearch protocol](autoresearch.md) — controlled optimization workflow.
+- [Untrusted-resource validation library admission](untrusted-validation-research.md) — measured hand-validator, Zod Mini, Valibot, Ajv standalone, and TypeBox comparison.
 
 ## Shaping research
 
 - [Shaping compilation and execution research](shaping-compilation-research.md) — closed-corpus baking, semantic bytecode, per-font CPU/Wasm specialization, and WebGPU execution research.
+- [Language-aware font units and physical bitmap strikes](language-and-strike-bundles.md) — coverage-first language delivery, CJK units, DPR selection, and independent strike residency.
+- [Responsive editorial flow and mixed-raster composition](editorial-flow-layout.md) — post-V1 exclusion regions, responsive columns, and a bitmap/MTSDF/Slug benchmark.
 
 ## Rendering analysis
 
+- [MTSDF generation research](mtsdf-generation-research.md) — primary literature, implementation/license survey, owned Rust boundary, and data-oriented optimization gates.
+- [Grayscale bitmap hinting research](bitmap-hinting-research.md) — native pixel placement, hinted strikes, and four-phase grayscale packing gates.
 - [Renderer capabilities](renderer-capabilities.md) — feature matrix and developer guidance.
+- [Composable text effects over TSL](text-effect-composition.md) — research proposal for ordered node effects, object-local uniforms, shared-material safety, and dual-backend admission.
 - [Implementation difficulty](implementation-difficulty.md) — relative correctness and performance effort.
 - [Payload budget](payload-budget.md) — serialized, decoded, and resident cost model.
-- [GPU compression](gpu-compression.md) — transport and GPU-native compression constraints.
+- [GPU compression and Rust container ownership](gpu-compression.md) — transport/GPU compression constraints plus the GLB/KTX2 serializer decision.
 - [Slug audit](slug-audit.md) — prior-art findings and implementation disposition.
 
 ## Governance
 
 - [Decision register](decision-register.md) — architectural decision status.
+- [Architecture decision records](decisions/0001-package-runtime-boundaries.md) — accepted rationale grouped by package/runtime, shaping/identity, raster/container, and verification/optimization boundaries.
 - [Open questions](open-questions.md) — unresolved decisions and required experiments.

@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 0,
+  "capturedAt": "2026-07-26T20:18:34.915Z",
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "browser": "149.0.7827.55"
+  },
+  "artifact": {
+    "bytes": 172156,
+    "sha256": "af7bfb85f04a6a63c6462735a6e8ec6d739576adb354c07ca51e744814db2f7b"
+  },
+  "offline": {
+    "coldMedianMs": 4.155290999999977,
+    "warmMedianMs": 2.9377920000000017,
+    "samples": [
+      {
+        "coldMs": 13.502250000000004,
+        "warmMs": 2.998166000000026
+      },
+      {
+        "coldMs": 4.155290999999977,
+        "warmMs": 2.9377920000000017
+      },
+      {
+        "coldMs": 3.958583000000033,
+        "warmMs": 2.7940419999999904
+      }
+    ]
+  },
+  "worker": {
+    "coldMedianMs": 21.700000002980232,
+    "warmMedianMs": 3.5,
+    "samples": [
+      {
+        "coldMs": 26.69999999552965,
+        "warmMs": 3.600000001490116
+      },
+      {
+        "coldMs": 21.600000001490116,
+        "warmMs": 3.2999999970197678
+      },
+      {
+        "coldMs": 21.700000002980232,
+        "warmMs": 3.5
+      }
+    ]
+  }
+}

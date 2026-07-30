@@ -19,7 +19,7 @@ sources:
 
 generated:
   by: openai-codex/gpt-5.6
-  at: "2026-07-26T02:40:00Z"
+  at: "2026-07-29T11:22:07Z"
 ---
 
 # Runtime and bake API fixture V0
@@ -128,6 +128,11 @@ interface TextPaintProperties {
   shadow?: { color: ColorRepresentation; offset: readonly [number, number] }
 }
 
+interface TextRasterProperties {
+  /** Physical device pixels represented by one paragraph-local CSS pixel. */
+  rasterPixelRatio?: number
+}
+
 interface TextSpan extends TextShapingProperties, TextPaintProperties {
   start: number
   end: number
@@ -149,6 +154,7 @@ type TextContentProperties =
 type TextProperties = TextLayoutProperties &
   TextShapingProperties &
   TextPaintProperties &
+  TextRasterProperties &
   TextFontProperties &
   TextContentProperties & {
     onLayout?: (layout: ParagraphLayout) => void
@@ -163,7 +169,7 @@ declare class Text extends Group {
 }
 ```
 
-`width` and `height` are local Three.js units. A supplied dimension maps to an `exactly` paragraph axis; an omitted dimension maps to `unconstrained`. Standard `Object3D` transforms remain standard Three.js/R3F properties rather than being duplicated in `TextProperties`. Direct text properties follow Drei and uikit conventions; there is no second CSS-like `style` object in V0. React users can create styled wrapper components with ordinary component composition. `lineHeight` is a unitless multiplier of the effective `fontSize`.
+`width` and `height` are local Three.js units. A supplied dimension maps to an `exactly` paragraph axis; an omitted dimension maps to `unconstrained`. Standard `Object3D` transforms remain standard Three.js/R3F properties rather than being duplicated in `TextProperties`. Direct text properties follow Drei and uikit conventions; there is no second CSS-like `style` object in V0. React users can create styled wrapper components with ordinary component composition. `lineHeight` is a unitless multiplier of the effective `fontSize`. `rasterPixelRatio` defaults to one, describes physical pixels per paragraph-local CSS pixel, and changes raster batch selection without changing shaping or logical layout. Browser/native integrations supply it explicitly; the core never reads a platform global.
 
 `Text` owns a paragraph instance, the raster resources required by its font slots, and raster-specific Three.js draw objects. The normal `font` value is a composed `FontToken`; callers may instead provide a raw font input plus a raster definition for one-off use. Both forms normalize through the same caches. Because the framework-neutral `Text` class is deliberately non-generic, the raw form is runtime-validated; reusable `defineFont` tokens and `RasterRuntime.load` retain package-owned option types at compile time. The token's raster definition resolves a deterministic serialized raster key; callers never invent that key. `ready` waits for every distinct root/span font, shared-shaper initialization, selected raster index, initial shape/layout, and raster pages required by that initial layout; raw or registered span fonts inherit the root raster definition, while a span `FontToken` carries its own. Once those exist, span inputs are resolved to `FontHandle`s before paragraph creation. The object stays hidden until that first computation completes, but shaping and layout do not introduce another Suspense resource. Updating only transform or paint uniforms does not reflow; updating width reflows; updating text or shaping styles invalidates the affected shaping cache. A later update that needs different pages retains the last complete draw generation until the replacement pages are ready, then swaps batches atomically; stale or cancelled page preparation never replaces newer output.
 
@@ -504,21 +510,27 @@ interface LoadedFont<
   Module extends AnyRasterModule,
   Input extends FontInput = FontInput,
 > {
-  readonly token: FontToken<Module, Input>
-  readonly core: RegisteredFont
+  readonly input: Input
+  readonly font: RegisteredFont
   readonly raster: LoadedRaster<Module>
 }
 
-interface RasterRuntime {
+interface RasterDrawBatch {
+  readonly object: Object3D
+  dispose(): void
+}
+
+declare class RasterRuntime {
   load<const Module extends AnyRasterModule>(
     font: RegisteredFont,
     request: RasterRequest<Module>,
     options?: RasterLoadOptions,
   ): Promise<LoadedRaster<Module>>
+  dispose(): void
 }
 ```
 
-Disposal increments the font generation and invalidates stale raster, shape, layout, and GPU-resource cache entries.
+Every raster module's draw-batch type extends `RasterDrawBatch`, giving the core one zero-guesswork scene attachment and disposal seam without interpreting module-owned resources. `RasterRuntime` derives the request identity, reuses one decoded resource per font/module/key, evicts failed promises, detaches an aborted consumer without cancelling other consumers, and releases decoded resources when the registered font generation or runtime is disposed. Disposal increments the font generation and invalidates stale raster, shape, layout, and GPU-resource cache entries.
 
 ## Shared bake core
 
@@ -562,7 +574,7 @@ interface RasterPagePayloadReport {
   width: number
   height: number
   format: string
-  mipBytes: number
+  gpuBytes: number
   source: 'embedded' | 'external'
   encodedBytes: number
 }
@@ -993,6 +1005,7 @@ interface RasterModule<Kind extends string, Resource, DrawBatch, Options = never
     fontSlot: FontSlot,
     paint: GlyphPaint,
   ): DrawBatch
+  validatePaint?(paint: GlyphPaint): void
   updatePaint(batch: DrawBatch, paint: GlyphPaint, fontSlot: FontSlot): void
   dispose(resource: Resource): void
 }
@@ -1062,7 +1075,7 @@ interface LoadedRaster<M extends AnyRasterModule> {
 }
 ```
 
-Each raster package owns its configuration surface and returns a typed raster definition. A raster with no required configuration may export a ready-made module value. A module whose descriptor has options cannot be passed bare: its configured request requires those options. Bitmap exposes only its factory because its fixed strike set is mandatory:
+Each raster package owns its configuration surface and returns a typed raster definition. A raster with no required configuration may export a ready-made module value. A module whose options are optional may be passed bare for its canonical defaults or paired with an options object; a module with required options cannot be passed bare. Bitmap exposes only its factory because its strike set is mandatory. MSDF exposes a ready-made module whose optional quality controls default to 64 px/em and a full eight-pixel range:
 
 ```ts
 type StaticNumberTuple<Values extends readonly [number, ...number[]]> =
@@ -1072,11 +1085,53 @@ declare function bitmap<const Strikes extends readonly [number, ...number[]]>(
   options: { strikes: StaticNumberTuple<Strikes> },
 ): RasterRequest<BitmapModule>
 
+interface MsdfOptions {
+  /** Atlas texels per font em; integer 1..=1022, default 64. */
+  readonly emSize?: number
+  /** Full encoded signed-distance range; integer 1..=1020, default 8. */
+  readonly pixelRange?: number
+}
+
 export const msdf: MsdfModule
+
+const compactMsdf = {
+  module: msdf,
+  options: { emSize: 32, pixelRange: 6 },
+} satisfies RasterRequest<MsdfModule>
+
+declare const opaqueSnapshotBrand: unique symbol
+
+interface BitmapGlyphPositionSnapshot {
+  readonly glyphCount: number
+  readonly [opaqueSnapshotBrand]: true
+}
+
+interface BitmapGlyphPositionTransition {
+  readonly matchedGlyphs: number
+  readonly targetGlyphs: number
+  readonly progress: number
+  setProgress(progress: number): void
+  finish(): void
+  dispose(): void
+}
+
+declare function captureBitmapGlyphPositions(
+  object: THREE.Object3D,
+): BitmapGlyphPositionSnapshot
+
+declare function createBitmapGlyphPositionTransition(
+  object: THREE.Object3D,
+  from: BitmapGlyphPositionSnapshot,
+): BitmapGlyphPositionTransition
+
 export const slug: SlugModule
 ```
 
 Inline values such as `bitmap({ strikes: [16, 32] })` infer a literal tuple. A broad `number`, `number[]`, user input, environment value, calculation, or other runtime-only strike fails the TypeScript contract. JavaScript and untyped boundaries receive the same validation at runtime: the tuple must be non-empty, finite, positive, integral, no greater than the exported `MAX_BITMAP_PPEM` value of 1022, and duplicate-free. The package-owned `descriptor` sorts the values in ascending order and canonicalizes every other payload-changing option; it is shared by the runtime loader and the Node analyzer. This restriction makes the bitmap payload discoverable before the application executes and makes its raster key reproducible.
+
+MSDF option normalization fills a missing field from the 64/8 defaults, then authenticates both effective fields in every non-default descriptor. Explicit 64/8 canonicalizes to the legacy fieldless descriptor and raster key so old baked assets remain compatible. The generated resource sets `planeUnitsPerEm` equal to `emSize` and pads each glyph by `ceil(pixelRange / 2)` texels. These controls allow callers to trade atlas cost against field resolution; they do not change the recommended default without separate quality and payload evidence.
+
+The optional bitmap presentation helpers snapshot copied font handles, glyph IDs, UTF-16 clusters, exact font-size bits, occurrence ordinals, and currently displayed instance origins without retaining a `Text`, batch, texture, or geometry. A transition matches only the same complete glyph identity and updates the target batch's existing origin arrays. New or reshaped glyphs remain at their authoritative target positions; sizes, UVs, paint, shaping, line breaks, and `ParagraphLayout` never interpolate. Progress is finite and bounded to `[0, 1]`, stale or disposed batches reject mutation, and `finish`/`dispose` are idempotent. Target-origin storage is allocated only when a consumer creates a transition. The existing TSL graph still performs the final physical-pixel snap.
 
 The resource and draw-batch types are owned by their optional raster packages. `defineRaster` captures the literal `kind` and associated types from the module value; consumers do not supply generic arguments. Core has no closed raster-kind union and does not assume which raster packages are installed or shipped. Each optional package owns its literal kind and companion data contract. Adding a first-party or external raster requires no change to the core type declarations. The shared package depends only on `RasterModule` and never imports concrete engines.
 
@@ -1154,7 +1209,7 @@ interface RasterBakePlan<M extends AnyRasterBakerModule> {
 
 The raster module does not statically import its baker. Its optional `runtimeBaker` function is the dynamic boundary and returns a package-owned browser host that MUST execute generation off the main thread. It may reuse `@pmndrs/text/runtime-bake` Worker utilities, but core never resolves a package specifier or transfers a module/function through `postMessage`. If an artifact is absent or its descriptor does not satisfy the configured raster definition, the loader emits one development warning and invokes that package's runtime baker automatically. For bitmap, a baked artifact missing any statically declared strike is therefore an incompatible miss, not a partial success. If the selected module has no runtime-baker capability—or the font was loaded baked-only and has no source bytes—loading rejects with a structured missing-raster error. `options` describes the raster itself and participates in its deterministic key; it is not a fallback policy switch. It is required in `RuntimeRasterBakeRequest` whenever the module's option type is not `never`.
 
-Core resolves root/span paint into a palette and a per-glyph `paintIndices` array by mapping shaped clusters back to source spans. Paint never enters paragraph measurement. Core invokes `buildBatches` once for each `(fontSlot, raster resource)` represented in the paragraph and supplies that `GlyphPaint`. A module MUST emit only glyphs whose `glyphFontSlots` equal the supplied slot. `updatePaint` updates module-owned instance data or uniforms without reshaping or relayout. This makes span fonts and future fallback fonts compatible with one non-generic `ParagraphLayout`, including paragraphs whose slots select different raster modules; raster code never interprets another font's local glyph IDs.
+Core resolves root/span paint into a palette and a per-glyph `paintIndices` array by mapping shaped clusters back to source spans. Paint never enters paragraph measurement. Core invokes `buildBatches` once for each `(fontSlot, raster resource)` represented in the paragraph and supplies that `GlyphPaint`. A module MUST emit only glyphs whose `glyphFontSlots` equal the supplied slot. An optional synchronous `validatePaint` rejects a resolved effect combination before a committed batch is repainted and before a new batch is built. `updatePaint` updates module-owned instance data or uniforms without reshaping or relayout. This makes span fonts and future fallback fonts compatible with one non-generic `ParagraphLayout`, including paragraphs whose slots select different raster modules; raster code never interprets another font's local glyph IDs. Bitmap V0 accepts fill and opacity but rejects outline and shadow; Milestone 8's MTSDF module owns those distance-based effects.
 
 The Node host receives explicit `RasterBakePlan` values and imports no unselected baker. Matching literal kinds make incorrect pairings visible to TypeScript without merging runtime and Node dependency graphs. External page packaging produces one companion index artifact plus deterministic `raster-page` artifacts whose IDs become relative URIs in the page directory; runtime fallback may request embedded pages while using the same generator and records. Raster-specific descriptor fields do not appear in core. Shader systems also do not appear here: first-party packages use TSL internally, while external packages may use TypeGPU or another implementation.
 

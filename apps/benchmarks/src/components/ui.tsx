@@ -1,4 +1,11 @@
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from 'react'
+import type {
+  ButtonHTMLAttributes,
+  ChangeEvent,
+  CSSProperties,
+  InputHTMLAttributes,
+  ReactNode,
+  TextareaHTMLAttributes,
+} from 'react'
 
 function classes(...values: readonly (string | false | undefined)[]): string {
   return values.filter(Boolean).join(' ')
@@ -51,17 +58,118 @@ export function Chip({
 export function Field({
   label,
   className,
+  onRangeValueChange,
+  rangeScale = 'linear',
   ...props
-}: InputHTMLAttributes<HTMLInputElement> & { readonly label: string }) {
+}: InputHTMLAttributes<HTMLInputElement> & {
+  readonly label: string
+  readonly onRangeValueChange?: (value: number) => void
+  readonly rangeScale?: 'linear' | 'logarithmic'
+}) {
+  const range = props.type === 'range'
+  const logarithmic = range && rangeScale === 'logarithmic'
+  const rangeMinimum = finiteNumber(props.min, 0)
+  const rangeMaximum = finiteNumber(props.max, 100)
+  const rangeValue = finiteNumber(
+    props.value ?? props.defaultValue,
+    rangeMinimum + (rangeMaximum - rangeMinimum) / 2,
+  )
+  const input = (
+    <input
+      className={classes(
+        'h-8 min-w-0 text-xs text-foreground outline-none',
+        range
+          ? 'range-control w-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed'
+          : 'rounded-md border border-border bg-background px-2.5 file:mr-2 file:border-0 file:bg-transparent file:text-xs file:text-muted focus:border-accent',
+      )}
+      {...props}
+      {...(logarithmic
+        ? {
+            'aria-valuemax': rangeMaximum,
+            'aria-valuemin': rangeMinimum,
+            'aria-valuenow': rangeValue,
+            max: 1,
+            min: 0,
+            step: 'any',
+            value: logarithmicRangePosition(rangeValue, rangeMinimum, rangeMaximum),
+            onChange: (event: ChangeEvent<HTMLInputElement>) =>
+              onRangeValueChange?.(
+                logarithmicRangeValue(
+                  event.currentTarget.valueAsNumber,
+                  rangeMinimum,
+                  rangeMaximum,
+                  finiteNumber(props.step, 1),
+                ),
+              ),
+          }
+        : {})}
+    />
+  )
   return (
-    <label className={classes('grid gap-1.5', className)}>
+    <label className={classes('grid min-w-0 gap-1.5', className)}>
       <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-dim">{label}</span>
-      <input
-        className="h-8 min-w-0 rounded-md border border-border bg-background px-2.5 text-xs text-foreground outline-none file:mr-2 file:border-0 file:bg-transparent file:text-xs file:text-muted focus:border-accent"
-        {...props}
-      />
+      {range ? (
+        <span
+          className={classes('range-shell', props.disabled && 'is-disabled')}
+          style={{ '--range-progress': rangeProgress(props, rangeScale) } as CSSProperties}
+        >
+          {input}
+        </span>
+      ) : (
+        input
+      )}
     </label>
   )
+}
+
+function rangeProgress(
+  props: InputHTMLAttributes<HTMLInputElement>,
+  scale: 'linear' | 'logarithmic',
+): number {
+  const minimum = finiteNumber(props.min, 0)
+  const maximum = finiteNumber(props.max, 100)
+  const fallback = minimum + (maximum - minimum) / 2
+  const value = finiteNumber(props.value ?? props.defaultValue, fallback)
+  if (maximum <= minimum) return 0
+  if (scale === 'logarithmic') return logarithmicRangePosition(value, minimum, maximum)
+  return Math.min(1, Math.max(0, (value - minimum) / (maximum - minimum)))
+}
+
+export function logarithmicRangePosition(value: number, minimum: number, maximum: number): number {
+  assertLogarithmicRange(value, minimum, maximum)
+  return Math.min(1, Math.max(0, Math.log(value / minimum) / Math.log(maximum / minimum)))
+}
+
+export function logarithmicRangeValue(
+  position: number,
+  minimum: number,
+  maximum: number,
+  step: number,
+): number {
+  assertLogarithmicRange(minimum, minimum, maximum)
+  if (!Number.isFinite(position)) throw new RangeError('range position must be finite')
+  if (!Number.isFinite(step) || step <= 0) throw new RangeError('range step must be positive')
+  const normalized = Math.min(1, Math.max(0, position))
+  const value = minimum * Math.pow(maximum / minimum, normalized)
+  return Math.min(maximum, Math.max(minimum, minimum + Math.round((value - minimum) / step) * step))
+}
+
+function assertLogarithmicRange(value: number, minimum: number, maximum: number): void {
+  if (
+    !Number.isFinite(value) ||
+    !Number.isFinite(minimum) ||
+    !Number.isFinite(maximum) ||
+    value <= 0 ||
+    minimum <= 0 ||
+    maximum <= minimum
+  ) {
+    throw new RangeError('logarithmic range values must be finite, positive, and increasing')
+  }
+}
+
+function finiteNumber(value: unknown, fallback: number): number {
+  const number = typeof value === 'number' || typeof value === 'string' ? Number(value) : Number.NaN
+  return Number.isFinite(number) ? number : fallback
 }
 
 export function SelectField({
@@ -76,7 +184,7 @@ export function SelectField({
   readonly onChange: (value: string) => void
 }) {
   return (
-    <label className="grid gap-1.5">
+    <label className="grid min-w-0 gap-1.5">
       <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-dim">{label}</span>
       <select
         className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-accent"
@@ -89,22 +197,46 @@ export function SelectField({
   )
 }
 
+export function TextareaField({
+  label,
+  className,
+  ...props
+}: TextareaHTMLAttributes<HTMLTextAreaElement> & { readonly label: string }) {
+  return (
+    <label className={classes('grid min-w-0 gap-1.5', className)}>
+      <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-dim">{label}</span>
+      <textarea
+        className="min-h-20 min-w-0 resize-y rounded-md border border-border bg-background px-2.5 py-2 text-xs leading-relaxed text-foreground outline-none focus:border-accent"
+        {...props}
+      />
+    </label>
+  )
+}
+
 export function Toggle({
   checked,
+  disabled = false,
   label,
   onChange,
 }: {
   readonly checked: boolean
+  readonly disabled?: boolean
   readonly label: string
   readonly onChange: (value: boolean) => void
 }) {
   return (
-    <label className="flex min-h-8 cursor-pointer items-center justify-between gap-3 text-xs text-muted">
+    <label
+      className={classes(
+        'flex min-h-8 items-center justify-between gap-3 text-xs text-muted',
+        disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
+      )}
+    >
       <span>{label}</span>
       <input
         aria-label={label}
         checked={checked}
         className="peer sr-only"
+        disabled={disabled}
         type="checkbox"
         onChange={(event) => onChange(event.currentTarget.checked)}
       />

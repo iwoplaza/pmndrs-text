@@ -1,10 +1,13 @@
 import { writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { chromium } from 'playwright'
+import type { Browser } from 'playwright'
 import { createServer, type ViteDevServer } from 'vite'
+
+import { launchProjectChromium } from './support/project-chromium.mts'
 
 interface Arguments {
   readonly cases: readonly BenchmarkCase[]
+  readonly dpr: number
   readonly samples: number
   readonly warmup: number
   readonly port: number
@@ -18,6 +21,16 @@ interface BenchmarkCase {
 
 const conformanceCases: readonly BenchmarkCase[] = [
   { targetId: 'synthetic', scenarioId: 'overview' },
+  { targetId: 'tsl-webgl2-baseline', scenarioId: 'tsl-shader-baseline' },
+  { targetId: 'bitmap-text-webgl2', scenarioId: 'bitmap-text-frame' },
+  { targetId: 'mtsdf-text-webgl2', scenarioId: 'mtsdf-text-scenes' },
+  { targetId: 'mtsdf-conformance-webgl2', scenarioId: 'mtsdf-sampling-conformance' },
+  { targetId: 'slug-text-webgl2', scenarioId: 'slug-text-scenes' },
+  { targetId: 'slug-conformance-webgl2', scenarioId: 'slug-sampling-conformance' },
+  { targetId: 'source-outline-bitmap-webgl2', scenarioId: 'source-outline-fidelity' },
+  { targetId: 'source-outline-mtsdf-webgl2', scenarioId: 'source-outline-fidelity' },
+  { targetId: 'source-outline-slug-webgl2', scenarioId: 'source-outline-fidelity' },
+  { targetId: 'react-text-reconciliation', scenarioId: 'react-text-reconciliation' },
   { targetId: 'font-baker', scenarioId: 'cold-load-payload' },
   { targetId: 'font-loader-worker', scenarioId: 'worker-fallback' },
   { targetId: 'harfrust-shaper', scenarioId: 'shaping-conformance' },
@@ -25,6 +38,10 @@ const conformanceCases: readonly BenchmarkCase[] = [
   { targetId: 'paragraph-layout-engine', scenarioId: 'paragraph-layout' },
   { targetId: 'paragraph-bidi-policy', scenarioId: 'paragraph-bidi-policy' },
   { targetId: 'cjk-universality', scenarioId: 'cjk-universality' },
+  {
+    targetId: 'advanced-shaping-conformance',
+    scenarioId: 'advanced-shaping-conformance',
+  },
 ]
 
 const readinessTimeoutMs = 30_000
@@ -44,9 +61,12 @@ function parseArguments(values: readonly string[]): Arguments {
   }
   const samples = Number(result.samples ?? 32)
   const warmup = Number(result.warmup ?? 4)
+  const dpr = Number(result.dpr ?? 1)
   const port = Number(result.port ?? 5173)
   if (!Number.isSafeInteger(samples) || samples < 1) throw new Error('samples must be positive')
   if (!Number.isSafeInteger(warmup) || warmup < 0) throw new Error('warmup must be non-negative')
+  if (!Number.isFinite(dpr) || dpr <= 0 || dpr > 4)
+    throw new Error('dpr must be greater than zero but no greater than four')
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535)
     throw new Error('port must be a valid TCP port')
   const suite = result.suite
@@ -65,6 +85,7 @@ function parseArguments(values: readonly string[]): Arguments {
           ],
     samples,
     warmup,
+    dpr,
     port,
     ...(result.output === undefined ? {} : { output: result.output }),
   }
@@ -89,7 +110,7 @@ async function withinDeadline<T>(label: string, timeoutMs: number, task: Promise
   }
 }
 
-let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined
+let browser: Browser | undefined
 let server: ViteDevServer | undefined
 
 try {
@@ -103,7 +124,7 @@ try {
   browser = await withinDeadline(
     'Chromium launch',
     browserLaunchTimeoutMs,
-    chromium.launch({ headless: true }),
+    launchProjectChromium({ headless: true }),
   )
 
   const summaries = []
@@ -120,7 +141,9 @@ try {
       await withinDeadline(
         `${caseLabel} navigation`,
         navigationTimeoutMs,
-        page.goto(`http://127.0.0.1:${options.port}/`, { waitUntil: 'domcontentloaded' }),
+        page.goto(`http://127.0.0.1:${options.port}/?runner=headless`, {
+          waitUntil: 'domcontentloaded',
+        }),
       )
       reportStage(`${caseLabel}: running benchmark`)
       const summary = await withinDeadline(
@@ -138,11 +161,17 @@ try {
               targetId: request.targetId,
               scenarioId: request.scenarioId,
               input: {},
-              controls: { samples: request.samples, warmup: request.warmup },
-              environment: await environmentResource(),
+              controls: { dpr: request.dpr, samples: request.samples, warmup: request.warmup },
+              environment: await environmentResource(request.browserVersion),
             })
           },
-          { ...benchmarkCase, samples: options.samples, warmup: options.warmup },
+          {
+            ...benchmarkCase,
+            dpr: options.dpr,
+            samples: options.samples,
+            warmup: options.warmup,
+            browserVersion: browser.version(),
+          },
         ),
       )
       if (errors.length > 0) throw new Error(`Headless browser errors: ${errors.join(' | ')}`)

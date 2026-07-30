@@ -1,0 +1,14 @@
+{
+  "semi": false,
+  "singleQuote": true,
+  "trailingComma": "all",
+  "ignorePatterns": [
+    "**/.cache/**",
+    "dist/**",
+    "src/bakers/schemas/**",
+    "src/generated/**",
+    "rust/mtsdf-admission/evidence/**",
+    "**/target/**",
+    "tests/fixtures/**"
+  ]
+}

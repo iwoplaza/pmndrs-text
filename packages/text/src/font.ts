@@ -29,17 +29,20 @@ export interface RegisteredFont {
 
   getRaster(rasterKey: RasterKey | string): RegisteredRaster | undefined
 
-  loadRaster(
-    selection: RasterSelection,
+  loadRaster<const Kind extends string>(
+    selection: RasterSelection<Kind> & { readonly kind: Kind },
     options?: RasterLoadOptions,
-  ): Promise<RegisteredRaster>
+  ): Promise<RegisteredRaster<Kind>>
+
+  loadRaster(selection: RasterSelection, options?: RasterLoadOptions): Promise<RegisteredRaster>
 
   dispose(): void
 }
 
 export interface FontSourceOverride {
   readonly source: string | URL
-  readonly baked?: string | URL
+  /** Explicitly set null to skip baked-sibling discovery for this load. */
+  readonly baked?: string | URL | null
 }
 
 export interface BakedFontSource {
@@ -49,10 +52,7 @@ export interface BakedFontSource {
 
 export type FontInput = string | URL | FontSourceOverride | BakedFontSource
 
-export interface FontToken<
-  Module extends AnyRasterModule,
-  Input extends FontInput = FontInput,
-> {
+export interface FontToken<Module extends AnyRasterModule, Input extends FontInput = FontInput> {
   readonly input: Input
   readonly raster: RasterRequest<Module>
 }
@@ -65,41 +65,32 @@ export interface AnyFontToken {
   }
 }
 
-export interface LoadedFont<
-  Module extends AnyRasterModule,
-  Input extends FontInput = FontInput,
-> {
+export interface LoadedFont<Module extends AnyRasterModule, Input extends FontInput = FontInput> {
   readonly input: Input
   readonly font: RegisteredFont
   readonly raster: LoadedRaster<Module>
 }
 
-export type FontInputOf<Token extends AnyFontToken> =
-  Token['input']
+export type FontInputOf<Token extends AnyFontToken> = Token['input']
 
-export type FontRasterModuleOf<Token extends AnyFontToken> =
-  Token['raster']['module']
+export type FontRasterModuleOf<Token extends AnyFontToken> = Token['raster']['module']
 
-export function defineFont<
-  const Input extends FontInput,
-  const Module extends AnyRasterModule,
->(
+export function defineFont<const Input extends FontInput, const Module extends AnyRasterModule>(
   input: Input,
-  raster: Module & ([RasterOptionsOf<Module>] extends [never] ? unknown : never),
+  raster: Module &
+    ([RasterOptionsOf<Module>] extends [never]
+      ? unknown
+      : undefined extends RasterOptionsOf<Module>
+        ? unknown
+        : never),
 ): FontToken<Module, Input>
 
-export function defineFont<
-  const Input extends FontInput,
-  const Module extends AnyRasterModule,
->(
+export function defineFont<const Input extends FontInput, const Module extends AnyRasterModule>(
   input: Input,
   raster: RasterRequest<Module>,
 ): FontToken<Module, Input>
 
-export function defineFont(
-  input: FontInput,
-  raster: AnyRasterInput,
-): AnyFontToken {
+export function defineFont(input: FontInput, raster: AnyRasterInput): AnyFontToken {
   return {
     input,
     raster: 'module' in raster ? raster : { module: raster },

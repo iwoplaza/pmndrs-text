@@ -31,25 +31,20 @@ async function fixture() {
   return { artifact, shaperWasm }
 }
 
-test('ships a zero-import optimized shaper module with its generated ABI', async () => {
+test('ships a zero-import optimized shaper module whose published ABI is generated', async () => {
   const [wasm, published] = await Promise.all([
     readFile(shaperWasmUrl),
     readFile(shaperAbiUrl, 'utf8'),
   ])
   const module = await WebAssembly.compile(wasm)
   assert.deepEqual(WebAssembly.Module.imports(module), [])
-  const instance = await WebAssembly.instantiate(module, {})
-  const memory = instance.exports.memory
-  const pointer = instance.exports.pmndrs_text_shaper_abi_ptr
-  const length = instance.exports.pmndrs_text_shaper_abi_len
-  assert.ok(memory instanceof WebAssembly.Memory)
-  assert.equal(typeof pointer, 'function')
-  assert.equal(typeof length, 'function')
-  const embedded = JSON.parse(
-    new TextDecoder().decode(new Uint8Array(memory.buffer, pointer(), length())),
+  assert.equal(
+    WebAssembly.Module.exports(module).some(({ name }) => name.includes('abi_')),
+    false,
   )
-  assert.deepEqual(embedded, JSON.parse(published))
-  assert.deepEqual(embedded.versions, {
+  const generated = await import('../../dist/generated/text-shaper-abi.js')
+  assert.deepEqual(generated.textShaperAbi, JSON.parse(published))
+  assert.deepEqual(generated.textShaperAbi.versions, {
     fontFormat: 0,
     harfrust: '0.12.0',
     harfrustCommit: '60b28ea22b5261710018d69c168a762bcb28794c',
@@ -102,6 +97,56 @@ test('shaper ownership stays scoped to its FontRegistry', async () => {
   assert.throws(() => shaper.registerFont(foreign), /not active in this shaper's registry/)
   shaper.dispose()
   foreign.dispose()
+})
+
+test('re-registering the same artifact creates a new lifecycle without reviving stale handles', async () => {
+  const { artifact, shaperWasm } = await fixture()
+  const registry = new FontRegistry()
+  const first = await registry.registerAsset(artifact)
+  const firstHandle = first.handle
+  const shaper = await createRuntimeShaper({ registry, wasm: shaperWasm })
+  const request = {
+    textUtf16: utf16('A'),
+    features: [],
+    runs: [
+      {
+        font: firstHandle,
+        textStart: 0,
+        textEnd: 1,
+        direction: 'ltr',
+        script: 'Latn',
+        language: 'en',
+        clusterLevel: 0,
+        flags: 0x40,
+        featureStart: 0,
+        featureCount: 0,
+      },
+    ],
+  }
+  const ranges = [{ run: 0, itemStart: 0, itemEnd: 1, contextStart: 0, contextEnd: 1, flags: 0x40 }]
+
+  shaper.registerFont(first)
+  assert.equal(shaper.shapeBatch(request).glyphIds.length, 1)
+  first.dispose()
+  assert.throws(() => shaper.shapeBatch(request), /font handle .* is not registered/)
+  assert.throws(
+    () => shaper.reshapeRanges({ ...request, ranges }),
+    /font handle .* is not registered/,
+  )
+
+  const second = await registry.registerAsset(artifact)
+  assert.notEqual(second.handle, firstHandle)
+  assert.equal(second.shapingHash, first.shapingHash)
+  shaper.registerFont(second)
+  const secondRequest = {
+    ...request,
+    runs: [{ ...request.runs[0], font: second.handle }],
+  }
+  assert.equal(shaper.shapeBatch(secondRequest).glyphIds.length, 1)
+  assert.throws(() => shaper.shapeBatch(request), /font handle .* is not registered/)
+
+  second.dispose()
+  shaper.dispose()
 })
 
 test('shapes every pinned HarfRust case exactly from GLB-extracted font data', async () => {
@@ -278,8 +323,8 @@ test('one coarse call shapes and reshapes multiple runs with absolute UTF-16 clu
     oracle.cases.find(({ id }) => id === 'combining-mark'),
   ]
   assert.ok(expectedRuns.every(Boolean))
-  const text = expectedRuns.map(({ text }) => text).join('')
-  const textUtf16 = utf16(text)
+  const combinedText = expectedRuns.map(({ text }) => text).join('')
+  const textUtf16 = utf16(combinedText)
   let start = 0
   const runs = expectedRuns.map((expected) => {
     const end = start + utf16(expected.text).length

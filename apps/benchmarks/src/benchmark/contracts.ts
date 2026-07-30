@@ -12,18 +12,21 @@ export type TargetStatus = 'ready' | 'needs-fixture' | 'unavailable'
 
 export interface BenchmarkEnvironment {
   readonly browser: string
+  readonly browserVersion?: string
   readonly hardwareConcurrency: number
   readonly webgpu: boolean
   readonly crossOriginIsolated: boolean
 }
 
 export interface BenchmarkControls {
+  readonly dpr: number
   readonly samples: number
   readonly warmup: number
 }
 
 export interface BenchmarkInput {
   readonly fontBytes?: Uint8Array
+  readonly fontFixture?: BenchmarkFontFixture
 }
 
 export interface BenchmarkMeasurement {
@@ -36,6 +39,7 @@ export interface BenchmarkMeasurement {
 
 export interface BenchmarkSummary {
   readonly schemaVersion: 0
+  readonly executionId: string
   readonly targetId: string
   readonly scenarioId: string
   readonly status: 'passed'
@@ -63,9 +67,14 @@ export interface BenchmarkTarget {
   readonly detail: string
   readonly color: 'violet' | 'green' | 'cyan' | 'amber'
   readonly capabilities: ReadonlySet<Capability>
+  configure?(input: BenchmarkInput): void
   status(input: BenchmarkInput): TargetStatus
-  load(): Promise<void>
-  run(input: BenchmarkInput, sampleIndex: number): Promise<TargetRunOutput>
+  load(controls: BenchmarkControls): Promise<void>
+  run(
+    input: BenchmarkInput,
+    sampleIndex: number,
+    controls: BenchmarkControls,
+  ): Promise<TargetRunOutput>
   dispose(): Promise<void>
 }
 
@@ -81,4 +90,8 @@ export interface RunnerEvent {
   readonly phase: 'loading' | 'warming' | 'sampling' | 'complete'
   readonly completed: number
   readonly total: number
+  readonly latest?: BenchmarkMeasurement
+  readonly medianMs?: number
+  readonly p95Ms?: number
 }
+import type { BenchmarkFontFixture } from './font-fixtures'
