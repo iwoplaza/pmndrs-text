@@ -11,27 +11,51 @@ import {
   useState,
   useSyncExternalStore,
   useTransition,
+  type ComponentProps,
   type PointerEvent as ReactPointerEvent,
-  type RefObject,
   type ReactNode,
-} from 'react'
+  type RefObject,
+} from 'react';
 
-import { BENCHMARK_IPSUM_INTER_GLYPH_COUNT } from './benchmark/benchmark-ipsum'
+import { BENCHMARK_IPSUM_INTER_GLYPH_COUNT } from './benchmark/benchmark-ipsum';
 import {
-  ADVANCED_SHAPING_CASES,
-  advanceAdvancedShaping,
+  advanceAdvancedShapingByTime,
   advancedShapingCase,
   advancedShapingFrame,
   initialAdvancedShapingState,
   updateAdvancedShaping,
   type AdvancedShapingCommand,
   type AdvancedShapingFrame,
-  type AdvancedShapingState,
-} from './benchmark/advanced-shaping'
-import type { BenchmarkSummary, RunnerEvent } from './benchmark/contracts'
-import { environmentResource } from './benchmark/environment'
-import { runRegisteredBenchmark } from './benchmark/execution'
-import { captureLiveTextStats, type LiveBenchmarkCapture } from './benchmark/product-result'
+} from './benchmark/advanced-shaping';
+import type { BenchmarkSummary, RunnerEvent } from './benchmark/contracts';
+import { environmentResource } from './benchmark/environment';
+import { runRegisteredBenchmark } from './benchmark/execution';
+import {
+  RuntimeAnimationControls,
+  defaultRuntimeFontSizeForWorkload,
+  resetRuntimeControlsForWorkload,
+  RuntimeLayoutControls,
+  RuntimePaintControls,
+  RuntimeTelemetry,
+  RuntimeViewControls,
+  useRuntimeAnimationControls,
+  useRuntimeLayoutControls,
+  useRuntimePaintControls,
+  useRuntimeTelemetry,
+  useRuntimeViewControls,
+  useRuntimeWorld,
+  type RuntimeLiveStats,
+} from './benchmark/runtime-world';
+import { RuntimeWorldProvider } from './benchmark/runtime-world-provider';
+import { captureLiveTextStats, type LiveBenchmarkCapture } from './benchmark/product-result';
+import { createPayloadSummary } from './benchmark/payload-summary';
+import {
+  adjacentPresentationWorkload,
+  presentationFrame,
+  type PresentationPreset,
+  type PresentationWorkload,
+} from './benchmark/presentation-sequence';
+import { paragraphStressMotionFrame } from './benchmark/paragraph-stress-motion';
 import {
   ADVANCED_FONT_FIXTURES,
   BENCHMARK_FONT_LABELS,
@@ -43,330 +67,211 @@ import {
   selectableFontFixture,
   type BenchmarkFontFixture,
   type SelectableFontFixture,
-} from './benchmark/font-fixtures'
+} from './benchmark/font-fixtures';
 import {
   readHarnessLocation,
-  writeHarnessLocation,
+  writeHarnessUrl,
   type FontDelivery,
   type GraphicsBackend,
+  type HarnessLayout,
   type HarnessLocation,
   type HarnessMode,
   type RasterTechnique,
-} from './benchmark/url-state'
-import { ExportPanel } from './components/export-panel'
-import { InteractiveCanvas } from './components/interactive-canvas'
-import { Report } from './components/report'
-import {
-  sparklineAnimatedSampleX,
-  sparklineCanvasMetrics,
-  sparklineMotionProgress,
-  sparklineSampleY,
-} from './components/sparkline'
-import { Button, Chip, Field, Metric, SelectField, TextareaField, Toggle } from './components/ui'
-import packageSizes from './generated/package-sizes.json'
-import bitmapFixtures from '../fixtures/rendering/showcase-bitmap-density-fixtures-v0.json'
-import mtsdfFixtures from '../fixtures/rendering/showcase-mtsdf-fixtures-v0.json'
-import slugFixtures from '../fixtures/rendering/showcase-slug-fixtures-v0.json'
+} from './benchmark/url-state';
+import { ExportPanel } from './components/export-panel';
+import { Report } from './components/report';
+import { Controls, type ConformanceView } from './components/render-controls';
+import { CompactSheet, CompactWorkloadPanel, MobileNavigation } from './components/responsive-shell';
+import { TechniqueSwitcher } from './components/technique-switcher';
+import { TelemetryCharts } from './components/telemetry-charts';
+import { TopBar } from './components/top-bar';
+import { workloadById, workloadsFor, type WorkloadOption } from './benchmark/workloads';
+import { WorkloadRail } from './components/workload-rail';
+import { PresentationLayout } from './components/presentation-layout';
+import { PresentationPayloadPills } from './components/presentation-payload-pills';
+import { Chip, Metric } from './components/ui';
+import packageSizes from './generated/package-sizes.json';
+import bitmapFixtures from '../fixtures/rendering/showcase-bitmap-density-fixtures-v0.json';
+import mtsdfFixtures from '../fixtures/rendering/showcase-mtsdf-fixtures-v0.json';
+import slugFixtures from '../fixtures/rendering/showcase-slug-fixtures-v0.json';
 import type {
   BitmapTextConformanceCapture,
   BitmapTextLiveStats,
-  BitmapTextPreview,
+  BitmapTextPersistentScene,
   BitmapTextPreviewSnapshot,
   BitmapTextPreviewUpdate,
-} from './renderer/bitmap-text'
+} from './renderer/bitmap-text';
+import type { MtsdfTextConformanceCapture, MtsdfTextLiveStats, MtsdfTextPersistentScene } from './renderer/mtsdf-text';
+import type { SlugTextConformanceCapture, SlugTextLiveStats, SlugTextPersistentScene } from './renderer/slug-text';
+import type { RasterTechniqueComparisonPersistentScene } from './renderer/raster-technique-compare';
+import type { PersistentRenderJob } from './renderer/persistent-render-host';
+import { createLatestAsyncQueue, type LatestAsyncQueue } from './renderer/latest-async-queue';
 import type {
-  MtsdfTextConformanceCapture,
-  MtsdfTextLiveStats,
-  MtsdfTextPreview,
-} from './renderer/mtsdf-text'
-import type {
-  SlugTextConformanceCapture,
-  SlugTextLiveStats,
-  SlugTextPreview,
-} from './renderer/slug-text'
-import type { RasterTechniqueComparison } from './renderer/raster-technique-compare'
-import type {
+  ComparisonWorkloadConfiguration,
   ComparisonWorkloadId,
-  ComparisonWorkloadPreview,
+  ComparisonWorkloadPersistentScene,
   ComparisonWorkloadStats,
-} from './renderer/comparison-workload'
-import { createExclusiveLifecycleCoordinator } from './renderer/exclusive-lifecycle'
-import type { SourceOutlineFidelityCapture } from './renderer/source-outline-reference'
-import type { RuntimeFallbackCapture } from './renderer/runtime-fallback-conformance'
-import type { BakeProgress } from '@pmndrs/text'
+} from './renderer/comparison-workload';
+import {
+  benchmarkContentWidth,
+  BENCHMARK_CONTENT_INSET,
+  BENCHMARK_CONTENT_MINIMUM_VIEWPORT_WIDTH,
+} from './renderer/live-text-style';
+import type { SourceOutlineFidelityCapture } from './renderer/source-outline-reference';
+import type { RuntimeFallbackCapture } from './renderer/runtime-fallback-conformance';
+import { PersistentRenderHostProvider, usePersistentRenderHost } from './renderer/persistent-render-host-context';
+import type { BakeProgress } from '@pmndrs/text';
+import { Route, Switch, useLocation } from 'wouter';
 
-type LiveTextStats = BitmapTextLiveStats | MtsdfTextLiveStats | SlugTextLiveStats
+type LiveTextStats = RuntimeLiveStats;
+type RunExclusiveJob = <T>(job: PersistentRenderJob<T>, signal?: AbortSignal) => Promise<Awaited<T>>;
 
-interface WorkloadOption {
-  readonly id: string
-  readonly label: string
-  readonly description: string
-  readonly techniques: Readonly<Record<RasterTechnique, WorkloadTechniqueStatus>>
-}
-
-type WorkloadTechniqueStatus =
-  | { readonly kind: 'ready' }
-  | { readonly kind: 'planned'; readonly milestone: 8 | 9 }
-
-const READY: WorkloadTechniqueStatus = { kind: 'ready' }
-
-let comparisonWorkloadModule: ReturnType<typeof importComparisonWorkload> | undefined
+let comparisonWorkloadModule: ReturnType<typeof importComparisonWorkload> | undefined;
+const liveSceneAssetResources = new Map<string, Promise<void>>();
 
 function importComparisonWorkload() {
-  return import('./renderer/comparison-workload')
+  return import('./renderer/comparison-workload');
 }
 
 function preloadComparisonWorkload(): ReturnType<typeof importComparisonWorkload> {
-  comparisonWorkloadModule ??= importComparisonWorkload()
-  return comparisonWorkloadModule
+  comparisonWorkloadModule ??= importComparisonWorkload();
+  return comparisonWorkloadModule;
 }
 
 function scheduleComparisonWorkloadPreload(): () => void {
-  if (globalThis.requestIdleCallback === undefined) return () => undefined
+  if (globalThis.requestIdleCallback === undefined) return () => undefined;
   const request = globalThis.requestIdleCallback(() => {
-    void preloadComparisonWorkload()
-  })
-  return () => globalThis.cancelIdleCallback(request)
+    void preloadComparisonWorkload();
+  });
+  return () => globalThis.cancelIdleCallback(request);
 }
 
-function isComparisonWorkload(workload: string): boolean {
-  return (
-    workload === 'text-ladder' ||
-    workload === 'icon-grid' ||
-    workload === 'off-axis-3d' ||
-    workload === 'dynamic-layout' ||
-    workload === 'paragraph-stress' ||
-    workload === 'paint-effects'
-  )
+const PRESENTATION_FONT_FIXTURES = [
+  'inter',
+  'font-awesome-free-6.7.2',
+  'amiri',
+  'noto-sans-devanagari',
+  'noto-sans-cjk-showcase',
+] as const satisfies readonly BenchmarkFontFixture[];
+
+async function preloadPresentationAssets(
+  technique: RasterTechnique,
+  delivery: FontDelivery,
+  selectedFont: BenchmarkFontFixture,
+  signal: AbortSignal,
+): Promise<void> {
+  if (delivery !== 'baked') return;
+  const fixtures = Array.from(new Set<BenchmarkFontFixture>([selectedFont, ...PRESENTATION_FONT_FIXTURES]));
+  if (technique === 'bitmap') {
+    const { preloadBitmapFontAssets } = await import('./renderer/bitmap-text');
+    await preloadBitmapFontAssets(fixtures, signal);
+  } else if (technique === 'mtsdf') {
+    const { preloadMtsdfFontAssets } = await import('./renderer/mtsdf-text');
+    await preloadMtsdfFontAssets(fixtures, signal);
+  } else {
+    const { preloadSlugFontAssets } = await import('./renderer/slug-text');
+    await preloadSlugFontAssets(fixtures, signal);
+  }
+}
+
+function liveSceneAssetResource(
+  technique: RasterTechnique,
+  delivery: FontDelivery,
+  fontFixture: BenchmarkFontFixture,
+  workload: string,
+): Promise<void> {
+  const fixtures = workload === 'icon-grid' ? [fontFixture, ICON_GRID_FONT_FIXTURE] : [fontFixture];
+  const comparison = comparisonWorkloadId(workload) !== undefined;
+  const key = `${technique}:${delivery}:${fixtures.join(',')}:${String(comparison)}`;
+  const existing = liveSceneAssetResources.get(key);
+  if (existing !== undefined) return existing;
+  const resource = (async () => {
+    if (comparison) await preloadComparisonWorkload();
+    if (delivery !== 'baked') return;
+    if (technique === 'bitmap') {
+      const { preloadBitmapFontAssets } = await import('./renderer/bitmap-text');
+      await preloadBitmapFontAssets(fixtures);
+    } else if (technique === 'mtsdf') {
+      const { preloadMtsdfFontAssets } = await import('./renderer/mtsdf-text');
+      await preloadMtsdfFontAssets(fixtures);
+    } else {
+      const { preloadSlugFontAssets } = await import('./renderer/slug-text');
+      await preloadSlugFontAssets(fixtures);
+    }
+  })();
+  liveSceneAssetResources.set(key, resource);
+  void resource.catch(() => liveSceneAssetResources.delete(key));
+  return resource;
 }
 
 interface LiveTextConfiguration extends Omit<BitmapTextPreviewUpdate, 'fontSize'> {
-  readonly animatePresentation: boolean
-  readonly fontFixture: BenchmarkFontFixture
-  readonly expectedGlyphCount: number | undefined
-  readonly timelineTick: number | undefined
+  readonly animatePresentation: boolean;
+  readonly fontFixture: BenchmarkFontFixture;
+  readonly expectedGlyphCount: number | undefined;
+  readonly timelineTick: number | undefined;
+}
+
+interface RetainedLiveTextUpdate extends BitmapTextPreviewUpdate {
+  readonly timelineTick: number | undefined;
+  readonly workload: string;
 }
 
 interface PresentationEvidence {
-  readonly revision: number
-  readonly progress: 0 | 1
-  readonly matchedGlyphs: number
-  readonly targetGlyphs: number
-}
-
-interface ConformanceView {
-  readonly zoom: number
-  readonly panXPercent: number
-  readonly panYPercent: number
+  readonly revision: number;
+  readonly progress: 0 | 1;
+  readonly matchedGlyphs: number;
+  readonly targetGlyphs: number;
 }
 
 interface ActivityWorkloads {
-  readonly benchmark: string
-  readonly conformance: string
+  readonly benchmark: string;
+  readonly conformance: string;
 }
 
 const INITIAL_CONFORMANCE_VIEW: ConformanceView = {
   zoom: 1,
   panXPercent: 0,
   panYPercent: 0,
-}
+};
 
-const EMPTY_FONT_FEATURES: BitmapTextPreviewUpdate['features'] = []
-const GLYPH_POSITION_TRANSITION_MS = 110
-const TYPEWRITER_INTERVAL_MS = 65
-const liveRendererLifecycle = createExclusiveLifecycleCoordinator()
-const FontNoticesDialog = lazy(() => import('./components/font-notices-dialog'))
-function mtsdfFixtureFor(fontFixture: BenchmarkFontFixture) {
-  const fixture = mtsdfFixtures.artifacts.find((candidate) => candidate.fontFixture === fontFixture)
-  if (fixture === undefined) {
-    throw new Error(`MTSDF fixture manifest is missing ${fontFixture}`)
-  }
-  return fixture
-}
-
-function bitmapFixtureFor(fontFixture: BenchmarkFontFixture) {
-  const fixture = bitmapFixtures.artifacts.find(
-    (candidate) => candidate.fontFixture === fontFixture,
-  )
-  if (fixture === undefined) {
-    throw new Error(`bitmap fixture manifest is missing ${fontFixture}`)
-  }
-  return fixture
-}
-
-function slugFixtureFor(fontFixture: BenchmarkFontFixture) {
-  const fixture = slugFixtures.artifacts.find((candidate) => candidate.fontFixture === fontFixture)
-  if (fixture === undefined) {
-    throw new Error(`Slug fixture manifest is missing ${fontFixture}`)
-  }
-  return fixture
-}
-
+const EMPTY_FONT_FEATURES: BitmapTextPreviewUpdate['features'] = [];
+const GLYPH_POSITION_TRANSITION_MS = 110;
+const FontNoticesDialog = lazy(() => import('./components/font-notices-dialog'));
 function techniqueLabel(technique: RasterTechnique): 'Bitmap' | 'MSDF' | 'Slug' {
-  return technique === 'mtsdf' ? 'MSDF' : technique === 'slug' ? 'Slug' : 'Bitmap'
+  return technique === 'mtsdf' ? 'MSDF' : technique === 'slug' ? 'Slug' : 'Bitmap';
 }
-
-const benchmarkWorkloads: readonly WorkloadOption[] = [
-  {
-    id: 'benchmark-ipsum',
-    label: 'Benchmark ipsum',
-    description: 'Tests the everyday cost of rendering and reflowing a full paragraph.',
-    techniques: { bitmap: READY, mtsdf: READY, slug: READY },
-  },
-  {
-    id: 'advanced-shaping',
-    label: 'Advanced shaping',
-    description: 'Tests whether complex text stays correct as it types and wraps.',
-    techniques: { bitmap: READY, mtsdf: READY, slug: READY },
-  },
-  {
-    id: 'text-ladder',
-    label: 'Text ladder',
-    description: 'Tests how text quality holds up from 8 to 512 pixels.',
-    techniques: { bitmap: READY, mtsdf: READY, slug: READY },
-  },
-  {
-    id: 'icon-grid',
-    label: 'Icon grid',
-    description: 'Tests a labeled icon font across scale, movement, and raster techniques.',
-    techniques: { bitmap: READY, mtsdf: READY, slug: READY },
-  },
-  {
-    id: 'off-axis-3d',
-    label: 'Off-axis / 3D',
-    description: 'Tests text quality and cost at steep, moving viewing angles.',
-    techniques: { bitmap: READY, mtsdf: READY, slug: READY },
-  },
-  {
-    id: 'dynamic-layout',
-    label: 'Dynamic layout',
-    description: 'Tests whether animated containers reflow text smoothly and correctly.',
-    techniques: { bitmap: READY, mtsdf: READY, slug: READY },
-  },
-  {
-    id: 'paragraph-stress',
-    label: 'Paragraph stress',
-    description: 'Tests rendering cost as paragraphs, glyphs, and atlas pressure grow.',
-    techniques: { bitmap: READY, mtsdf: READY, slug: READY },
-  },
-  {
-    id: 'paint-effects',
-    label: 'Paint & effects',
-    description: 'Tests the live cost and visual quality of animated text effects.',
-    techniques: { bitmap: READY, mtsdf: READY, slug: READY },
-  },
-]
-
-const conformanceWorkloads: readonly WorkloadOption[] = [
-  {
-    id: 'mtsdf-slug-compare',
-    label: 'MSDF / Slug compare',
-    description:
-      'Renders MSDF and Slug side by side and compares their coverage in a live GPU heatmap.',
-    techniques: { bitmap: READY, mtsdf: READY, slug: READY },
-  },
-  {
-    id: 'runtime-fallback',
-    label: 'Runtime fallback parity',
-    description: 'Tests whether source-font runtime baking reproduces the checked-in baked render.',
-    techniques: { bitmap: READY, mtsdf: READY, slug: READY },
-  },
-  {
-    id: 'text-accuracy',
-    label: 'Pipeline accuracy',
-    description:
-      'Technique-specific renderer output, sampling reference, difference, and error statistics.',
-    techniques: { bitmap: READY, mtsdf: READY, slug: READY },
-  },
-  {
-    id: 'cross-technique-fidelity',
-    label: 'Cross-technique fidelity',
-    description:
-      'Bitmap, MSDF, and Slug compared independently with the same outline-derived coverage reference.',
-    techniques: { bitmap: READY, mtsdf: READY, slug: READY },
-  },
-]
 
 function comparisonWorkloadId(workload: string): ComparisonWorkloadId | undefined {
   switch (workload) {
     case 'text-ladder':
+    case 'zoom-text':
     case 'icon-grid':
     case 'off-axis-3d':
     case 'dynamic-layout':
     case 'paragraph-stress':
     case 'paint-effects':
-      return workload
+      return workload;
     default:
-      return undefined
+      return undefined;
   }
+}
+
+function isComparisonWorkloadStats(stats: LiveTextStats | undefined): stats is ComparisonWorkloadStats {
+  return stats !== undefined && 'workload' in stats;
 }
 
 function workloadAmountLabel(workload: string, amount: number): string | undefined {
   switch (workload) {
     case 'off-axis-3d':
-      return `Perspective intensity · ${amount}%`
+      return `Perspective intensity · ${amount}%`;
     case 'dynamic-layout':
-      return `Reflow amplitude · ${amount}%`
+      return `Reflow amplitude · ${amount}%`;
     case 'paragraph-stress':
-      return `Text volume · ${amount}%`
+      return `Text volume · ${amount}%`;
     case 'paint-effects':
-      return `Hue spread · ${amount}%`
+      return `Hue spread · ${amount}%`;
     default:
-      return undefined
-  }
-}
-
-function workloadHasLayoutWidth(workload: string): boolean {
-  switch (workload) {
-    case 'benchmark-ipsum':
-    case 'dynamic-layout':
-    case 'paint-effects':
-    case 'paragraph-stress':
-      return true
-    default:
-      return false
-  }
-}
-
-function defaultFontSizeForWorkload(workload: string): number {
-  switch (workload) {
-    case 'icon-grid':
-      return 48
-    case 'off-axis-3d':
-      return 64
-    case 'paint-effects':
-      return 40
-    case 'dynamic-layout':
-      return 24
-    default:
-      return 16
-  }
-}
-
-function liveWorkloadControlDescription(workload: string, technique: RasterTechnique): string {
-  switch (workload) {
-    case 'advanced-shaping':
-      return technique === 'bitmap'
-        ? 'Bitmap text looks best at its baked 16 px strike; scaling exposes the need for additional strikes.'
-        : technique === 'mtsdf'
-          ? 'MSDF text uses one 64 px/em atlas to stay crisp across the rendered-size range.'
-          : 'Slug evaluates the source outlines analytically across the rendered-size range.'
-    case 'text-ladder':
-      return 'Use the ladder to compare crispness and artifacts from 8 to 512 pixels.'
-    case 'icon-grid':
-      return 'Scale and pan a labeled Font Awesome icon grid rendered through the selected technique.'
-    case 'off-axis-3d':
-      return 'Increase perspective to inspect text at steeper viewing angles.'
-    case 'dynamic-layout':
-      return 'Adjust reflow to stress three independently resizing paragraphs.'
-    case 'paragraph-stress':
-      return 'Increase text volume to inspect layout, draw, memory, CPU, and GPU cost.'
-    case 'paint-effects':
-      return technique === 'slug'
-        ? 'Adjust color and opacity while watching their live analytic rendering cost; Slug V0 intentionally omits stroke and shadow.'
-        : 'Adjust color, opacity, stroke, and shadow while watching their live rendering cost.'
-    default:
-      return 'Change the paragraph width to inspect live reflow quality and cost.'
+      return undefined;
   }
 }
 
@@ -377,43 +282,47 @@ function liveWorkloadSceneDescription(
 ): string {
   switch (workload) {
     case 'advanced-shaping':
-      return `Tests whether ${showcaseFrame.caseDefinition.label.toLowerCase()} stay correct while the paragraph types and wraps.`
+      return `Tests whether ${showcaseFrame.caseDefinition.label.toLowerCase()} stay correct while the paragraph types and wraps.`;
     case 'text-ladder':
-      return 'Tests one sentence at every size from 8 through 512 pixels.'
+      return 'Tests one sentence at every size from 8 through 1024 pixels.';
+    case 'zoom-text':
+      return 'Tests retained center scaling from 8 pt to viewport fit while authenticated Inter translations of “Shape” cycle by language.';
     case 'icon-grid':
-      return 'Tests a virtualized grid spanning all 1,402 named Font Awesome Solid icons with fixed font-rendered labels.'
+      return 'Tests a virtualized grid spanning all 1,402 named Font Awesome Solid icons with fixed font-rendered labels.';
     case 'off-axis-3d':
-      return 'Tests readability and frame cost as a paragraph leans deep into the scene.'
+      return 'Tests readability and frame cost as a paragraph leans deep into the scene.';
     case 'dynamic-layout':
-      return 'Tests whether three animated paragraphs reflow without stretching their glyphs.'
+      return 'Tests whether three animated paragraphs reflow without stretching their glyphs.';
     case 'paragraph-stress':
-      return 'Tests glyph, line, draw, memory, CPU, and GPU cost under paragraph pressure.'
+      return 'Tests glyph, line, draw, memory, CPU, and GPU cost under paragraph pressure.';
     case 'paint-effects':
       return technique === 'slug'
         ? 'Tests the live cost and quality of Slug V0 animated fill color and opacity.'
-        : 'Tests the live cost and quality of animated color, opacity, stroke, and shadow.'
+        : 'Tests the live cost and quality of animated color, opacity, stroke, and shadow.';
     default:
-      return 'Tests paragraph rendering cost while the viewport reflows the text.'
+      return 'Tests paragraph rendering cost while the viewport reflows the text.';
   }
 }
 
 function formatMs(value: number | undefined): string {
-  return value === undefined ? '—' : `${value.toFixed(2)} ms`
-}
-
-function formatBytes(value: number | undefined): string {
-  if (value === undefined) return '—'
-  if (value < 1024) return `${value} B`
-  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`
-  return `${(value / (1024 * 1024)).toFixed(2)} MB`
+  return value === undefined ? '—' : `${value.toFixed(2)} ms`;
 }
 
 function ShellFallback() {
+  return <div className="grid min-h-screen place-items-center bg-background text-sm text-muted">Loading harness…</div>;
+}
+
+function SceneSuspenseFallback({ technique }: { readonly technique: RasterTechnique }) {
   return (
-    <div className="grid min-h-screen place-items-center bg-background text-sm text-muted">
-      Loading harness…
+    <div
+      className="relative grid h-full min-h-0 place-items-center overflow-hidden bg-background"
+      data-testid="scene-loading"
+    >
+      <div className="rounded-md border border-border bg-black/80 px-4 py-3 font-mono text-[10px] text-muted">
+        Loading {techniqueLabel(technique)} scene…
+      </div>
     </div>
-  )
+  );
 }
 
 export function App() {
@@ -425,164 +334,422 @@ export function App() {
       >
         INTERNAL RUNNER HOST
       </div>
-    )
+    );
   }
   return (
     <Suspense fallback={<ShellFallback />}>
-      <Harness />
+      <Switch>
+        <Route path="/presentation">
+          <Harness layout="presentation" />
+        </Route>
+        <Route>
+          <Harness layout="main" />
+        </Route>
+      </Switch>
     </Suspense>
-  )
+  );
 }
 
-function Harness() {
-  const environment = use(environmentResource())
-  const desktop = useSyncExternalStore(subscribeDesktop, desktopSnapshot, () => true)
-  const phone = useSyncExternalStore(subscribePhone, phoneSnapshot, () => false)
+function Harness({ layout }: { readonly layout: HarnessLayout }) {
+  return (
+    <RuntimeWorldProvider>
+      <HarnessApplication layout={layout} />
+    </RuntimeWorldProvider>
+  );
+}
+
+function HarnessApplication({ layout }: { readonly layout: HarnessLayout }) {
+  return useHarnessController(layout);
+}
+
+function useHarnessController(routeLayout: HarnessLayout): ReactNode {
+  const [, navigate] = useLocation();
+  const environment = use(environmentResource());
+  const runtimeWorld = useRuntimeWorld();
+  const presentationAnimation = useRuntimeAnimationControls();
+  const desktop = useSyncExternalStore(subscribeDesktop, desktopSnapshot, () => true);
+  const phone = useSyncExternalStore(subscribePhone, phoneSnapshot, () => false);
   const [location, setLocationState] = useState(() => {
-    const value = readHarnessLocation(locationSearch(), defaultDeviceDpr())
+    const value = readHarnessLocation(locationSearch(), defaultDeviceDpr(), routeLayout);
     if (!environment.webgpu && !new URLSearchParams(locationSearch()).has('backend')) {
-      return { ...value, backend: 'webgl2' as const }
+      return { ...value, backend: 'webgl2' as const };
     }
-    return value
-  })
+    return value;
+  });
   const [activityWorkloads, setActivityWorkloads] = useState<ActivityWorkloads>(() => {
-    const initial = readHarnessLocation(locationSearch(), defaultDeviceDpr())
+    const initial = readHarnessLocation(locationSearch(), defaultDeviceDpr(), routeLayout);
     return {
       benchmark: initial.mode === 'benchmark' ? initial.workload : 'benchmark-ipsum',
       conformance: initial.mode === 'conformance' ? initial.workload : 'text-accuracy',
-    }
-  })
-  const [summary, setSummary] = useState<BenchmarkSummary>()
-  const [event, setEvent] = useState<RunnerEvent>()
-  const [liveStats, setLiveStats] = useState<LiveTextStats>()
-  const [liveCapture, setLiveCapture] = useState<LiveBenchmarkCapture>()
-  const [error, setError] = useState<string>()
-  const [dpr, setDpr] = useState<1 | 2>(location.dpr)
-  const [samples, setSamples] = useState(3)
-  const [warmup, setWarmup] = useState(1)
-  const [showGrid, setShowGrid] = useState(true)
-  const [showLayoutBounds, setShowLayoutBounds] = useState(true)
-  const [fontSize, setFontSize] = useState(() => defaultFontSizeForWorkload(location.workload))
-  const [layoutWidthPercent, setLayoutWidthPercent] = useState(82)
-  const [workloadAmount, setWorkloadAmount] = useState(50)
-  const [animationEnabled, setAnimationEnabled] = useState(true)
-  const [animationSpeed, setAnimationSpeed] = useState(50)
-  const [paintOpacityPercent, setPaintOpacityPercent] = useState(100)
-  const [paintShadowEnabled, setPaintShadowEnabled] = useState(true)
-  const [paintStrokePercent, setPaintStrokePercent] = useState(50)
-  const [conformanceView, setConformanceView] = useState(INITIAL_CONFORMANCE_VIEW)
-  const [comparisonText, setComparisonText] = useState(
-    () => rasterConformanceSpecimen(location.fontFixture).text,
-  )
-  const [showcaseState, setShowcaseState] = useState(initialAdvancedShapingState)
-  const [advancedFontFixture, setAdvancedFontFixture] = useState<BenchmarkFontFixture>('inter')
-  const [workloadPanelOpen, setWorkloadPanelOpen] = useState(() => desktopSnapshot())
-  const [fontNoticesOpen, setFontNoticesOpen] = useState(false)
-  const [isPending, startTransition] = useTransition()
-  const reportCaptureRequested = useRef(false)
-  const conformanceRunRevision = useRef(0)
+    };
+  });
+  const [summary, setSummary] = useState<BenchmarkSummary>();
+  const [event, setEvent] = useState<RunnerEvent>();
+  const [liveCapture, setLiveCapture] = useState<LiveBenchmarkCapture>();
+  const [error, setError] = useState<string>();
+  const [dpr, setDpr] = useState<1 | 2>(location.dpr);
+  const [samples, setSamples] = useState(3);
+  const [warmup, setWarmup] = useState(1);
+  const [conformanceView, setConformanceView] = useState(INITIAL_CONFORMANCE_VIEW);
+  const [comparisonText, setComparisonText] = useState(() => rasterConformanceSpecimen(location.fontFixture).text);
+  const [showcaseState, setShowcaseState] = useState(initialAdvancedShapingState);
+  const [advancedFontFixture, setAdvancedFontFixture] = useState<BenchmarkFontFixture>('noto-sans-cjk-showcase');
+  const [workloadPanelOpen, setWorkloadPanelOpen] = useState(() => desktopSnapshot());
+  const [fontNoticesOpen, setFontNoticesOpen] = useState(false);
+  const [presentationPlaying, setPresentationPlaying] = useState(false);
+  const [presentationPreset, setPresentationPreset] = useState<PresentationPreset>();
+  const [isPending, startTransition] = useTransition();
+  const reportCaptureRequested = useRef(false);
+  const conformanceRunRevision = useRef(0);
+  const conformanceRunController = useRef<AbortController | undefined>(undefined);
+  const committedLocationRef = useRef(location);
+  const requestedLocationRef = useRef(location);
+  const locationRequestRevisionRef = useRef(0);
+  const presentationPlayback = useRef<
+    | {
+        preset: PresentationPreset | undefined;
+        readonly startedAt: number;
+        readonly startWorkload: PresentationWorkload;
+        workload: PresentationWorkload;
+      }
+    | undefined
+  >(undefined);
 
-  const workload = workloadById(location.mode, location.workload)
-  const fontFixture = location.fontFixture
-  const workloadTechnique = workload.techniques[location.technique]
-  const showcaseFrame = advancedShapingFrame(showcaseState)
+  const workload = workloadById(location.mode, location.workload);
+  const fontFixture = location.fontFixture;
+  const workloadTechnique = workload.techniques[location.technique];
+  const showcaseFrame = advancedShapingFrame(showcaseState);
   const activeFontFixture: BenchmarkFontFixture =
-    location.workload === 'advanced-shaping' ? advancedFontFixture : fontFixture
-  const available = workloadTechnique.kind === 'ready'
-  const backendAvailable = location.backend !== 'webgpu' || environment.webgpu
+    location.workload === 'advanced-shaping'
+      ? advancedFontFixture
+      : location.workload === 'zoom-text'
+        ? 'inter'
+        : fontFixture;
+  const available = workloadTechnique.kind === 'ready';
+  const backendAvailable = location.backend !== 'webgpu' || environment.webgpu;
+  const presentationMode = location.layout === 'presentation' && location.mode === 'benchmark';
+
+  useEffect(() => {
+    if (!presentationMode) return;
+    const controller = new AbortController();
+    let started = false;
+    const preload = (): void => {
+      started = true;
+      void preloadPresentationAssets(location.technique, location.delivery, fontFixture, controller.signal).catch(
+        (caught: unknown) => {
+          if (!(caught instanceof DOMException && caught.name === 'AbortError')) console.warn(caught);
+        },
+      );
+    };
+    if (globalThis.requestIdleCallback === undefined) {
+      preload();
+      return () => {
+        if (!started) controller.abort();
+      };
+    }
+    const request = globalThis.requestIdleCallback(preload);
+    return () => {
+      globalThis.cancelIdleCallback(request);
+      if (!started) controller.abort();
+    };
+  }, [fontFixture, location.delivery, location.technique, presentationMode]);
+
+  const animateParagraphStressControls = useEffectEvent((elapsedMs: number) => {
+    const startFontSize = defaultRuntimeFontSizeForWorkload('paragraph-stress', location.layout);
+    const { fontSize, layoutWidthPercent } = paragraphStressMotionFrame(
+      elapsedMs,
+      presentationAnimation.animationSpeed,
+      startFontSize,
+    );
+    const current = runtimeWorld.get(RuntimeLayoutControls);
+    if (current?.fontSize === fontSize && current.layoutWidthPercent === layoutWidthPercent) return;
+    runtimeWorld.set(RuntimeLayoutControls, { fontSize, layoutWidthPercent, workloadAmount: 100 });
+  });
+  useEffect(() => {
+    if (
+      location.mode !== 'benchmark' ||
+      location.workload !== 'paragraph-stress' ||
+      !presentationAnimation.animationEnabled
+    ) {
+      return;
+    }
+    let animationFrame = 0;
+    let active = true;
+    const startedAt = performance.now();
+    const animate = (): void => {
+      if (!active) return;
+      if (requestedLocationRef.current.workload === 'paragraph-stress') {
+        animateParagraphStressControls(Math.max(0, performance.now() - startedAt));
+      }
+      if (active) animationFrame = requestAnimationFrame(animate);
+    };
+    animationFrame = requestAnimationFrame(animate);
+    return () => {
+      active = false;
+      cancelAnimationFrame(animationFrame);
+    };
+  }, [location.mode, location.workload, presentationAnimation.animationEnabled, presentationAnimation.animationSpeed]);
 
   function setLocation(next: Partial<HarnessLocation>): void {
-    const value = { ...location, ...next }
-    if (next.workload !== undefined) {
-      setActivityWorkloads((current) => ({ ...current, [value.mode]: value.workload }))
-    }
-    if (next.workload !== undefined && next.workload !== location.workload) {
-      setFontSize(defaultFontSizeForWorkload(next.workload))
-    }
+    if (presentationPlayback.current === undefined && next.workload !== undefined) setPresentationPreset(undefined);
+    const previous = requestedLocationRef.current;
+    const value = { ...previous, ...next };
+    const requestRevision = ++locationRequestRevisionRef.current;
+    requestedLocationRef.current = value;
+    const updatesRuntimeDefaults =
+      (next.workload !== undefined && next.workload !== previous.workload) ||
+      (next.layout !== undefined && next.layout !== previous.layout);
     const replacesLiveSurface =
       next.mode !== undefined ||
       next.technique !== undefined ||
       next.backend !== undefined ||
       next.delivery !== undefined ||
       next.dpr !== undefined ||
-      next.workload !== undefined
-    if (replacesLiveSurface) setLiveStats(undefined)
+      next.workload !== undefined;
+    const replacesRendererGeneration = next.mode !== undefined || next.backend !== undefined;
+    if (replacesRendererGeneration) runtimeWorld.set(RuntimeTelemetry, { stats: undefined });
     if (replacesLiveSurface || next.fontFixture !== undefined) {
-      conformanceRunRevision.current += 1
-      setSummary(undefined)
-      setEvent(undefined)
-      setLiveCapture(undefined)
+      conformanceRunController.current?.abort(new DOMException('conformance run was superseded', 'AbortError'));
+      conformanceRunController.current = undefined;
+      conformanceRunRevision.current += 1;
+      setSummary(undefined);
+      setEvent(undefined);
+      setLiveCapture(undefined);
     }
-    setLocationState(value)
-    globalThis.history?.replaceState(null, '', writeHarnessLocation(value))
+    const commitLocation = (): void => {
+      if (requestRevision !== locationRequestRevisionRef.current) return;
+      if (next.workload !== undefined) {
+        setActivityWorkloads((current) => ({ ...current, [value.mode]: value.workload }));
+      }
+      committedLocationRef.current = value;
+      setLocationState(value);
+      if (value.layout === previous.layout) {
+        globalThis.history?.replaceState(null, '', writeHarnessUrl(value));
+      } else {
+        navigate(writeHarnessUrl(value));
+      }
+    };
+    const transitionsScene =
+      (next.technique !== undefined && next.technique !== previous.technique) ||
+      (next.workload !== undefined && next.workload !== previous.workload) ||
+      (next.fontFixture !== undefined && next.fontFixture !== previous.fontFixture) ||
+      (next.delivery !== undefined && next.delivery !== previous.delivery);
+    const applyRuntimeDefaults = (): void => {
+      if (!updatesRuntimeDefaults) return;
+      resetRuntimeControlsForWorkload(runtimeWorld, value.workload, value.layout);
+    };
+    if (transitionsScene) {
+      startTransition(async () => {
+        try {
+          await liveSceneAssetResource(value.technique, value.delivery, value.fontFixture, value.workload);
+          // React does not preserve the transition marker across an await yet. Mark the committed scene update as a
+          // transition as well, so a newly observed resource can suspend without replacing the currently visible scene.
+          startTransition(() => {
+            applyRuntimeDefaults();
+            commitLocation();
+          });
+        } catch (caught) {
+          if (requestRevision !== locationRequestRevisionRef.current) return;
+          requestedLocationRef.current = committedLocationRef.current;
+          setError(caught instanceof Error ? caught.message : String(caught));
+        }
+      });
+    } else {
+      applyRuntimeDefaults();
+      commitLocation();
+    }
   }
 
   function selectMode(mode: HarnessMode): void {
     setLocation({
+      layout: mode === 'conformance' ? 'main' : location.layout,
       mode,
       workload: activityWorkloads[mode],
       view: 'scene',
-    })
+    });
   }
 
   function selectTechnique(technique: RasterTechnique): void {
-    const currentWorkload = workloadById(location.mode, location.workload)
+    const currentWorkload = workloadById(location.mode, location.workload);
     const selectedWorkload =
       currentWorkload.techniques[technique].kind === 'ready'
         ? currentWorkload.id
         : location.mode === 'benchmark'
           ? 'benchmark-ipsum'
-          : 'text-accuracy'
+          : 'text-accuracy';
     setLocation({
       technique,
       workload: selectedWorkload,
-    })
+    });
   }
 
-  function runConformance(): void {
-    const revision = ++conformanceRunRevision.current
-    setError(undefined)
+  const stopPresentation = useEffectEvent(() => {
+    presentationPlayback.current = undefined;
+    setPresentationPlaying(false);
+  });
+  const navigatePresentation = useEffectEvent((direction: -1 | 1) => {
+    stopPresentation();
+    setLocation({
+      mode: 'benchmark',
+      view: 'scene',
+      workload: adjacentPresentationWorkload(location.workload, direction),
+    });
+  });
+  const togglePresentation = useEffectEvent(() => {
+    if (presentationPlayback.current !== undefined) {
+      stopPresentation();
+      return;
+    }
+    const startFrame = presentationFrame(location.workload, 0);
+    const startWorkload = startFrame.workload;
+    presentationPlayback.current = {
+      preset: startFrame.preset,
+      startedAt: performance.now(),
+      startWorkload,
+      workload: startWorkload,
+    };
+    if (startWorkload === 'advanced-shaping') {
+      const initial = initialAdvancedShapingState();
+      setShowcaseState(initial);
+      setAdvancedFontFixture(advancedShapingCase(initial.caseId).fontFixture);
+    }
+    setPresentationPreset(startFrame.preset);
+    setPresentationPlaying(true);
+    if (location.mode !== 'benchmark' || location.workload !== startWorkload) {
+      setLocation({ mode: 'benchmark', view: 'scene', workload: startWorkload });
+    }
+  });
+  const advancePresentation = useEffectEvent((timestamp: number) => {
+    const playback = presentationPlayback.current;
+    if (playback === undefined) return;
+    const frame = presentationFrame(playback.startWorkload, timestamp - playback.startedAt);
+    if (frame.workload !== playback.workload) {
+      playback.workload = frame.workload;
+      if (frame.workload === 'advanced-shaping') {
+        const initial = initialAdvancedShapingState();
+        setShowcaseState(initial);
+        setAdvancedFontFixture(advancedShapingCase(initial.caseId).fontFixture);
+      }
+    }
+    if (frame.preset !== playback.preset) {
+      playback.preset = frame.preset;
+      setPresentationPreset(frame.preset);
+    }
+    const requestedLocation = requestedLocationRef.current;
+    if (frame.workload !== requestedLocation.workload || requestedLocation.mode !== 'benchmark') {
+      setLocation({ mode: 'benchmark', view: 'scene', workload: frame.workload });
+    }
+    if (frame.complete) stopPresentation();
+  });
+  useEffect(() => {
+    const onKeyDown = (keyboardEvent: KeyboardEvent): void => {
+      const requestedLocation = requestedLocationRef.current;
+      if (requestedLocation.layout !== 'presentation' || requestedLocation.mode !== 'benchmark') return;
+      if (keyboardEvent.code === 'Space' && !isPresentationTextEntryTarget(keyboardEvent.target)) {
+        keyboardEvent.preventDefault();
+        keyboardEvent.stopImmediatePropagation();
+        if (!keyboardEvent.repeat) togglePresentation();
+        return;
+      }
+      if (keyboardEvent.repeat || isPresentationShortcutTarget(keyboardEvent.target)) return;
+      if (keyboardEvent.key === 'ArrowLeft') {
+        keyboardEvent.preventDefault();
+        navigatePresentation(-1);
+      } else if (keyboardEvent.key === 'ArrowRight') {
+        keyboardEvent.preventDefault();
+        navigatePresentation(1);
+      }
+    };
+    const onKeyUp = (keyboardEvent: KeyboardEvent): void => {
+      const requestedLocation = requestedLocationRef.current;
+      if (
+        requestedLocation.layout !== 'presentation' ||
+        requestedLocation.mode !== 'benchmark' ||
+        keyboardEvent.code !== 'Space' ||
+        isPresentationTextEntryTarget(keyboardEvent.target)
+      ) {
+        return;
+      }
+      keyboardEvent.preventDefault();
+      keyboardEvent.stopImmediatePropagation();
+    };
+    globalThis.addEventListener?.('keydown', onKeyDown, true);
+    globalThis.addEventListener?.('keyup', onKeyUp, true);
+    return () => {
+      globalThis.removeEventListener?.('keydown', onKeyDown, true);
+      globalThis.removeEventListener?.('keyup', onKeyUp, true);
+    };
+  }, []);
+  useEffect(() => {
+    if (!presentationPlaying) return;
+    let animationFrame = 0;
+    const animate = (timestamp: number): void => {
+      advancePresentation(timestamp);
+      if (presentationPlayback.current !== undefined) animationFrame = requestAnimationFrame(animate);
+    };
+    animationFrame = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(animationFrame);
+  }, [presentationPlaying]);
+
+  function runConformance(runExclusiveJob: RunExclusiveJob): void {
+    conformanceRunController.current?.abort(new DOMException('conformance run was superseded', 'AbortError'));
+    const controller = new AbortController();
+    conformanceRunController.current = controller;
+    const revision = ++conformanceRunRevision.current;
+    setError(undefined);
     startTransition(async () => {
       try {
-        const value = await runRegisteredBenchmark({
-          targetId:
-            location.workload === 'runtime-fallback'
-              ? `runtime-fallback-${location.technique}-${location.backend}`
-              : location.workload === 'cross-technique-fidelity'
-                ? `source-outline-${location.technique}-${location.backend}`
-                : location.technique === 'slug'
-                  ? `slug-conformance-${location.backend}`
-                  : location.technique === 'mtsdf'
-                    ? `mtsdf-conformance-${location.backend}`
-                    : `bitmap-text-${location.backend}`,
-          scenarioId:
-            location.workload === 'runtime-fallback'
-              ? 'runtime-fallback-parity'
-              : location.workload === 'cross-technique-fidelity'
-                ? 'source-outline-fidelity'
-                : location.technique === 'slug'
-                  ? 'slug-sampling-conformance'
-                  : location.technique === 'mtsdf'
-                    ? 'mtsdf-sampling-conformance'
-                    : 'bitmap-text-frame',
-          input: { fontFixture: activeFontFixture },
-          controls: { dpr, samples, warmup },
-          environment,
-          onEvent: (nextEvent) => {
-            if (revision === conformanceRunRevision.current) setEvent(nextEvent)
-          },
-        })
-        if (revision === conformanceRunRevision.current) setSummary(value)
-      } catch (caught) {
+        const value = await runExclusiveJob(
+          ({ renderer, signal }) =>
+            runRegisteredBenchmark({
+              targetId:
+                location.workload === 'runtime-fallback'
+                  ? `runtime-fallback-${location.technique}-${location.backend}`
+                  : location.workload === 'cross-technique-fidelity'
+                    ? `source-outline-${location.technique}-${location.backend}`
+                    : location.technique === 'slug'
+                      ? `slug-conformance-${location.backend}`
+                      : location.technique === 'mtsdf'
+                        ? `mtsdf-conformance-${location.backend}`
+                        : `bitmap-text-${location.backend}`,
+              scenarioId:
+                location.workload === 'runtime-fallback'
+                  ? 'runtime-fallback-parity'
+                  : location.workload === 'cross-technique-fidelity'
+                    ? 'source-outline-fidelity'
+                    : location.technique === 'slug'
+                      ? 'slug-sampling-conformance'
+                      : location.technique === 'mtsdf'
+                        ? 'mtsdf-sampling-conformance'
+                        : 'bitmap-text-frame',
+              input: { fontFixture: activeFontFixture },
+              controls: { dpr, samples, warmup },
+              environment,
+              executionContext: { renderer, signal },
+              onEvent: (nextEvent) => {
+                if (revision === conformanceRunRevision.current) setEvent(nextEvent);
+              },
+            }),
+          controller.signal,
+        );
         if (revision === conformanceRunRevision.current) {
-          setError(caught instanceof Error ? caught.message : String(caught))
+          startTransition(() => setSummary(value));
         }
+      } catch (caught) {
+        if (
+          revision === conformanceRunRevision.current &&
+          !(caught instanceof DOMException && caught.name === 'AbortError')
+        ) {
+          setError(caught instanceof Error ? caught.message : String(caught));
+        }
+      } finally {
+        if (conformanceRunController.current === controller) conformanceRunController.current = undefined;
       }
-    })
+    });
   }
 
   function completeLiveCapture(stats: LiveTextStats): void {
-    const workloadFonts = liveWorkloadFontFixtures(location.workload, activeFontFixture)
+    const workloadFonts = liveWorkloadFontFixtures(location.workload, activeFontFixture);
     setLiveCapture({
       kind: 'live-benchmark',
       schemaVersion: 0,
@@ -595,42 +762,45 @@ function Harness() {
       ...(workloadFonts.kind === 'icon-grid' ? { labelFontFixture: workloadFonts.labels } : {}),
       environment,
       stats: captureLiveTextStats(stats),
-    })
-    setLocation({ view: 'report' })
+    });
+    setLocation({ view: 'report' });
   }
 
   function captureWindow(): void {
-    if (liveStats === undefined) return
-    if (showGrid || liveStats.showGrid) {
-      reportCaptureRequested.current = true
-      setShowGrid(false)
-      return
+    const liveStats = runtimeWorld.get(RuntimeTelemetry)?.stats;
+    if (liveStats === undefined) return;
+    if (runtimeWorld.get(RuntimeViewControls)?.showGrid || liveStats.showGrid) {
+      reportCaptureRequested.current = true;
+      runtimeWorld.set(RuntimeViewControls, { showGrid: false });
+      return;
     }
-    completeLiveCapture(liveStats)
+    completeLiveCapture(liveStats);
   }
 
   function publishLiveStats(stats: LiveTextStats): void {
-    setLiveStats(stats)
-    if (!reportCaptureRequested.current || stats.showGrid) return
-    reportCaptureRequested.current = false
-    completeLiveCapture(stats)
+    runtimeWorld.set(RuntimeTelemetry, { stats });
+    if (!reportCaptureRequested.current || stats.showGrid) return;
+    reportCaptureRequested.current = false;
+    completeLiveCapture(stats);
   }
 
   function invalidateLiveCapture(): void {
-    setLiveCapture(undefined)
+    setLiveCapture(undefined);
   }
 
   function dispatchShowcase(command: AdvancedShapingCommand): void {
     if (command.kind === 'select-case') {
-      setAdvancedFontFixture(advancedShapingCase(command.caseId).fontFixture)
+      setAdvancedFontFixture(advancedShapingCase(command.caseId).fontFixture);
     }
-    setShowcaseState((state) => updateAdvancedShaping(state, command))
-    invalidateLiveCapture()
+    setShowcaseState((state) => updateAdvancedShaping(state, command));
+    invalidateLiveCapture();
   }
 
-  const advanceShowcase = useEffectEvent(() => {
-    setShowcaseState((state) => advanceAdvancedShaping(state))
-  })
+  const advanceShowcase = useEffectEvent((elapsedMs: number) => {
+    const next = advanceAdvancedShapingByTime(showcaseState, elapsedMs);
+    setShowcaseState(next);
+    setAdvancedFontFixture(advancedShapingCase(next.caseId).fontFixture);
+  });
   useEffect(() => {
     if (
       location.mode !== 'benchmark' ||
@@ -638,156 +808,353 @@ function Harness() {
       !showcaseState.playing ||
       showcaseState.editedText !== undefined
     )
-      return
-    let animationFrame = 0
-    let lastTickAt = performance.now()
+      return;
+    let animationFrame = 0;
+    let previousTimestamp: number | undefined;
     const animate = (timestamp: number): void => {
-      if (timestamp - lastTickAt >= TYPEWRITER_INTERVAL_MS) {
-        advanceShowcase()
-        lastTickAt = timestamp
-      }
-      animationFrame = requestAnimationFrame(animate)
-    }
-    animationFrame = requestAnimationFrame(animate)
-    return () => cancelAnimationFrame(animationFrame)
-  }, [location.mode, location.workload, showcaseState.editedText, showcaseState.playing])
+      const elapsedMs = previousTimestamp === undefined ? 0 : timestamp - previousTimestamp;
+      previousTimestamp = timestamp;
+      advanceShowcase(elapsedMs);
+      animationFrame = requestAnimationFrame(animate);
+    };
+    animationFrame = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(animationFrame);
+  }, [location.mode, location.workload, showcaseState.editedText, showcaseState.playing]);
 
   const controls = (
-    <Controls
+    <RuntimeControls
+      minimal={presentationMode}
       backend={location.backend}
       delivery={location.delivery}
       dpr={dpr}
       conformanceView={conformanceView}
       comparisonText={comparisonText}
       fontFixture={activeFontFixture}
-      liveStats={liveStats}
       mode={location.mode}
       technique={location.technique}
       workload={location.workload}
       showcaseFrame={showcaseFrame}
       showcaseState={showcaseState}
-      fontSize={fontSize}
-      layoutWidthPercent={layoutWidthPercent}
-      workloadAmount={workloadAmount}
-      animationEnabled={animationEnabled}
-      animationSpeed={animationSpeed}
-      paintOpacityPercent={paintOpacityPercent}
-      paintShadowEnabled={paintShadowEnabled}
-      paintStrokePercent={paintStrokePercent}
       selectedFontFixture={fontFixture}
       samples={samples}
-      showGrid={showGrid}
-      showLayoutBounds={showLayoutBounds}
       warmup={warmup}
       webgpu={environment.webgpu}
       onBackend={(backend) => setLocation({ backend })}
       onDelivery={(delivery) => setLocation({ delivery })}
       onDpr={(value) => {
-        setDpr(value)
-        setLocation({ dpr: value })
+        setDpr(value);
+        setLocation({ dpr: value });
       }}
       onFontNotices={() => setFontNoticesOpen(true)}
       onConformanceReset={() => setConformanceView(INITIAL_CONFORMANCE_VIEW)}
       onConformanceZoom={(zoom) => setConformanceView((view) => ({ ...view, zoom }))}
       onComparisonText={setComparisonText}
-      onFontSize={(value) => {
-        setFontSize(value)
-        invalidateLiveCapture()
-      }}
-      onLayoutWidthPercent={(value) => {
-        setLayoutWidthPercent(value)
-        invalidateLiveCapture()
-      }}
-      onWorkloadAmount={(value) => {
-        setWorkloadAmount(value)
-        invalidateLiveCapture()
-      }}
-      onAnimationEnabled={(value) => {
-        setAnimationEnabled(value)
-        invalidateLiveCapture()
-      }}
-      onAnimationSpeed={(value) => {
-        setAnimationSpeed(value)
-        invalidateLiveCapture()
-      }}
-      onPaintOpacityPercent={(value) => {
-        setPaintOpacityPercent(value)
-        invalidateLiveCapture()
-      }}
-      onPaintShadowEnabled={(value) => {
-        setPaintShadowEnabled(value)
-        invalidateLiveCapture()
-      }}
-      onPaintStrokePercent={(value) => {
-        setPaintStrokePercent(value)
-        invalidateLiveCapture()
-      }}
+      onRuntimeControl={invalidateLiveCapture}
       onSelectedFontFixture={(value) => {
-        setLocation({ fontFixture: value })
+        setLocation({ fontFixture: value });
       }}
       onSamples={setSamples}
       onShowcase={dispatchShowcase}
-      onShowGrid={(value) => {
-        reportCaptureRequested.current = false
-        setShowGrid(value)
-        invalidateLiveCapture()
-      }}
-      onShowLayoutBounds={(value) => {
-        setShowLayoutBounds(value)
-        invalidateLiveCapture()
+      onBeforeShowGrid={() => {
+        reportCaptureRequested.current = false;
       }}
       onWarmup={setWarmup}
     />
-  )
+  );
 
-  const liveTechniqueComparison =
-    location.mode === 'conformance' && location.workload === 'mtsdf-slug-compare'
-  const actionReady =
-    available &&
-    backendAvailable &&
-    !isPending &&
-    !liveTechniqueComparison &&
-    (location.mode === 'conformance' || liveStats)
+  const liveTechniqueComparison = location.mode === 'conformance' && location.workload === 'mtsdf-slug-compare';
+  const actionEligible = available && backendAvailable && !isPending && !liveTechniqueComparison;
 
   const scene = (
-    <Scene
-      activeFontFixture={activeFontFixture}
-      fontFixture={fontFixture}
-      dpr={dpr}
-      conformanceView={conformanceView}
-      comparisonText={comparisonText}
-      error={error}
-      event={event}
-      grid={showGrid}
-      liveCapture={liveCapture}
-      liveStats={liveStats}
-      location={location}
-      activityWorkloads={activityWorkloads}
-      fontSize={fontSize}
-      layoutWidthPercent={layoutWidthPercent}
-      workloadAmount={workloadAmount}
-      animationEnabled={animationEnabled}
-      animationSpeed={animationSpeed}
-      paintOpacityPercent={paintOpacityPercent}
-      paintShadowEnabled={paintShadowEnabled}
-      paintStrokePercent={paintStrokePercent}
-      showLayoutBounds={showLayoutBounds}
-      summary={summary}
-      showcaseFrame={showcaseFrame}
-      onConformancePan={(deltaXPercent, deltaYPercent) =>
-        setConformanceView((view) => ({
-          ...view,
-          panXPercent: view.panXPercent + deltaXPercent,
-          panYPercent: view.panYPercent + deltaYPercent,
-        }))
-      }
-      onConformanceZoom={(zoom) => setConformanceView((view) => ({ ...view, zoom }))}
-      onLiveStats={publishLiveStats}
-    />
-  )
+    <Suspense fallback={<SceneSuspenseFallback technique={location.technique} />}>
+      <Scene
+        activeFontFixture={activeFontFixture}
+        fontFixture={fontFixture}
+        dpr={dpr}
+        conformanceView={conformanceView}
+        comparisonText={comparisonText}
+        error={error}
+        event={event}
+        liveCapture={liveCapture}
+        location={location}
+        demoMode={presentationPlaying}
+        presentation={presentationMode ? 'presentation' : 'main'}
+        presentationPreset={presentationPreset}
+        activityWorkloads={activityWorkloads}
+        summary={summary}
+        showcaseFrame={showcaseFrame}
+        onConformancePan={(deltaXPercent, deltaYPercent) =>
+          setConformanceView((view) => ({
+            ...view,
+            panXPercent: view.panXPercent + deltaXPercent,
+            panYPercent: view.panYPercent + deltaYPercent,
+          }))
+        }
+        onConformanceZoom={(zoom) => setConformanceView((view) => ({ ...view, zoom }))}
+        onLiveStats={publishLiveStats}
+      />
+    </Suspense>
+  );
+  const reportRendererError = useCallback(
+    (caught: unknown) => setError(caught instanceof Error ? caught.message : String(caught)),
+    [],
+  );
 
   return (
-    <div className="h-dvh overflow-hidden bg-background text-foreground">
+    <PersistentRenderHostProvider
+      backend={location.backend}
+      dpr={dpr}
+      key={location.backend}
+      onError={reportRendererError}
+    >
+      <PersistentHarnessLayout
+        actionEligible={actionEligible}
+        activeFontFixture={activeFontFixture}
+        controls={controls}
+        desktop={desktop}
+        fontNoticesOpen={fontNoticesOpen}
+        isPending={isPending}
+        liveCapture={liveCapture}
+        liveTechniqueComparison={liveTechniqueComparison}
+        location={location}
+        phone={phone}
+        presentationPlaying={presentationPlaying}
+        scene={scene}
+        showcaseFrame={showcaseFrame}
+        summary={summary}
+        webgpu={environment.webgpu}
+        workloadPanelOpen={workloadPanelOpen}
+        onBenchmarkAction={captureWindow}
+        onConformanceAction={runConformance}
+        onAdvancedFontFixture={(value) => {
+          setAdvancedFontFixture(value);
+          invalidateLiveCapture();
+        }}
+        onCloseFontNotices={() => setFontNoticesOpen(false)}
+        onLocation={setLocation}
+        onMode={selectMode}
+        onTechnique={selectTechnique}
+        onWorkloadPanelOpen={setWorkloadPanelOpen}
+      />
+    </PersistentRenderHostProvider>
+  );
+}
+
+function PersistentHarnessLayout({
+  onBenchmarkAction,
+  onConformanceAction,
+  ...properties
+}: Omit<Parameters<typeof HarnessLayout>[0], 'onAction'> & {
+  readonly onBenchmarkAction: () => void;
+  readonly onConformanceAction: (runExclusiveJob: RunExclusiveJob) => void;
+}) {
+  const { runExclusiveJob } = usePersistentRenderHost();
+  return (
+    <HarnessLayout
+      {...properties}
+      onAction={
+        properties.location.mode === 'benchmark' ? onBenchmarkAction : () => onConformanceAction(runExclusiveJob)
+      }
+    />
+  );
+}
+
+type RuntimeControlsProps = Omit<
+  ComponentProps<typeof Controls>,
+  | 'animationEnabled'
+  | 'animationSpeed'
+  | 'fontSize'
+  | 'layoutWidthPercent'
+  | 'liveStats'
+  | 'onAnimationEnabled'
+  | 'onAnimationSpeed'
+  | 'onFontSize'
+  | 'onLayoutWidthPercent'
+  | 'onPaintOpacityPercent'
+  | 'onPaintShadowEnabled'
+  | 'onPaintStrokePercent'
+  | 'onShowGrid'
+  | 'onShowLayoutBounds'
+  | 'onWorkloadAmount'
+  | 'paintOpacityPercent'
+  | 'paintShadowEnabled'
+  | 'paintStrokePercent'
+  | 'showGrid'
+  | 'showLayoutBounds'
+  | 'workloadAmount'
+> & {
+  readonly onBeforeShowGrid: () => void;
+  readonly onRuntimeControl: () => void;
+};
+
+function RuntimeControls({ onBeforeShowGrid, onRuntimeControl, ...props }: RuntimeControlsProps) {
+  const world = useRuntimeWorld();
+  const view = useRuntimeViewControls();
+  const layout = useRuntimeLayoutControls();
+  const animation = useRuntimeAnimationControls();
+  const paint = useRuntimePaintControls();
+  const { stats: liveStats } = useRuntimeTelemetry();
+  const changed = (change: () => void): void => {
+    change();
+    onRuntimeControl();
+  };
+  return (
+    <Controls
+      {...props}
+      {...view}
+      {...layout}
+      {...animation}
+      {...paint}
+      liveStats={liveStats}
+      onAnimationEnabled={(animationEnabled) =>
+        changed(() => world.set(RuntimeAnimationControls, { animationEnabled }))
+      }
+      onAnimationSpeed={(animationSpeed) => changed(() => world.set(RuntimeAnimationControls, { animationSpeed }))}
+      onFontSize={(fontSize) => changed(() => world.set(RuntimeLayoutControls, { fontSize }))}
+      onLayoutWidthPercent={(layoutWidthPercent) =>
+        changed(() => world.set(RuntimeLayoutControls, { layoutWidthPercent }))
+      }
+      onPaintOpacityPercent={(paintOpacityPercent) =>
+        changed(() => world.set(RuntimePaintControls, { paintOpacityPercent }))
+      }
+      onPaintShadowEnabled={(paintShadowEnabled) =>
+        changed(() => world.set(RuntimePaintControls, { paintShadowEnabled }))
+      }
+      onPaintStrokePercent={(paintStrokePercent) =>
+        changed(() => world.set(RuntimePaintControls, { paintStrokePercent }))
+      }
+      onShowGrid={(showGrid) => {
+        onBeforeShowGrid();
+        changed(() => world.set(RuntimeViewControls, { showGrid }));
+      }}
+      onShowLayoutBounds={(showLayoutBounds) => changed(() => world.set(RuntimeViewControls, { showLayoutBounds }))}
+      onWorkloadAmount={(workloadAmount) => changed(() => world.set(RuntimeLayoutControls, { workloadAmount }))}
+    />
+  );
+}
+
+function HarnessLayout({
+  actionEligible,
+  activeFontFixture,
+  controls,
+  desktop,
+  fontNoticesOpen,
+  isPending,
+  liveCapture,
+  liveTechniqueComparison,
+  location,
+  phone,
+  presentationPlaying,
+  scene,
+  showcaseFrame,
+  summary,
+  webgpu,
+  workloadPanelOpen,
+  onAction,
+  onAdvancedFontFixture,
+  onCloseFontNotices,
+  onLocation,
+  onMode,
+  onTechnique,
+  onWorkloadPanelOpen,
+}: {
+  readonly actionEligible: boolean;
+  readonly activeFontFixture: BenchmarkFontFixture;
+  readonly controls: ReactNode;
+  readonly desktop: boolean;
+  readonly fontNoticesOpen: boolean;
+  readonly isPending: boolean;
+  readonly liveCapture: LiveBenchmarkCapture | undefined;
+  readonly liveTechniqueComparison: boolean;
+  readonly location: HarnessLocation;
+  readonly phone: boolean;
+  readonly presentationPlaying: boolean;
+  readonly scene: ReactNode;
+  readonly showcaseFrame: AdvancedShapingFrame;
+  readonly summary: BenchmarkSummary | undefined;
+  readonly webgpu: boolean;
+  readonly workloadPanelOpen: boolean;
+  readonly onAction: () => void;
+  readonly onAdvancedFontFixture: (value: BenchmarkFontFixture) => void;
+  readonly onCloseFontNotices: () => void;
+  readonly onLocation: (value: Partial<HarnessLocation>) => void;
+  readonly onMode: (mode: HarnessMode) => void;
+  readonly onTechnique: (technique: RasterTechnique) => void;
+  readonly onWorkloadPanelOpen: (open: boolean | ((current: boolean) => boolean)) => void;
+}) {
+  const { stats: liveStats } = useRuntimeTelemetry();
+  const actionReady = actionEligible && (location.mode === 'conformance' || liveStats !== undefined);
+  const presentationMode = location.layout === 'presentation' && location.mode === 'benchmark';
+  if (presentationMode) {
+    const presentationFontOptions =
+      location.workload === 'icon-grid'
+        ? [{ label: BENCHMARK_FONT_LABELS[ICON_GRID_FONT_FIXTURE], value: ICON_GRID_FONT_FIXTURE }]
+        : location.workload === 'zoom-text'
+          ? [{ label: BENCHMARK_FONT_LABELS.inter, value: 'inter' }]
+          : location.workload === 'advanced-shaping'
+            ? ADVANCED_FONT_FIXTURES.map((fixture) => ({ label: fixture.label, value: fixture.id }))
+            : SELECTABLE_FONT_FIXTURES.map((fixture) => ({ label: fixture.label, value: fixture.id }));
+    const presentationPayload = createPayloadSummary({
+      delivery: location.delivery,
+      fixtureManifests: { bitmap: bitmapFixtures, mtsdf: mtsdfFixtures, slug: slugFixtures },
+      fontFixture: activeFontFixture,
+      ...(liveStats === undefined ? {} : { liveStats }),
+      packageSizes,
+      technique: location.technique,
+      workload: location.workload,
+    });
+    return (
+      <>
+        <PresentationLayout
+          controls={controls}
+          fontOptions={presentationFontOptions}
+          fontValue={
+            location.workload === 'icon-grid'
+              ? ICON_GRID_FONT_FIXTURE
+              : location.workload === 'zoom-text'
+                ? 'inter'
+                : activeFontFixture
+          }
+          payload={<PresentationPayloadPills summary={presentationPayload} />}
+          playing={presentationPlaying}
+          scene={scene}
+          techniqueControl={
+            <TechniqueSwitcher
+              className="w-44"
+              presentation="presentation"
+              technique={location.technique}
+              onTechnique={onTechnique}
+            />
+          }
+          telemetry={<TelemetryCharts presentation="presentation" stats={liveStats} />}
+          workloadOptions={workloadsFor('benchmark').map((option) => ({
+            disabled: option.techniques[location.technique].kind !== 'ready',
+            label: option.label,
+            value: option.id,
+          }))}
+          workloadValue={location.workload}
+          onExit={() => onLocation({ layout: 'main' })}
+          onFont={(value) => {
+            if (location.workload === 'icon-grid' || location.workload === 'zoom-text') return;
+            if (location.workload === 'advanced-shaping') {
+              onAdvancedFontFixture(value as BenchmarkFontFixture);
+              return;
+            }
+            onLocation({ fontFixture: selectableFontFixture(value) });
+          }}
+          onWorkload={(workloadId) => onLocation({ workload: workloadId, view: 'scene' })}
+        />
+        {fontNoticesOpen && (
+          <Suspense fallback={null}>
+            <FontNoticesDialog onClose={onCloseFontNotices} />
+          </Suspense>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <div className="relative h-dvh overflow-hidden bg-background text-foreground">
       <TopBar
         compact={!desktop}
         phone={phone}
@@ -796,26 +1163,27 @@ function Harness() {
         liveTechniqueComparison={liveTechniqueComparison}
         pending={isPending}
         ready={Boolean(actionReady)}
-        webgpu={environment.webgpu}
+        webgpu={webgpu}
         onAction={
           location.mode === 'benchmark'
             ? location.view === 'report'
-              ? () => setLocation({ view: 'scene' })
-              : captureWindow
-            : runConformance
+              ? () => onLocation({ view: 'scene' })
+              : onAction
+            : onAction
         }
         onControls={() => {
-          setWorkloadPanelOpen(false)
-          setLocation({ view: location.view === 'controls' ? 'scene' : 'controls' })
+          onWorkloadPanelOpen(false);
+          onLocation({ view: location.view === 'controls' ? 'scene' : 'controls' });
         }}
         onMenu={() => {
           if (!workloadPanelOpen && location.view === 'controls') {
-            setLocation({ view: 'scene' })
+            onLocation({ view: 'scene' });
           }
-          setWorkloadPanelOpen((open) => !open)
+          onWorkloadPanelOpen((open) => !open);
         }}
-        onMode={selectMode}
-        onTechnique={selectTechnique}
+        onMode={onMode}
+        onTechnique={onTechnique}
+        onPresentationMode={() => onLocation({ layout: 'presentation', mode: 'benchmark', view: 'scene' })}
         workloadPanelOpen={workloadPanelOpen}
       />
       <div
@@ -840,16 +1208,12 @@ function Harness() {
           <WorkloadRail
             activeFontFixture={activeFontFixture}
             className="h-full w-56"
-            fontFixture={fontFixture}
             location={location}
             showcaseFrame={showcaseFrame}
-            onFontFixture={(value) => setLocation({ fontFixture: value })}
-            onAdvancedFontFixture={(value) => {
-              setAdvancedFontFixture(value)
-              invalidateLiveCapture()
-            }}
-            onLocation={setLocation}
-            onTechnique={selectTechnique}
+            onFontFixture={(value) => onLocation({ fontFixture: value })}
+            onAdvancedFontFixture={onAdvancedFontFixture}
+            onLocation={onLocation}
+            onTechnique={onTechnique}
           />
         </div>
         <main
@@ -859,19 +1223,9 @@ function Harness() {
               : 'h-full min-h-0 overflow-hidden p-3'
           }
         >
-          <div
-            className={
-              location.view === 'report' || location.view === 'export' ? 'hidden' : 'h-full'
-            }
-          >
-            {scene}
-          </div>
+          <div className={location.view !== 'report' && location.view !== 'export' ? 'h-full' : 'hidden'}>{scene}</div>
           {!desktop && location.view === 'controls' && (
-            <CompactSheet
-              phone={phone}
-              title="Controls"
-              onClose={() => setLocation({ view: 'scene' })}
-            >
+            <CompactSheet phone={phone} title="Controls" onClose={() => onLocation({ view: 'scene' })}>
               {controls}
             </CompactSheet>
           )}
@@ -886,455 +1240,180 @@ function Harness() {
             </div>
           )}
         </main>
-        <aside className={desktop ? 'overflow-auto overscroll-contain bg-chrome p-4' : 'hidden'}>
-          {controls}
-        </aside>
+        <aside className={desktop ? 'overflow-auto overscroll-contain bg-chrome p-4' : 'hidden'}>{controls}</aside>
         {!desktop && workloadPanelOpen && (
-          <CompactWorkloadPanel phone={phone} onClose={() => setWorkloadPanelOpen(false)}>
+          <CompactWorkloadPanel phone={phone} onClose={() => onWorkloadPanelOpen(false)}>
             <WorkloadRail
               activeFontFixture={activeFontFixture}
               className="h-full w-full border-r-0"
-              fontFixture={fontFixture}
               location={location}
               showcaseFrame={showcaseFrame}
               showTechnique={false}
-              onFontFixture={(value) => setLocation({ fontFixture: value })}
-              onAdvancedFontFixture={(value) => {
-                setAdvancedFontFixture(value)
-                invalidateLiveCapture()
-              }}
+              onFontFixture={(value) => onLocation({ fontFixture: value })}
+              onAdvancedFontFixture={onAdvancedFontFixture}
               onLocation={(value) => {
-                setLocation({ ...value, view: 'scene' })
-                setWorkloadPanelOpen(false)
+                onLocation({ ...value, view: 'scene' });
+                onWorkloadPanelOpen(false);
               }}
-              onTechnique={selectTechnique}
+              onTechnique={onTechnique}
             />
           </CompactWorkloadPanel>
         )}
-        {!desktop && phone && <MobileNavigation location={location} onLocation={setLocation} />}
+        {!desktop && phone && <MobileNavigation location={location} onLocation={onLocation} />}
       </div>
       {fontNoticesOpen && (
         <Suspense fallback={null}>
-          <FontNoticesDialog onClose={() => setFontNoticesOpen(false)} />
+          <FontNoticesDialog onClose={onCloseFontNotices} />
         </Suspense>
       )}
     </div>
-  )
+  );
 }
 
 function locationSearch(): string {
-  return typeof globalThis.location === 'undefined' ? '' : globalThis.location.search
+  return typeof globalThis.location === 'undefined' ? '' : globalThis.location.search;
+}
+
+function isPresentationShortcutTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return (
+    target.closest('input, textarea, select, button, [contenteditable="true"], [role="slider"], [role="combobox"]') !==
+    null
+  );
+}
+
+function isPresentationTextEntryTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return (
+    target.closest(
+      'textarea, [contenteditable="true"], input:not([type]), input[type="text"], input[type="search"], input[type="email"], input[type="url"], input[type="tel"], input[type="password"]',
+    ) !== null
+  );
 }
 
 function subscribeDesktop(listener: () => void): () => void {
-  if (typeof globalThis.matchMedia !== 'function') return () => undefined
-  const media = globalThis.matchMedia('(min-width: 1200px)')
-  media.addEventListener('change', listener)
-  return () => media.removeEventListener('change', listener)
+  if (typeof globalThis.matchMedia !== 'function') return () => undefined;
+  const media = globalThis.matchMedia('(min-width: 1200px)');
+  media.addEventListener('change', listener);
+  return () => media.removeEventListener('change', listener);
 }
 
 function desktopSnapshot(): boolean {
-  return (
-    typeof globalThis.matchMedia !== 'function' ||
-    globalThis.matchMedia('(min-width: 1200px)').matches
-  )
+  return typeof globalThis.matchMedia !== 'function' || globalThis.matchMedia('(min-width: 1200px)').matches;
 }
 
 function subscribePhone(listener: () => void): () => void {
-  if (typeof globalThis.matchMedia !== 'function') return () => undefined
-  const media = globalThis.matchMedia('(max-width: 699px)')
-  media.addEventListener('change', listener)
-  return () => media.removeEventListener('change', listener)
+  if (typeof globalThis.matchMedia !== 'function') return () => undefined;
+  const media = globalThis.matchMedia('(max-width: 699px)');
+  media.addEventListener('change', listener);
+  return () => media.removeEventListener('change', listener);
 }
 
 function phoneSnapshot(): boolean {
-  return (
-    typeof globalThis.matchMedia === 'function' &&
-    globalThis.matchMedia('(max-width: 699px)').matches
-  )
+  return typeof globalThis.matchMedia === 'function' && globalThis.matchMedia('(max-width: 699px)').matches;
 }
 
 function defaultDeviceDpr(): 1 | 2 {
-  return (globalThis.devicePixelRatio ?? 1) >= 1.5 ? 2 : 1
-}
-
-function workloadsFor(mode: HarnessMode): readonly WorkloadOption[] {
-  if (mode === 'benchmark') return benchmarkWorkloads
-  return conformanceWorkloads
-}
-
-function workloadById(mode: HarnessMode, id: string): WorkloadOption {
-  const workloads = workloadsFor(mode)
-  return workloads.find((workload) => workload.id === id) ?? workloads[0]!
-}
-
-function workloadRailDescription(workload: WorkloadOption, technique: RasterTechnique): string {
-  const status = workload.techniques[technique]
-  return status.kind === 'ready'
-    ? workload.description
-    : `M${status.milestone} · ${workload.description}`
-}
-
-function TopBar({
-  compact,
-  phone,
-  location,
-  mode,
-  liveTechniqueComparison,
-  pending,
-  ready,
-  webgpu,
-  onAction,
-  onControls,
-  onMenu,
-  onMode,
-  onTechnique,
-  workloadPanelOpen,
-}: {
-  readonly compact: boolean
-  readonly phone: boolean
-  readonly location: HarnessLocation
-  readonly mode: HarnessMode
-  readonly liveTechniqueComparison: boolean
-  readonly pending: boolean
-  readonly ready: boolean
-  readonly webgpu: boolean
-  readonly onAction: () => void
-  readonly onControls: () => void
-  readonly onMenu: () => void
-  readonly onMode: (mode: HarnessMode) => void
-  readonly onTechnique: (technique: RasterTechnique) => void
-  readonly workloadPanelOpen: boolean
-}) {
-  return (
-    <header className="border-b border-border bg-chrome">
-      <div className="flex h-[52px] items-center gap-2 px-2 sm:gap-3 sm:px-3 lg:px-4">
-        <button
-          aria-expanded={workloadPanelOpen}
-          aria-label={workloadPanelOpen ? 'Close workload menu' : 'Open workload menu'}
-          className="grid size-7 shrink-0 place-items-center rounded-md border border-border bg-surface-raised text-muted transition-colors hover:border-accent hover:text-foreground"
-          title={workloadPanelOpen ? 'Close workload menu' : 'Open workload menu'}
-          type="button"
-          onClick={onMenu}
-        >
-          <svg aria-hidden="true" className="size-[18px]" viewBox="0 0 24 24">
-            <rect
-              fill="none"
-              height="16"
-              rx="2"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              width="18"
-              x="3"
-              y="4"
-            />
-            <path d="M9 4v16" fill="none" stroke="currentColor" strokeWidth="1.5" />
-            <path
-              d={workloadPanelOpen ? 'm16 9-3 3 3 3' : 'm13 9 3 3-3 3'}
-              fill="none"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth="1.5"
-            />
-          </svg>
-        </button>
-        <div className="hidden min-w-0 sm:block">
-          <div className="text-sm font-semibold leading-none">pmndrs/text</div>
-          <div className="mt-1 font-mono text-[9px] text-dim">TEXT PERFORMANCE LAB</div>
-        </div>
-        <div className="flex rounded-md border border-border bg-background p-0.5 sm:ml-3">
-          {(['benchmark', 'conformance'] as const).map((value) => (
-            <button
-              className={`min-h-7 rounded px-2 py-1.5 text-[10px] capitalize sm:px-3 sm:text-[11px] ${mode === value ? 'bg-surface-active text-foreground' : 'text-muted hover:bg-surface'}`}
-              key={value}
-              type="button"
-              onClick={() => onMode(value)}
-            >
-              {value}
-            </button>
-          ))}
-        </div>
-        {compact && (
-          <TechniqueSwitcher
-            className="w-[148px] sm:w-[180px]"
-            technique={location.technique}
-            onTechnique={onTechnique}
-          />
-        )}
-        <div className="flex-1" />
-        <span className="hidden min-[900px]:inline-flex">
-          <Chip tone={webgpu ? 'success' : 'warning'}>
-            {webgpu ? 'WebGPU available' : 'WebGPU unavailable'}
-          </Chip>
-        </span>
-        {compact && !phone && (
-          <Button
-            aria-label="Open render controls"
-            className="px-2 text-[10px] sm:px-3"
-            variant={location.view === 'controls' ? 'primary' : 'secondary'}
-            onClick={onControls}
-          >
-            Controls
-          </Button>
-        )}
-        <Button
-          aria-label={
-            mode === 'benchmark'
-              ? location.view === 'report'
-                ? 'Return to live benchmark'
-                : 'Capture report'
-              : liveTechniqueComparison
-                ? 'Live GPU comparison'
-                : 'Run conformance'
-          }
-          className="px-2 text-[10px] sm:px-3 sm:text-xs"
-          disabled={!ready}
-          variant="primary"
-          onClick={onAction}
-        >
-          {pending ? (
-            'Running…'
-          ) : mode === 'benchmark' ? (
-            location.view === 'report' ? (
-              'Live view'
-            ) : (
-              <>
-                <span className="sm:hidden">Capture</span>
-                <span className="hidden sm:inline">Capture report</span>
-              </>
-            )
-          ) : liveTechniqueComparison ? (
-            'Live compare'
-          ) : (
-            <>
-              <span className="sm:hidden">Run</span>
-              <span className="hidden sm:inline">Run conformance</span>
-            </>
-          )}
-        </Button>
-      </div>
-    </header>
-  )
-}
-
-function WorkloadRail({
-  activeFontFixture,
-  className = '',
-  fontFixture,
-  location,
-  showcaseFrame,
-  showTechnique = true,
-  onAdvancedFontFixture,
-  onFontFixture,
-  onLocation,
-  onTechnique,
-}: {
-  readonly activeFontFixture: BenchmarkFontFixture
-  readonly className?: string
-  readonly fontFixture: SelectableFontFixture
-  readonly location: HarnessLocation
-  readonly showcaseFrame: AdvancedShapingFrame
-  readonly showTechnique?: boolean
-  readonly onAdvancedFontFixture: (fontFixture: BenchmarkFontFixture) => void
-  readonly onFontFixture: (fontFixture: SelectableFontFixture) => void
-  readonly onLocation: (value: Partial<HarnessLocation>) => void
-  readonly onTechnique: (technique: RasterTechnique) => void
-}) {
-  const workloads = workloadsFor(location.mode)
-  const displayedFontFixture =
-    location.workload === 'icon-grid' ? ICON_GRID_FONT_FIXTURE : activeFontFixture
-  const selectedMtsdfFixture =
-    location.technique === 'mtsdf' ? mtsdfFixtureFor(displayedFontFixture) : undefined
-  const selectedSlugFixture =
-    location.technique === 'slug' ? slugFixtureFor(displayedFontFixture) : undefined
-  const rasterDescription =
-    selectedSlugFixture !== undefined
-      ? `Analytic Slug · ${selectedSlugFixture.raster.pages.length} page${selectedSlugFixture.raster.pages.length === 1 ? '' : 's'} · ${formatBytes(selectedSlugFixture.raster.decodedGpuBytes)} GPU`
-      : selectedMtsdfFixture !== undefined
-        ? `${selectedMtsdfFixture.configuration.emSize} px/em MTSDF · ${selectedMtsdfFixture.configuration.pixelRange} px range · ${selectedMtsdfFixture.raster.pages.length} pages`
-        : '16 px grayscale bitmap strike'
-  return (
-    <aside
-      className={`overflow-auto overscroll-contain border-r border-border bg-chrome p-3 ${className}`}
-    >
-      {showTechnique && (
-        <>
-          <p className="eyebrow">Technique</p>
-          <TechniqueSwitcher
-            className="mt-2"
-            technique={location.technique}
-            onTechnique={onTechnique}
-          />
-        </>
-      )}
-      <p className={`eyebrow mb-2 ${showTechnique ? 'mt-5' : ''}`}>
-        {location.mode === 'benchmark' ? 'Live workloads' : 'Conformance checks'}
-      </p>
-      <nav className="grid gap-1">
-        {workloads.map((workload) => (
-          <button
-            className={`relative rounded-md px-4 py-3 text-left ${location.workload === workload.id ? 'bg-surface-active text-foreground' : 'text-foreground hover:bg-surface'} disabled:cursor-not-allowed disabled:opacity-40`}
-            disabled={workload.techniques[location.technique].kind !== 'ready'}
-            key={workload.id}
-            type="button"
-            onClick={() => onLocation({ workload: workload.id })}
-            onFocus={() => {
-              if (isComparisonWorkload(workload.id)) void preloadComparisonWorkload()
-            }}
-            onPointerEnter={() => {
-              if (isComparisonWorkload(workload.id)) void preloadComparisonWorkload()
-            }}
-          >
-            <span
-              className={`absolute left-1.5 top-3 h-4 w-[3px] rounded-full ${location.workload === workload.id ? 'bg-accent' : 'bg-transparent'}`}
-            />
-            <span className="block text-xs">{workload.label}</span>
-            <span className="mt-1 block font-mono text-[8px] leading-relaxed text-muted">
-              {workloadRailDescription(workload, location.technique)}
-            </span>
-          </button>
-        ))}
-      </nav>
-      <div className="mt-5">
-        <p className="eyebrow mb-2">Font fixture</p>
-        {location.workload === 'icon-grid' ? (
-          <div
-            className="rounded-md border border-accent bg-surface-active px-3 py-2"
-            data-icon-font-fixture={ICON_GRID_FONT_FIXTURE}
-          >
-            <span className="block text-xs">{BENCHMARK_FONT_LABELS[ICON_GRID_FONT_FIXTURE]}</span>
-            <span className="mt-1 block font-mono text-[8px] text-dim">
-              1,402 packed solid icons
-            </span>
-          </div>
-        ) : location.workload === 'advanced-shaping' ? (
-          <div className="grid gap-1">
-            {ADVANCED_FONT_FIXTURES.map((fixture) => (
-              <button
-                className={`rounded-md border px-3 py-2 text-left ${activeFontFixture === fixture.id ? 'border-accent bg-surface-active text-foreground' : 'border-border bg-surface text-muted'}`}
-                key={fixture.id}
-                type="button"
-                onClick={() => onAdvancedFontFixture(fixture.id)}
-              >
-                <span className="block text-xs">{fixture.label}</span>
-                <span className="mt-1 block font-mono text-[8px] text-dim">
-                  {fixture.metadata}
-                  {showcaseFrame.caseDefinition.fontFixture === fixture.id ? ' · recommended' : ''}
-                </span>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="grid gap-1">
-            {SELECTABLE_FONT_FIXTURES.map((fixture) => (
-              <button
-                className={`rounded-md border px-3 py-2 text-left ${fontFixture === fixture.id ? 'border-accent bg-surface-active text-foreground' : 'border-border bg-surface text-muted'}`}
-                key={fixture.id}
-                type="button"
-                onClick={() => onFontFixture(fixture.id)}
-              >
-                <span className="block text-xs">{fixture.label}</span>
-                <span className="mt-1 block font-mono text-[8px] text-dim">{fixture.metadata}</span>
-              </button>
-            ))}
-          </div>
-        )}
-        <p className="mt-2 font-mono text-[9px] text-dim">{rasterDescription}</p>
-      </div>
-    </aside>
-  )
-}
-
-function TechniqueSwitcher({
-  className,
-  technique,
-  onTechnique,
-}: {
-  readonly className: string
-  readonly technique: RasterTechnique
-  readonly onTechnique: (technique: RasterTechnique) => void
-}) {
-  return (
-    <div
-      className={`grid grid-cols-3 gap-1 rounded-md border border-border bg-background p-0.5 ${className}`}
-      data-testid="technique-switcher"
-    >
-      {(['bitmap', 'mtsdf', 'slug'] as const).map((value) => (
-        <button
-          aria-pressed={technique === value}
-          className={`min-h-7 rounded px-2 text-[10px] font-medium capitalize transition-colors ${technique === value ? 'bg-surface-active text-foreground ring-1 ring-inset ring-accent' : 'text-muted hover:bg-surface hover:text-foreground'} disabled:cursor-not-allowed disabled:opacity-45`}
-          key={value}
-          type="button"
-          onClick={() => onTechnique(value)}
-        >
-          {techniqueLabel(value)}
-        </button>
-      ))}
-    </div>
-  )
+  return (globalThis.devicePixelRatio ?? 1) >= 1.5 ? 2 : 1;
 }
 
 function Scene({
   activeFontFixture,
   activityWorkloads,
-  animationEnabled,
-  animationSpeed,
   comparisonText,
   conformanceView,
   dpr,
   error,
   event,
   fontFixture,
-  fontSize,
-  grid,
-  layoutWidthPercent,
-  paintOpacityPercent,
-  paintShadowEnabled,
-  paintStrokePercent,
-  showLayoutBounds,
-  workloadAmount,
   liveCapture,
-  liveStats,
   location,
+  demoMode,
+  presentation,
+  presentationPreset,
   showcaseFrame,
   summary,
   onConformancePan,
   onConformanceZoom,
   onLiveStats,
 }: {
-  readonly activeFontFixture: BenchmarkFontFixture
-  readonly activityWorkloads: ActivityWorkloads
-  readonly animationEnabled: boolean
-  readonly animationSpeed: number
-  readonly comparisonText: string
-  readonly conformanceView: ConformanceView
-  readonly dpr: 1 | 2
-  readonly error: string | undefined
-  readonly event: RunnerEvent | undefined
-  readonly fontFixture: SelectableFontFixture
-  readonly fontSize: number
-  readonly grid: boolean
-  readonly layoutWidthPercent: number
-  readonly paintOpacityPercent: number
-  readonly paintShadowEnabled: boolean
-  readonly paintStrokePercent: number
-  readonly showLayoutBounds: boolean
-  readonly workloadAmount: number
-  readonly liveCapture: LiveBenchmarkCapture | undefined
-  readonly liveStats: LiveTextStats | undefined
-  readonly location: HarnessLocation
-  readonly showcaseFrame: AdvancedShapingFrame
-  readonly summary: BenchmarkSummary | undefined
-  readonly onConformancePan: (deltaXPercent: number, deltaYPercent: number) => void
-  readonly onConformanceZoom: (zoom: number) => void
-  readonly onLiveStats: (stats: LiveTextStats) => void
+  readonly activeFontFixture: BenchmarkFontFixture;
+  readonly activityWorkloads: ActivityWorkloads;
+  readonly comparisonText: string;
+  readonly conformanceView: ConformanceView;
+  readonly dpr: 1 | 2;
+  readonly error: string | undefined;
+  readonly event: RunnerEvent | undefined;
+  readonly fontFixture: SelectableFontFixture;
+  readonly liveCapture: LiveBenchmarkCapture | undefined;
+  readonly location: HarnessLocation;
+  readonly demoMode: boolean;
+  readonly presentation: 'main' | 'presentation';
+  readonly presentationPreset: PresentationPreset | undefined;
+  readonly showcaseFrame: AdvancedShapingFrame;
+  readonly summary: BenchmarkSummary | undefined;
+  readonly onConformancePan: (deltaXPercent: number, deltaYPercent: number) => void;
+  readonly onConformanceZoom: (zoom: number) => void;
+  readonly onLiveStats: (stats: LiveTextStats) => void;
 }) {
-  const workload = workloadById(location.mode, location.workload)
-  const benchmarkWorkload = workloadById('benchmark', activityWorkloads.benchmark)
-  const benchmarkStatus = benchmarkWorkload.techniques[location.technique]
-  const conformanceWorkload = workloadById('conformance', activityWorkloads.conformance)
-  const conformanceStatus = conformanceWorkload.techniques[location.technique]
+  const { showGrid: grid, showLayoutBounds } = useRuntimeViewControls();
+  const { fontSize, layoutWidthPercent, workloadAmount } = useRuntimeLayoutControls();
+  const { animationEnabled, animationSpeed } = useRuntimeAnimationControls();
+  const { paintOpacityPercent, paintShadowEnabled, paintStrokePercent } = useRuntimePaintControls();
+  const { stats: liveStats } = useRuntimeTelemetry();
+  const workload = workloadById(location.mode, location.workload);
+  const benchmarkWorkload = workloadById('benchmark', activityWorkloads.benchmark);
+  const benchmarkStatus = benchmarkWorkload.techniques[location.technique];
+  const conformanceWorkload = workloadById('conformance', activityWorkloads.conformance);
+  const conformanceStatus = conformanceWorkload.techniques[location.technique];
+  const benchmarkSurface =
+    benchmarkStatus.kind === 'planned' ? (
+      <PlannedWorkloadSurface
+        milestone={benchmarkStatus.milestone}
+        technique={location.technique}
+        workload={benchmarkWorkload}
+      />
+    ) : (
+      <BenchmarkSurface
+        animationEnabled={animationEnabled}
+        animationSpeed={animationSpeed}
+        backend={location.backend}
+        delivery={location.delivery}
+        demoMode={demoMode}
+        dpr={dpr}
+        fontSize={fontSize}
+        fontFixture={activeFontFixture}
+        grid={grid}
+        layoutWidthPercent={layoutWidthPercent}
+        paintOpacityPercent={paintOpacityPercent}
+        paintShadowEnabled={paintShadowEnabled}
+        paintStrokePercent={paintStrokePercent}
+        presentation={presentation}
+        presentationPreset={presentationPreset}
+        showLayoutBounds={showLayoutBounds}
+        workloadAmount={workloadAmount}
+        key={`${location.mode}-${location.backend}-${location.delivery}-${String(dpr)}`}
+        showcaseFrame={showcaseFrame}
+        stats={liveStats}
+        technique={location.technique}
+        workload={benchmarkWorkload.id}
+        onStats={onLiveStats}
+      />
+    );
+
+  if (presentation === 'presentation') {
+    return (
+      <section className="relative grid h-full min-h-0 min-w-0 grid-rows-[minmax(0,1fr)]" data-testid="scene">
+        {benchmarkSurface}
+        {error !== undefined && (
+          <div className="absolute bottom-4 left-4 z-30 max-w-md rounded-md border border-danger bg-black/80 p-3 text-xs text-danger">
+            {error}
+          </div>
+        )}
+      </section>
+    );
+  }
+
   return (
     <section
       className="grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-3"
@@ -1344,9 +1423,7 @@ function Scene({
     >
       <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <div>
-          <p className="eyebrow">
-            {location.mode === 'benchmark' ? 'Live benchmark' : 'Correctness inspection'}
-          </p>
+          <p className="eyebrow">{location.mode === 'benchmark' ? 'Live benchmark' : 'Correctness inspection'}</p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight">{workload.label}</h1>
           <p className="mt-1 max-w-3xl text-xs text-muted">{workload.description}</p>
         </div>
@@ -1359,36 +1436,7 @@ function Scene({
       </header>
       <Activity name="benchmark" mode={location.mode === 'benchmark' ? 'visible' : 'hidden'}>
         <div className="contents" data-activity="benchmark">
-          {benchmarkStatus.kind === 'planned' ? (
-            <PlannedWorkloadSurface
-              milestone={benchmarkStatus.milestone}
-              technique={location.technique}
-              workload={benchmarkWorkload}
-            />
-          ) : (
-            <BenchmarkSurface
-              animationEnabled={animationEnabled}
-              animationSpeed={animationSpeed}
-              backend={location.backend}
-              delivery={location.delivery}
-              dpr={dpr}
-              fontSize={fontSize}
-              fontFixture={activeFontFixture}
-              grid={grid}
-              layoutWidthPercent={layoutWidthPercent}
-              paintOpacityPercent={paintOpacityPercent}
-              paintShadowEnabled={paintShadowEnabled}
-              paintStrokePercent={paintStrokePercent}
-              showLayoutBounds={showLayoutBounds}
-              workloadAmount={workloadAmount}
-              key={`${location.mode}-${location.backend}-${location.delivery}-${String(dpr)}`}
-              showcaseFrame={showcaseFrame}
-              stats={liveStats}
-              technique={location.technique}
-              workload={benchmarkWorkload.id}
-              onStats={onLiveStats}
-            />
-          )}
+          {benchmarkSurface}
         </div>
       </Activity>
       <Activity name="conformance" mode={location.mode === 'conformance' ? 'visible' : 'hidden'}>
@@ -1418,19 +1466,16 @@ function Scene({
         </div>
       </Activity>
       {error !== undefined && (
-        <div className="rounded-md border border-danger/50 bg-danger/10 p-3 text-xs text-danger">
-          {error}
-        </div>
+        <div className="rounded-md border border-danger/50 bg-danger/10 p-3 text-xs text-danger">{error}</div>
       )}
       {location.mode === 'benchmark' && liveCapture !== undefined && (
         <div className="rounded-md border border-success/40 bg-success/5 px-3 py-2 text-xs text-muted">
           Captured the current rolling window at {liveCapture.capturedAt} ·{' '}
-          {liveCapture.stats.framesPerSecond.toFixed(1)} FPS ·{' '}
-          {formatMs(liveCapture.stats.medianSubmitMs)} CPU submit
+          {liveCapture.stats.framesPerSecond.toFixed(1)} FPS · {formatMs(liveCapture.stats.medianSubmitMs)} CPU frame
         </div>
       )}
     </section>
-  )
+  );
 }
 
 function PlannedWorkloadSurface({
@@ -1438,9 +1483,9 @@ function PlannedWorkloadSurface({
   technique,
   workload,
 }: {
-  readonly milestone: 8 | 9
-  readonly technique: RasterTechnique
-  readonly workload: WorkloadOption
+  readonly milestone: 8 | 9;
+  readonly technique: RasterTechnique;
+  readonly workload: WorkloadOption;
 }) {
   return (
     <div className="grid min-h-[520px] place-items-center rounded-md border border-border bg-panel p-8 text-center">
@@ -1452,7 +1497,7 @@ function PlannedWorkloadSurface({
         <p className="mt-2 text-xs leading-relaxed text-muted">{workload.description}</p>
       </div>
     </div>
-  )
+  );
 }
 
 function BenchmarkSurface({
@@ -1460,6 +1505,7 @@ function BenchmarkSurface({
   animationSpeed,
   backend,
   delivery,
+  demoMode,
   dpr,
   fontFixture,
   fontSize,
@@ -1468,6 +1514,8 @@ function BenchmarkSurface({
   paintOpacityPercent,
   paintShadowEnabled,
   paintStrokePercent,
+  presentation,
+  presentationPreset,
   showLayoutBounds,
   workloadAmount,
   showcaseFrame,
@@ -1476,31 +1524,40 @@ function BenchmarkSurface({
   workload,
   onStats,
 }: {
-  readonly animationEnabled: boolean
-  readonly animationSpeed: number
-  readonly backend: GraphicsBackend
-  readonly delivery: FontDelivery
-  readonly dpr: 1 | 2
-  readonly fontFixture: BenchmarkFontFixture
-  readonly fontSize: number
-  readonly grid: boolean
-  readonly layoutWidthPercent: number
-  readonly paintOpacityPercent: number
-  readonly paintShadowEnabled: boolean
-  readonly paintStrokePercent: number
-  readonly showLayoutBounds: boolean
-  readonly workloadAmount: number
-  readonly showcaseFrame: AdvancedShapingFrame
-  readonly stats: LiveTextStats | undefined
-  readonly technique: RasterTechnique
-  readonly workload: string
-  readonly onStats: (stats: LiveTextStats) => void
+  readonly animationEnabled: boolean;
+  readonly animationSpeed: number;
+  readonly backend: GraphicsBackend;
+  readonly delivery: FontDelivery;
+  readonly demoMode: boolean;
+  readonly dpr: 1 | 2;
+  readonly fontFixture: BenchmarkFontFixture;
+  readonly fontSize: number;
+  readonly grid: boolean;
+  readonly layoutWidthPercent: number;
+  readonly paintOpacityPercent: number;
+  readonly paintShadowEnabled: boolean;
+  readonly paintStrokePercent: number;
+  readonly presentation: 'main' | 'presentation';
+  readonly presentationPreset: PresentationPreset | undefined;
+  readonly showLayoutBounds: boolean;
+  readonly workloadAmount: number;
+  readonly showcaseFrame: AdvancedShapingFrame;
+  readonly stats: LiveTextStats | undefined;
+  readonly technique: RasterTechnique;
+  readonly workload: string;
+  readonly onStats: (stats: LiveTextStats) => void;
 }) {
+  use(liveSceneAssetResource(technique, delivery, fontFixture, workload));
+  const surfaceAnchorRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    return scheduleComparisonWorkloadPreload()
-  }, [])
-  const advanced = workload === 'advanced-shaping'
-  const comparisonWorkload = comparisonWorkloadId(workload)
+    return scheduleComparisonWorkloadPreload();
+  }, []);
+  const advanced = workload === 'advanced-shaping';
+  const comparisonWorkload = comparisonWorkloadId(workload);
+  const bitmapStats = stats?.technique === 'bitmap' ? stats : undefined;
+  const mtsdfStats = stats?.technique === 'mtsdf' ? stats : undefined;
+  const slugStats = stats?.technique === 'slug' ? stats : undefined;
+  const comparisonStats = isComparisonWorkloadStats(stats) ? stats : undefined;
   const textConfiguration: LiveTextConfiguration = advanced
     ? {
         anchor: 'measure-center',
@@ -1527,296 +1584,298 @@ function BenchmarkSurface({
         text: benchmarkIpsumText(),
         textAlign: 'start',
         timelineTick: undefined,
-      }
+      };
+  const viewport =
+    comparisonWorkload !== undefined ? (
+      <ComparisonWorkloadViewport
+        amount={workloadAmount}
+        animationEnabled={animationEnabled}
+        animationSpeed={animationSpeed}
+        backend={backend}
+        delivery={delivery}
+        suppressLoading={demoMode || presentation === 'presentation'}
+        dpr={dpr}
+        fontSize={fontSize}
+        fontFixture={fontFixture}
+        grid={grid}
+        layoutWidthRatio={layoutWidthPercent / 100}
+        paintOpacity={paintOpacityPercent / 100}
+        paintShadowEnabled={paintShadowEnabled}
+        paintStrokeWidth={paintStrokePercent / 100}
+        presentationPreset={presentationPreset}
+        showLayoutBounds={showLayoutBounds}
+        stats={comparisonStats}
+        technique={technique}
+        workload={comparisonWorkload}
+        surfaceAnchorRef={surfaceAnchorRef}
+        onStats={onStats}
+      />
+    ) : technique === 'slug' ? (
+      <SlugTextViewport
+        backend={backend}
+        delivery={delivery}
+        suppressLoading={demoMode || presentation === 'presentation'}
+        dpr={dpr}
+        fontSize={fontSize}
+        grid={grid}
+        surfaceAnchorRef={surfaceAnchorRef}
+        stats={slugStats}
+        textConfiguration={textConfiguration}
+        workload={workload}
+        onStats={onStats}
+      />
+    ) : technique === 'mtsdf' ? (
+      <MtsdfTextViewport
+        backend={backend}
+        delivery={delivery}
+        suppressLoading={demoMode || presentation === 'presentation'}
+        dpr={dpr}
+        fontSize={fontSize}
+        grid={grid}
+        surfaceAnchorRef={surfaceAnchorRef}
+        stats={mtsdfStats}
+        textConfiguration={textConfiguration}
+        workload={workload}
+        onStats={onStats}
+      />
+    ) : (
+      <BitmapTextViewport
+        backend={backend}
+        delivery={delivery}
+        suppressLoading={demoMode || presentation === 'presentation'}
+        dpr={dpr}
+        fontSize={fontSize}
+        grid={grid}
+        surfaceAnchorRef={surfaceAnchorRef}
+        stats={bitmapStats}
+        textConfiguration={textConfiguration}
+        workload={workload}
+        onStats={onStats}
+      />
+    );
   return (
     <div
-      className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3"
+      className={
+        presentation === 'presentation'
+          ? 'grid h-full min-h-0 grid-rows-[0_minmax(0,1fr)] overflow-hidden'
+          : 'grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3'
+      }
+      data-advanced-case={advanced ? showcaseFrame.caseDefinition.id : undefined}
+      data-advanced-progress={advanced ? showcaseFrame.progress : undefined}
+      data-presentation={presentation}
       data-testid="benchmark-surface"
     >
-      <div className="grid grid-cols-[repeat(3,minmax(0,1fr))_repeat(2,minmax(0,0.55fr))] gap-px overflow-hidden rounded-md border border-border bg-border">
-        <TelemetryCharts stats={stats} />
-        <div className="metric-summary-grid bg-surface">
-          <Metric
-            label="Glyphs / draws"
-            value={stats === undefined ? '—' : `${stats.glyphCount} / ${stats.drawCount}`}
-          />
-        </div>
-        <div className="metric-summary-grid bg-surface">
-          <Metric
-            label="Missing glyphs"
-            value={stats === undefined ? '—' : String(stats.missingGlyphCount)}
-          />
-        </div>
-      </div>
-      <div className="flex min-h-0 flex-col rounded-md border border-border bg-surface p-3">
-        <div className="mb-3 flex items-start justify-between gap-3">
-          <div>
-            <p className="eyebrow">Realtime scene</p>
-            <p className="mt-1 text-xs text-muted">
-              {liveWorkloadSceneDescription(workload, showcaseFrame, technique)}
-            </p>
-          </div>
-          <span className="shrink-0 font-mono text-[9px] text-success">LIVE</span>
-        </div>
-        {comparisonWorkload !== undefined ? (
-          <ComparisonWorkloadViewport
-            amount={workloadAmount}
-            animationEnabled={animationEnabled}
-            animationSpeed={animationSpeed}
-            backend={backend}
-            delivery={delivery}
-            dpr={dpr}
-            fontSize={fontSize}
-            fontFixture={fontFixture}
-            grid={grid}
-            layoutWidthRatio={layoutWidthPercent / 100}
-            paintOpacity={paintOpacityPercent / 100}
-            paintShadowEnabled={paintShadowEnabled}
-            paintStrokeWidth={paintStrokePercent / 100}
-            showLayoutBounds={showLayoutBounds}
-            technique={technique}
-            workload={comparisonWorkload}
-            key={`${backend}:${delivery}:${String(dpr)}:${fontFixture}:${technique}:${comparisonWorkload}`}
-            onStats={onStats}
-          />
-        ) : technique === 'slug' ? (
-          <SlugTextViewport
-            backend={backend}
-            delivery={delivery}
-            dpr={dpr}
-            fontSize={fontSize}
-            grid={grid}
-            key={textConfiguration.fontFixture}
-            textConfiguration={textConfiguration}
-            onStats={onStats}
-          />
-        ) : technique === 'mtsdf' ? (
-          <MtsdfTextViewport
-            backend={backend}
-            delivery={delivery}
-            dpr={dpr}
-            fontSize={fontSize}
-            grid={grid}
-            key={textConfiguration.fontFixture}
-            textConfiguration={textConfiguration}
-            onStats={onStats}
-          />
-        ) : (
-          <BitmapTextViewport
-            backend={backend}
-            delivery={delivery}
-            dpr={dpr}
-            fontSize={fontSize}
-            grid={grid}
-            key={textConfiguration.fontFixture}
-            textConfiguration={textConfiguration}
-            onStats={onStats}
-          />
+      <div
+        className={
+          presentation === 'main'
+            ? 'grid grid-cols-[repeat(3,minmax(0,1fr))_repeat(2,minmax(0,0.55fr))] gap-px overflow-hidden rounded-md border border-border bg-border'
+            : 'invisible overflow-hidden'
+        }
+      >
+        {presentation === 'main' && (
+          <>
+            <TelemetryCharts stats={stats} />
+            <div className="metric-summary-grid bg-surface">
+              <Metric
+                label="Glyphs / draws"
+                value={stats === undefined ? '—' : `${stats.glyphCount} / ${stats.drawCount}`}
+              />
+            </div>
+            <div className="metric-summary-grid bg-surface">
+              <Metric label="Missing glyphs" value={stats === undefined ? '—' : String(stats.missingGlyphCount)} />
+            </div>
+          </>
         )}
       </div>
+      <div
+        className={
+          presentation === 'presentation'
+            ? 'flex min-h-0 flex-col overflow-hidden'
+            : 'flex min-h-0 flex-col rounded-md border border-border bg-surface p-3'
+        }
+      >
+        <div className={presentation === 'main' ? 'mb-3 flex items-start justify-between gap-3' : 'hidden'}>
+          {presentation === 'main' && (
+            <>
+              <div>
+                <p className="eyebrow">Realtime scene</p>
+                <p className="mt-1 text-xs text-muted">
+                  {liveWorkloadSceneDescription(workload, showcaseFrame, technique)}
+                </p>
+              </div>
+              <span className="shrink-0 font-mono text-[9px] text-success">LIVE</span>
+            </>
+          )}
+        </div>
+        <div className="relative min-h-0 flex-1 overflow-hidden" ref={surfaceAnchorRef}>
+          {viewport}
+        </div>
+      </div>
     </div>
-  )
+  );
 }
 
 function ConformanceSurface({
   workload,
   ...properties
 }: {
-  readonly backend: GraphicsBackend
-  readonly comparisonText: string
-  readonly conformanceView: ConformanceView
-  readonly dpr: 1 | 2
-  readonly event: RunnerEvent | undefined
-  readonly fontFixture: SelectableFontFixture
-  readonly summary: BenchmarkSummary | undefined
-  readonly technique: RasterTechnique
-  readonly workload: string
-  readonly onPan: (deltaXPercent: number, deltaYPercent: number) => void
-  readonly onZoom: (zoom: number) => void
+  readonly backend: GraphicsBackend;
+  readonly comparisonText: string;
+  readonly conformanceView: ConformanceView;
+  readonly dpr: 1 | 2;
+  readonly event: RunnerEvent | undefined;
+  readonly fontFixture: SelectableFontFixture;
+  readonly summary: BenchmarkSummary | undefined;
+  readonly technique: RasterTechnique;
+  readonly workload: string;
+  readonly onPan: (deltaXPercent: number, deltaYPercent: number) => void;
+  readonly onZoom: (zoom: number) => void;
 }) {
   return workload === 'mtsdf-slug-compare' ? (
     <RasterTechniqueComparisonSurface
       backend={properties.backend}
       comparisonText={properties.comparisonText}
       conformanceView={properties.conformanceView}
-      dpr={properties.dpr}
       fontFixture={properties.fontFixture}
       onPan={properties.onPan}
       onZoom={properties.onZoom}
     />
   ) : (
     <FiniteConformanceSurface {...properties} workload={workload} />
-  )
+  );
 }
 
 function RasterTechniqueComparisonSurface({
   backend,
   comparisonText,
   conformanceView,
-  dpr,
   fontFixture,
   onPan,
   onZoom,
 }: {
-  readonly backend: GraphicsBackend
-  readonly comparisonText: string
-  readonly conformanceView: ConformanceView
-  readonly dpr: 1 | 2
-  readonly fontFixture: SelectableFontFixture
-  readonly onPan: (deltaXPercent: number, deltaYPercent: number) => void
-  readonly onZoom: (zoom: number) => void
+  readonly backend: GraphicsBackend;
+  readonly comparisonText: string;
+  readonly conformanceView: ConformanceView;
+  readonly fontFixture: SelectableFontFixture;
+  readonly onPan: (deltaXPercent: number, deltaYPercent: number) => void;
+  readonly onZoom: (zoom: number) => void;
 }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const comparisonRef = useRef<RasterTechniqueComparison>(undefined)
-  const [ready, setReady] = useState(false)
-  const [committedText, setCommittedText] = useState('')
-  const [error, setError] = useState<string>()
+  const { activateSurface } = usePersistentRenderHost();
+  const activatePersistentSurface = useEffectEvent(activateSurface);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const comparisonRef = useRef<RasterTechniqueComparisonPersistentScene>(undefined);
+  const [ready, setReady] = useState(false);
+  const [committedText, setCommittedText] = useState('');
+  const [error, setError] = useState<string>();
   const publishError = useEffectEvent((caught: unknown) => {
-    if (caught instanceof DOMException && caught.name === 'AbortError') return
-    setError(caught instanceof Error ? caught.message : String(caught))
-  })
-  const initialView = useEffectEvent(() => conformanceView)
-  const initialText = useEffectEvent(() => comparisonText)
+    if (caught instanceof DOMException && caught.name === 'AbortError') return;
+    setError(caught instanceof Error ? caught.message : String(caught));
+  });
+  const initialView = useEffectEvent(() => conformanceView);
+  const initialText = useEffectEvent(() => comparisonText);
+  const publishPan = useEffectEvent((deltaXPercent: number, deltaYPercent: number) => {
+    onPan(deltaXPercent, deltaYPercent);
+  });
+  const publishZoom = useEffectEvent((zoom: number) => {
+    onZoom(zoom);
+  });
 
   useEffect(() => {
-    const canvas = canvasRef.current
-    const container = containerRef.current
-    if (canvas === null || container === null) return
-    const controller = new AbortController()
-    let comparison: RasterTechniqueComparison | undefined
-    let lifecycleLease: Awaited<ReturnType<typeof liveRendererLifecycle.acquire>> | undefined
-    let cancelled = false
-    const resize = (): void => {
-      if (comparison === undefined) return
-      const bounds = container.getBoundingClientRect()
-      comparison.resize(Math.max(1, bounds.width), Math.max(1, bounds.height))
-    }
-    const observer = new ResizeObserver(resize)
-    observer.observe(container)
+    const container = containerRef.current;
+    if (container === null) return;
+    const controller = new AbortController();
+    let comparison: RasterTechniqueComparisonPersistentScene | undefined;
+    let surfaceLease: Awaited<ReturnType<typeof activateSurface>> | undefined;
+    let cancelled = false;
     const initialization = (async () => {
-      lifecycleLease = await liveRendererLifecycle.acquire(controller.signal)
       try {
-        if (cancelled) return
-        const { createRasterTechniqueComparison } =
-          await import('./renderer/raster-technique-compare')
-        if (cancelled) return
-        const bounds = container.getBoundingClientRect()
-        const optionsText = initialText()
-        const created = await createRasterTechniqueComparison({
+        if (cancelled) return;
+        const { createRasterTechniqueComparisonPersistentScene } = await import('./renderer/raster-technique-compare');
+        if (cancelled) return;
+        const optionsText = initialText();
+        const created = createRasterTechniqueComparisonPersistentScene({
           backend,
-          canvas,
-          dpr,
           fontFixture,
-          height: Math.max(1, bounds.height),
           onError: publishError,
-          signal: controller.signal,
+          onPan: publishPan,
+          onZoom: publishZoom,
           text: optionsText,
-          width: Math.max(1, bounds.width),
-        })
+        });
+        comparison = created;
+        comparisonRef.current = created;
+        surfaceLease = await activatePersistentSurface(
+          {
+            anchor: container,
+            controller: comparisonRef,
+            label: 'Live MSDF and Slug GPU comparison',
+            pan: true,
+            scene: created,
+            zoom: true,
+          },
+          controller.signal,
+        );
         if (cancelled) {
-          await created.dispose()
-          return
+          await surfaceLease.release();
+          return;
         }
-        comparison = created
-        let text = optionsText
-        let latestText = initialText()
+        let text = optionsText;
+        let latestText = initialText();
         while (latestText !== text) {
-          text = latestText
-          await created.setText(text)
-          latestText = initialText()
+          text = latestText;
+          await created.setText(text);
+          latestText = initialText();
         }
-        if (cancelled) return
-        const view = initialView()
-        created.setView(view.zoom, view.panXPercent, view.panYPercent)
-        resize()
-        comparisonRef.current = created
-        setCommittedText(text)
-        setReady(true)
-        setError(undefined)
+        if (cancelled) return;
+        const view = initialView();
+        created.setView(view.zoom, view.panXPercent, view.panYPercent);
+        setCommittedText(text);
+        setReady(true);
+        setError(undefined);
       } catch (caught) {
-        const failedComparison = comparison
-        comparison = undefined
-        if (comparisonRef.current === failedComparison) comparisonRef.current = undefined
-        try {
-          await failedComparison?.dispose()
-        } finally {
-          lifecycleLease.release()
-          lifecycleLease = undefined
-        }
-        throw caught
+        const failedComparison = comparison;
+        comparison = undefined;
+        if (comparisonRef.current === failedComparison) comparisonRef.current = undefined;
+        await surfaceLease?.release();
+        surfaceLease = undefined;
+        throw caught;
       }
-    })()
-    void initialization.catch(publishError)
+    })();
+    void initialization.catch(publishError);
     return () => {
-      cancelled = true
-      controller.abort()
-      observer.disconnect()
+      cancelled = true;
+      controller.abort();
       void initialization.then(
         async () => {
-          try {
-            if (comparison === undefined) return
-            const current = comparison
-            comparison = undefined
-            if (comparisonRef.current === current) comparisonRef.current = undefined
-            await current.dispose()
-          } finally {
-            lifecycleLease?.release()
-            lifecycleLease = undefined
-          }
+          const current = comparison;
+          comparison = undefined;
+          if (comparisonRef.current === current) comparisonRef.current = undefined;
+          await surfaceLease?.release();
+          surfaceLease = undefined;
         },
-        () => {
-          lifecycleLease?.release()
-          lifecycleLease = undefined
-        },
-      )
-    }
-  }, [backend, dpr, fontFixture])
+        () => undefined,
+      );
+    };
+  }, [backend, fontFixture]);
 
   useEffect(() => {
-    comparisonRef.current?.setView(
-      conformanceView.zoom,
-      conformanceView.panXPercent,
-      conformanceView.panYPercent,
-    )
-  }, [conformanceView])
+    comparisonRef.current?.setView(conformanceView.zoom, conformanceView.panXPercent, conformanceView.panYPercent);
+  }, [conformanceView]);
 
   useEffect(() => {
-    let current = true
+    let current = true;
     void comparisonRef.current
       ?.setText(comparisonText)
       .then(() => {
         if (current) {
-          setCommittedText(comparisonText)
-          setError(undefined)
+          setCommittedText(comparisonText);
+          setError(undefined);
         }
       })
-      .catch(publishError)
+      .catch(publishError);
     return () => {
-      current = false
-    }
-  }, [comparisonText])
-
-  const zoomFromWheel = useEffectEvent((deltaY: number) => {
-    const direction = deltaY < 0 ? 0.25 : -0.25
-    onZoom(Math.min(8, Math.max(1, conformanceView.zoom + direction)))
-  })
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (canvas === null) return
-    const handleWheel = (event: WheelEvent): void => {
-      event.preventDefault()
-      zoomFromWheel(event.deltaY)
-    }
-    canvas.addEventListener('wheel', handleWheel, { passive: false })
-    return () => canvas.removeEventListener('wheel', handleWheel)
-  }, [])
-
-  function moveView(event: ReactPointerEvent<HTMLCanvasElement>): void {
-    if (!event.currentTarget.hasPointerCapture(event.pointerId) || conformanceView.zoom <= 1) return
-    const bounds = event.currentTarget.getBoundingClientRect()
-    onPan((event.movementX / bounds.width) * 300, (event.movementY / bounds.height) * 100)
-  }
+      current = false;
+    };
+  }, [comparisonText]);
 
   return (
     <div
@@ -1833,28 +1892,10 @@ function RasterTechniqueComparisonSurface({
       <div
         ref={containerRef}
         className="relative min-h-[420px] overflow-hidden rounded-md border border-border bg-background"
+        data-pan-x={conformanceView.panXPercent}
+        data-pan-y={conformanceView.panYPercent}
+        data-zoom={conformanceView.zoom}
       >
-        <canvas
-          ref={canvasRef}
-          aria-label="Live MSDF and Slug GPU comparison"
-          className={`absolute inset-0 size-full touch-none bg-background ${conformanceView.zoom > 1 ? 'cursor-grab active:cursor-grabbing' : 'cursor-zoom-in'}`}
-          data-pan-x={conformanceView.panXPercent}
-          data-pan-y={conformanceView.panYPercent}
-          data-zoom={conformanceView.zoom}
-          onDoubleClick={() => onZoom(conformanceView.zoom === 1 ? 2 : 1)}
-          onPointerDown={(event) => event.currentTarget.setPointerCapture(event.pointerId)}
-          onPointerMove={moveView}
-          onPointerCancel={(event) => {
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-              event.currentTarget.releasePointerCapture(event.pointerId)
-            }
-          }}
-          onPointerUp={(event) => {
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-              event.currentTarget.releasePointerCapture(event.pointerId)
-            }
-          }}
-        />
         <div className="pointer-events-none absolute inset-x-0 top-0 grid grid-cols-3 border-b border-border bg-black/70 font-mono text-[9px] uppercase tracking-wider text-muted">
           <span className="border-r border-border px-3 py-2">MSDF</span>
           <span className="border-r border-border px-3 py-2">Slug</span>
@@ -1872,12 +1913,12 @@ function RasterTechniqueComparisonSurface({
         )}
       </div>
       <div className="rounded-md border border-border bg-surface p-3 text-[10px] text-dim">
-        Both candidates share the same text, layout dimensions, camera, physical target size, and
-        view transform. The heatmap samples both render targets directly on the GPU; black agrees,
-        red is extra MSDF coverage, and cyan is extra Slug coverage.
+        Both candidates share the same text, layout dimensions, camera, physical target size, and view transform. The
+        heatmap samples both render targets directly on the GPU; black agrees, red is extra MSDF coverage, and cyan is
+        extra Slug coverage.
       </div>
     </div>
-  )
+  );
 }
 
 function FiniteConformanceSurface({
@@ -1892,25 +1933,27 @@ function FiniteConformanceSurface({
   onPan,
   onZoom,
 }: {
-  readonly backend: GraphicsBackend
-  readonly conformanceView: ConformanceView
-  readonly dpr: 1 | 2
-  readonly event: RunnerEvent | undefined
-  readonly fontFixture: SelectableFontFixture
-  readonly summary: BenchmarkSummary | undefined
-  readonly technique: RasterTechnique
-  readonly workload: string
-  readonly onPan: (deltaXPercent: number, deltaYPercent: number) => void
-  readonly onZoom: (zoom: number) => void
+  readonly backend: GraphicsBackend;
+  readonly conformanceView: ConformanceView;
+  readonly dpr: 1 | 2;
+  readonly event: RunnerEvent | undefined;
+  readonly fontFixture: SelectableFontFixture;
+  readonly summary: BenchmarkSummary | undefined;
+  readonly technique: RasterTechnique;
+  readonly workload: string;
+  readonly onPan: (deltaXPercent: number, deltaYPercent: number) => void;
+  readonly onZoom: (zoom: number) => void;
 }) {
+  const { runExclusiveJob } = usePersistentRenderHost();
+  const runExclusiveCapture = useEffectEvent(runExclusiveJob);
   const [capture, setCapture] = useState<
     | { readonly kind: 'bitmap'; readonly value: BitmapTextConformanceCapture }
     | { readonly kind: 'mtsdf'; readonly value: MtsdfTextConformanceCapture }
     | { readonly kind: 'slug'; readonly value: SlugTextConformanceCapture }
     | { readonly kind: 'source-outline'; readonly value: SourceOutlineFidelityCapture }
     | { readonly kind: 'runtime-fallback'; readonly value: RuntimeFallbackCapture }
-  >()
-  const [error, setError] = useState<string>()
+  >();
+  const [error, setError] = useState<string>();
   const publishCapture = useEffectEvent(
     (
       value:
@@ -1920,116 +1963,120 @@ function FiniteConformanceSurface({
         | { readonly kind: 'source-outline'; readonly value: SourceOutlineFidelityCapture }
         | { readonly kind: 'runtime-fallback'; readonly value: RuntimeFallbackCapture },
     ) => {
-      setCapture(value)
-      setError(undefined)
+      setCapture(value);
+      setError(undefined);
     },
-  )
+  );
   const publishError = useEffectEvent((caught: unknown) => {
-    if (caught instanceof DOMException && caught.name === 'AbortError') return
-    setError(caught instanceof Error ? caught.message : String(caught))
-  })
+    if (caught instanceof DOMException && caught.name === 'AbortError') return;
+    setError(caught instanceof Error ? caught.message : String(caught));
+  });
   useEffect(() => {
-    if (summary === undefined) return
-    const controller = new AbortController()
-    let cancelled = false
-    const request =
-      workload === 'runtime-fallback'
-        ? import('./renderer/runtime-fallback-conformance').then(
-            async ({ captureRuntimeFallbackConformance }) => ({
+    if (summary === undefined) return;
+    const controller = new AbortController();
+    let cancelled = false;
+    const request = runExclusiveCapture(
+      async ({ renderer, signal }) =>
+        workload === 'runtime-fallback'
+          ? import('./renderer/runtime-fallback-conformance').then(async ({ captureRuntimeFallbackConformance }) => ({
               kind: 'runtime-fallback' as const,
               value: await captureRuntimeFallbackConformance({
                 backend,
                 dpr,
                 fontFixture,
-                signal: controller.signal,
+                renderer,
+                signal,
                 technique,
               }),
-            }),
-          )
-        : workload === 'cross-technique-fidelity'
-          ? technique === 'slug'
-            ? import('./renderer/slug-text').then(async ({ captureSlugSourceOutlineFidelity }) => ({
-                kind: 'source-outline' as const,
-                value: await captureSlugSourceOutlineFidelity({
-                  backend,
-                  dpr,
-                  fontFixture,
-                  signal: controller.signal,
-                }),
-              }))
-            : technique === 'mtsdf'
-              ? import('./renderer/mtsdf-text').then(
-                  async ({ captureMtsdfSourceOutlineFidelity }) => ({
+            }))
+          : workload === 'cross-technique-fidelity'
+            ? technique === 'slug'
+              ? import('./renderer/slug-text').then(async ({ captureSlugSourceOutlineFidelity }) => ({
+                  kind: 'source-outline' as const,
+                  value: await captureSlugSourceOutlineFidelity({
+                    backend,
+                    dpr,
+                    fontFixture,
+                    renderer,
+                    signal,
+                  }),
+                }))
+              : technique === 'mtsdf'
+                ? import('./renderer/mtsdf-text').then(async ({ captureMtsdfSourceOutlineFidelity }) => ({
                     kind: 'source-outline' as const,
                     value: await captureMtsdfSourceOutlineFidelity({
                       backend,
                       dpr,
                       fontFixture,
-                      signal: controller.signal,
+                      renderer,
+                      signal,
                     }),
-                  }),
-                )
-              : import('./renderer/bitmap-text').then(
-                  async ({ captureBitmapSourceOutlineFidelity }) => ({
+                  }))
+                : import('./renderer/bitmap-text').then(async ({ captureBitmapSourceOutlineFidelity }) => ({
                     kind: 'source-outline' as const,
                     value: await captureBitmapSourceOutlineFidelity({
                       backend,
                       dpr,
                       fontFixture,
-                      signal: controller.signal,
+                      renderer,
+                      signal,
                     }),
-                  }),
-                )
-          : technique === 'slug'
-            ? import('./renderer/slug-text').then(async ({ captureSlugTextConformance }) => ({
-                kind: 'slug' as const,
-                value: await captureSlugTextConformance({
-                  backend,
-                  dpr,
-                  fontFixture,
-                  signal: controller.signal,
-                }),
-              }))
-            : technique === 'mtsdf'
-              ? import('./renderer/mtsdf-text').then(async ({ captureMtsdfTextConformance }) => ({
-                  kind: 'mtsdf' as const,
-                  value: await captureMtsdfTextConformance({
+                  }))
+            : technique === 'slug'
+              ? import('./renderer/slug-text').then(async ({ captureSlugTextConformance }) => ({
+                  kind: 'slug' as const,
+                  value: await captureSlugTextConformance({
                     backend,
                     dpr,
                     fontFixture,
-                    signal: controller.signal,
+                    renderer,
+                    signal,
                   }),
                 }))
-              : import('./renderer/bitmap-text').then(async ({ captureBitmapTextConformance }) => ({
-                  kind: 'bitmap' as const,
-                  value: await captureBitmapTextConformance({
-                    backend,
-                    dpr,
-                    fontFixture,
-                    signal: controller.signal,
-                  }),
-                }))
+              : technique === 'mtsdf'
+                ? import('./renderer/mtsdf-text').then(async ({ captureMtsdfTextConformance }) => ({
+                    kind: 'mtsdf' as const,
+                    value: await captureMtsdfTextConformance({
+                      backend,
+                      dpr,
+                      fontFixture,
+                      renderer,
+                      signal,
+                    }),
+                  }))
+                : import('./renderer/bitmap-text').then(async ({ captureBitmapTextConformance }) => ({
+                    kind: 'bitmap' as const,
+                    value: await captureBitmapTextConformance({
+                      backend,
+                      dpr,
+                      fontFixture,
+                      renderer,
+                      signal,
+                    }),
+                  })),
+      controller.signal,
+    );
     void request
       .then((value) => {
-        if (!cancelled) publishCapture(value)
+        if (!cancelled) publishCapture(value);
       })
       .catch((caught: unknown) => {
-        if (!cancelled) publishError(caught)
-      })
+        if (!cancelled) publishError(caught);
+      });
     return () => {
-      cancelled = true
-      controller.abort()
-    }
-  }, [backend, dpr, fontFixture, summary, technique, workload])
+      cancelled = true;
+      controller.abort();
+    };
+  }, [backend, dpr, fontFixture, summary, technique, workload]);
 
-  const bitmapCapture = capture?.kind === 'bitmap' ? capture.value : undefined
-  const mtsdfCapture = capture?.kind === 'mtsdf' ? capture.value : undefined
-  const slugCapture = capture?.kind === 'slug' ? capture.value : undefined
-  const analyticCapture = technique === 'slug' ? slugCapture : mtsdfCapture
-  const sourceOutlineCapture = capture?.kind === 'source-outline' ? capture.value : undefined
-  const runtimeFallbackCapture = capture?.kind === 'runtime-fallback' ? capture.value : undefined
-  const isSourceOutline = workload === 'cross-technique-fidelity'
-  const isRuntimeFallback = workload === 'runtime-fallback'
+  const bitmapCapture = capture?.kind === 'bitmap' ? capture.value : undefined;
+  const mtsdfCapture = capture?.kind === 'mtsdf' ? capture.value : undefined;
+  const slugCapture = capture?.kind === 'slug' ? capture.value : undefined;
+  const analyticCapture = technique === 'slug' ? slugCapture : mtsdfCapture;
+  const sourceOutlineCapture = capture?.kind === 'source-outline' ? capture.value : undefined;
+  const runtimeFallbackCapture = capture?.kind === 'runtime-fallback' ? capture.value : undefined;
+  const isSourceOutline = workload === 'cross-technique-fidelity';
+  const isRuntimeFallback = workload === 'runtime-fallback';
 
   return (
     <div
@@ -2113,139 +2160,23 @@ function FiniteConformanceSurface({
                     : String(bitmapCapture.litPixels)
           }
         />
-        <Metric
-          label="Render submit (diagnostic)"
-          value={formatMs(capture?.value.renderSubmitMs)}
-        />
+        <Metric label="Render submit (diagnostic)" value={formatMs(capture?.value.renderSubmitMs)} />
         <Metric label="Suite duration" value={formatMs(summary?.medianMs ?? event?.medianMs)} />
       </div>
-      {isRuntimeFallback ? (
-        <div className="grid min-h-0 grid-cols-1 gap-3 md:grid-cols-2">
-          <PixelBytesPanel
-            bytes={runtimeFallbackCapture?.baked}
-            conformanceView={conformanceView}
-            height={runtimeFallbackCapture?.height}
-            label="Checked-in baked asset"
-            width={runtimeFallbackCapture?.width}
-            onPan={onPan}
-            onZoom={onZoom}
-          />
-          <PixelBytesPanel
-            bytes={runtimeFallbackCapture?.runtime}
-            conformanceView={conformanceView}
-            height={runtimeFallbackCapture?.height}
-            label="Source font · runtime bake"
-            width={runtimeFallbackCapture?.width}
-            onPan={onPan}
-            onZoom={onZoom}
-          />
-          <PixelBytesPanel
-            bytes={runtimeFallbackCapture?.difference}
-            className="md:col-span-2"
-            conformanceView={conformanceView}
-            height={runtimeFallbackCapture?.height}
-            label="Baked / runtime difference heatmap ×8"
-            width={runtimeFallbackCapture?.width}
-            onPan={onPan}
-            onZoom={onZoom}
-          />
-        </div>
-      ) : isSourceOutline ? (
-        <div className="grid min-h-0 grid-cols-1 gap-3 md:grid-cols-2">
-          <PixelBytesPanel
-            bytes={sourceOutlineCapture?.candidate}
-            conformanceView={conformanceView}
-            height={sourceOutlineCapture?.height}
-            label={`${techniqueLabel(technique)} candidate · ${sourceOutlineCapture?.physicalPpem ?? '—'} device px`}
-            width={sourceOutlineCapture?.width}
-            onPan={onPan}
-            onZoom={onZoom}
-          />
-          <PixelBytesPanel
-            bytes={sourceOutlineCapture?.reference}
-            conformanceView={conformanceView}
-            height={sourceOutlineCapture?.height}
-            label="Browser Canvas2D · pinned source font"
-            width={sourceOutlineCapture?.width}
-            onPan={onPan}
-            onZoom={onZoom}
-          />
-          <PixelBytesPanel
-            bytes={sourceOutlineCapture?.difference}
-            className="md:col-span-2"
-            conformanceView={conformanceView}
-            height={sourceOutlineCapture?.height}
-            label="Source-outline difference heatmap ×8"
-            width={sourceOutlineCapture?.width}
-            onPan={onPan}
-            onZoom={onZoom}
-          />
-        </div>
-      ) : technique !== 'bitmap' ? (
-        <div className="grid min-h-0 grid-cols-1 gap-3 md:grid-cols-2">
-          <PixelBytesPanel
-            bytes={analyticCapture?.candidate}
-            conformanceView={conformanceView}
-            height={analyticCapture?.height}
-            label={`${techniqueLabel(technique)} candidate`}
-            width={analyticCapture?.width}
-            onPan={onPan}
-            onZoom={onZoom}
-          />
-          <PixelBytesPanel
-            bytes={analyticCapture?.reference}
-            conformanceView={conformanceView}
-            height={analyticCapture?.height}
-            label="CPU sampling reference"
-            width={analyticCapture?.width}
-            onPan={onPan}
-            onZoom={onZoom}
-          />
-          <PixelBytesPanel
-            bytes={analyticCapture?.difference}
-            className="md:col-span-2"
-            conformanceView={conformanceView}
-            height={analyticCapture?.height}
-            label="Difference heatmap ×8"
-            width={analyticCapture?.width}
-            onPan={onPan}
-            onZoom={onZoom}
-          />
-        </div>
-      ) : (
-        <div className="grid min-h-0 grid-cols-1 gap-3 md:grid-cols-2">
-          <PixelPanel
-            capture={bitmapCapture}
-            conformanceView={conformanceView}
-            kind="candidate"
-            label="Candidate"
-            onPan={onPan}
-            onZoom={onZoom}
-          />
-          <PixelPanel
-            capture={bitmapCapture}
-            conformanceView={conformanceView}
-            kind="reference"
-            label="CPU reference"
-            onPan={onPan}
-            onZoom={onZoom}
-          />
-          <PixelPanel
-            capture={bitmapCapture}
-            className="md:col-span-2"
-            conformanceView={conformanceView}
-            kind="difference"
-            label="Difference ×1"
-            onPan={onPan}
-            onZoom={onZoom}
-          />
-        </div>
-      )}
+      <FiniteConformancePanels
+        analyticCapture={analyticCapture}
+        bitmapCapture={bitmapCapture}
+        conformanceView={conformanceView}
+        runtimeFallbackCapture={runtimeFallbackCapture}
+        sourceOutlineCapture={sourceOutlineCapture}
+        technique={technique}
+        workload={workload}
+        onPan={onPan}
+        onZoom={onZoom}
+      />
       <div className="rounded-md border border-border bg-surface p-3">
         <div className="flex items-center gap-2 text-xs">
-          <span
-            className={`size-2 rounded-full ${summary?.status === 'passed' ? 'bg-success' : 'bg-dim'}`}
-          />
+          <span className={`size-2 rounded-full ${summary?.status === 'passed' ? 'bg-success' : 'bg-dim'}`} />
           <span className="font-medium">Finite conformance suite</span>
           <span className="ml-auto font-mono text-[10px] text-muted">
             {summary?.validation ??
@@ -2266,7 +2197,161 @@ function FiniteConformanceSurface({
       </div>
       {error !== undefined && <p className="text-xs text-danger">{error}</p>}
     </div>
-  )
+  );
+}
+
+function FiniteConformancePanels({
+  analyticCapture,
+  bitmapCapture,
+  conformanceView,
+  runtimeFallbackCapture,
+  sourceOutlineCapture,
+  technique,
+  workload,
+  onPan,
+  onZoom,
+}: {
+  readonly analyticCapture: MtsdfTextConformanceCapture | SlugTextConformanceCapture | undefined;
+  readonly bitmapCapture: BitmapTextConformanceCapture | undefined;
+  readonly conformanceView: ConformanceView;
+  readonly runtimeFallbackCapture: RuntimeFallbackCapture | undefined;
+  readonly sourceOutlineCapture: SourceOutlineFidelityCapture | undefined;
+  readonly technique: RasterTechnique;
+  readonly workload: string;
+  readonly onPan: (deltaXPercent: number, deltaYPercent: number) => void;
+  readonly onZoom: (zoom: number) => void;
+}) {
+  if (workload === 'runtime-fallback') {
+    return (
+      <div className="grid min-h-0 grid-cols-1 gap-3 md:grid-cols-2">
+        <PixelBytesPanel
+          bytes={runtimeFallbackCapture?.baked}
+          conformanceView={conformanceView}
+          height={runtimeFallbackCapture?.height}
+          label="Checked-in baked asset"
+          width={runtimeFallbackCapture?.width}
+          onPan={onPan}
+          onZoom={onZoom}
+        />
+        <PixelBytesPanel
+          bytes={runtimeFallbackCapture?.runtime}
+          conformanceView={conformanceView}
+          height={runtimeFallbackCapture?.height}
+          label="Source font · runtime bake"
+          width={runtimeFallbackCapture?.width}
+          onPan={onPan}
+          onZoom={onZoom}
+        />
+        <PixelBytesPanel
+          bytes={runtimeFallbackCapture?.difference}
+          className="md:col-span-2"
+          conformanceView={conformanceView}
+          height={runtimeFallbackCapture?.height}
+          label="Baked / runtime difference heatmap ×8"
+          width={runtimeFallbackCapture?.width}
+          onPan={onPan}
+          onZoom={onZoom}
+        />
+      </div>
+    );
+  }
+  if (workload === 'cross-technique-fidelity') {
+    return (
+      <div className="grid min-h-0 grid-cols-1 gap-3 md:grid-cols-2">
+        <PixelBytesPanel
+          bytes={sourceOutlineCapture?.candidate}
+          conformanceView={conformanceView}
+          height={sourceOutlineCapture?.height}
+          label={`${techniqueLabel(technique)} candidate · ${sourceOutlineCapture?.physicalPpem ?? '—'} device px`}
+          width={sourceOutlineCapture?.width}
+          onPan={onPan}
+          onZoom={onZoom}
+        />
+        <PixelBytesPanel
+          bytes={sourceOutlineCapture?.reference}
+          conformanceView={conformanceView}
+          height={sourceOutlineCapture?.height}
+          label="Browser Canvas2D · pinned source font"
+          width={sourceOutlineCapture?.width}
+          onPan={onPan}
+          onZoom={onZoom}
+        />
+        <PixelBytesPanel
+          bytes={sourceOutlineCapture?.difference}
+          className="md:col-span-2"
+          conformanceView={conformanceView}
+          height={sourceOutlineCapture?.height}
+          label="Source-outline difference heatmap ×8"
+          width={sourceOutlineCapture?.width}
+          onPan={onPan}
+          onZoom={onZoom}
+        />
+      </div>
+    );
+  }
+  if (technique !== 'bitmap') {
+    return (
+      <div className="grid min-h-0 grid-cols-1 gap-3 md:grid-cols-2">
+        <PixelBytesPanel
+          bytes={analyticCapture?.candidate}
+          conformanceView={conformanceView}
+          height={analyticCapture?.height}
+          label={`${techniqueLabel(technique)} candidate`}
+          width={analyticCapture?.width}
+          onPan={onPan}
+          onZoom={onZoom}
+        />
+        <PixelBytesPanel
+          bytes={analyticCapture?.reference}
+          conformanceView={conformanceView}
+          height={analyticCapture?.height}
+          label="CPU sampling reference"
+          width={analyticCapture?.width}
+          onPan={onPan}
+          onZoom={onZoom}
+        />
+        <PixelBytesPanel
+          bytes={analyticCapture?.difference}
+          className="md:col-span-2"
+          conformanceView={conformanceView}
+          height={analyticCapture?.height}
+          label="Difference heatmap ×8"
+          width={analyticCapture?.width}
+          onPan={onPan}
+          onZoom={onZoom}
+        />
+      </div>
+    );
+  }
+  return (
+    <div className="grid min-h-0 grid-cols-1 gap-3 md:grid-cols-2">
+      <PixelPanel
+        capture={bitmapCapture}
+        conformanceView={conformanceView}
+        kind="candidate"
+        label="Candidate"
+        onPan={onPan}
+        onZoom={onZoom}
+      />
+      <PixelPanel
+        capture={bitmapCapture}
+        conformanceView={conformanceView}
+        kind="reference"
+        label="CPU reference"
+        onPan={onPan}
+        onZoom={onZoom}
+      />
+      <PixelPanel
+        capture={bitmapCapture}
+        className="md:col-span-2"
+        conformanceView={conformanceView}
+        kind="difference"
+        label="Difference ×1"
+        onPan={onPan}
+        onZoom={onZoom}
+      />
+    </div>
+  );
 }
 
 function PixelBytesPanel({
@@ -2279,54 +2364,51 @@ function PixelBytesPanel({
   onPan,
   onZoom,
 }: {
-  readonly bytes: Uint8Array | undefined
-  readonly className?: string
-  readonly conformanceView: ConformanceView
-  readonly height: number | undefined
-  readonly label: string
-  readonly width: number | undefined
-  readonly onPan: (deltaXPercent: number, deltaYPercent: number) => void
-  readonly onZoom: (zoom: number) => void
+  readonly bytes: Uint8Array | undefined;
+  readonly className?: string;
+  readonly conformanceView: ConformanceView;
+  readonly height: number | undefined;
+  readonly label: string;
+  readonly width: number | undefined;
+  readonly onPan: (deltaXPercent: number, deltaYPercent: number) => void;
+  readonly onZoom: (zoom: number) => void;
 }) {
-  const interactionRef = useRef<HTMLButtonElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const interactionRef = useRef<HTMLButtonElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const zoomFromWheel = useEffectEvent((deltaY: number) => {
-    const direction = deltaY < 0 ? 0.25 : -0.25
-    onZoom(Math.min(8, Math.max(1, conformanceView.zoom + direction)))
-  })
+    const direction = deltaY < 0 ? 0.25 : -0.25;
+    onZoom(Math.min(8, Math.max(1, conformanceView.zoom + direction)));
+  });
   useEffect(() => {
-    const interaction = interactionRef.current
-    if (interaction === null) return
+    const interaction = interactionRef.current;
+    if (interaction === null) return;
     const handleWheel = (event: WheelEvent): void => {
-      event.preventDefault()
-      zoomFromWheel(event.deltaY)
-    }
-    interaction.addEventListener('wheel', handleWheel, { passive: false })
-    return () => interaction.removeEventListener('wheel', handleWheel)
-  }, [])
+      event.preventDefault();
+      zoomFromWheel(event.deltaY);
+    };
+    interaction.addEventListener('wheel', handleWheel, { passive: false });
+    return () => interaction.removeEventListener('wheel', handleWheel);
+  }, []);
   useLayoutEffect(() => {
-    const canvas = canvasRef.current
-    if (canvas === null || bytes === undefined || width === undefined || height === undefined)
-      return
-    canvas.width = width
-    canvas.height = height
-    const context = canvas.getContext('2d')
-    if (context === null) throw new Error('Unable to create conformance inspection canvas')
+    const canvas = canvasRef.current;
+    if (canvas === null || bytes === undefined || width === undefined || height === undefined) return;
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (context === null) throw new Error('Unable to create conformance inspection canvas');
     const pixels =
       bytes.buffer instanceof ArrayBuffer
         ? new Uint8ClampedArray(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-        : new Uint8ClampedArray(bytes)
-    context.putImageData(new ImageData(pixels, width, height), 0, 0)
-  }, [bytes, height, width])
+        : new Uint8ClampedArray(bytes);
+    context.putImageData(new ImageData(pixels, width, height), 0, 0);
+  }, [bytes, height, width]);
   function moveView(event: ReactPointerEvent<HTMLButtonElement>): void {
-    if (!event.currentTarget.hasPointerCapture(event.pointerId) || conformanceView.zoom <= 1) return
-    const bounds = event.currentTarget.getBoundingClientRect()
-    onPan((event.movementX / bounds.width) * 100, (event.movementY / bounds.height) * 100)
+    if (!event.currentTarget.hasPointerCapture(event.pointerId) || conformanceView.zoom <= 1) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    onPan((event.movementX / bounds.width) * 100, (event.movementY / bounds.height) * 100);
   }
   return (
-    <figure
-      className={`flex min-h-0 flex-col overflow-hidden rounded-md border border-border bg-panel ${className}`}
-    >
+    <figure className={`flex min-h-0 flex-col overflow-hidden rounded-md border border-border bg-panel ${className}`}>
       <figcaption className="border-b border-border px-3 py-2 font-mono text-[9px] uppercase tracking-wider text-muted">
         {label}
       </figcaption>
@@ -2344,12 +2426,12 @@ function PixelBytesPanel({
         onPointerMove={moveView}
         onPointerCancel={(event) => {
           if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId)
+            event.currentTarget.releasePointerCapture(event.pointerId);
           }
         }}
         onPointerUp={(event) => {
           if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId)
+            event.currentTarget.releasePointerCapture(event.pointerId);
           }
         }}
       >
@@ -2367,7 +2449,7 @@ function PixelBytesPanel({
         )}
       </button>
     </figure>
-  )
+  );
 }
 
 function PixelPanel({
@@ -2379,13 +2461,13 @@ function PixelPanel({
   onPan,
   onZoom,
 }: {
-  readonly capture: BitmapTextConformanceCapture | undefined
-  readonly className?: string
-  readonly conformanceView: ConformanceView
-  readonly kind: 'candidate' | 'reference' | 'difference'
-  readonly label: string
-  readonly onPan: (deltaXPercent: number, deltaYPercent: number) => void
-  readonly onZoom: (zoom: number) => void
+  readonly capture: BitmapTextConformanceCapture | undefined;
+  readonly className?: string;
+  readonly conformanceView: ConformanceView;
+  readonly kind: 'candidate' | 'reference' | 'difference';
+  readonly label: string;
+  readonly onPan: (deltaXPercent: number, deltaYPercent: number) => void;
+  readonly onZoom: (zoom: number) => void;
 }) {
   return (
     <PixelBytesPanel
@@ -2398,7 +2480,104 @@ function PixelPanel({
       onPan={onPan}
       onZoom={onZoom}
     />
-  )
+  );
+}
+
+function bitmapViewportEvidence({
+  anchor,
+  fontFixture,
+  grid,
+  layoutWidthRatio,
+  presentationEvidence,
+  settledRevision,
+  settledTextLength,
+  settledTimelineTick,
+  stats,
+  text,
+  textAlign,
+}: {
+  readonly anchor: LiveTextConfiguration['anchor'];
+  readonly fontFixture: BenchmarkFontFixture;
+  readonly grid: boolean;
+  readonly layoutWidthRatio: number;
+  readonly presentationEvidence: PresentationEvidence;
+  readonly settledRevision: number;
+  readonly settledTextLength: number;
+  readonly settledTimelineTick: number | undefined;
+  readonly stats: BitmapTextLiveStats | undefined;
+  readonly text: string;
+  readonly textAlign: LiveTextConfiguration['textAlign'];
+}): Record<`data-${string}`, string | number | boolean | undefined> {
+  return {
+    'data-canvas-grid': String(grid),
+    'data-anchor': anchor,
+    'data-layout-width': stats?.layoutWidth,
+    'data-layout-width-ratio': layoutWidthRatio,
+    'data-content-inset': BENCHMARK_CONTENT_INSET,
+    'data-content-min-width': BENCHMARK_CONTENT_MINIMUM_VIEWPORT_WIDTH * layoutWidthRatio,
+    'data-content-policy': 'bounded-pan',
+    'data-line-count': stats?.lineCount,
+    'data-frame-count': stats?.frameCount,
+    'data-frames-per-second': stats?.framesPerSecond,
+    'data-font-fixture': fontFixture,
+    'data-median-submit-ms': stats?.medianSubmitMs,
+    'data-p95-submit-ms': stats?.p95SubmitMs,
+    'data-gpu-frame-ms': stats?.gpuFrameMs,
+    'data-median-gpu-ms': stats?.medianGpuMs,
+    'data-p95-gpu-ms': stats?.p95GpuMs,
+    'data-submit-history-length': stats?.submitHistoryLength,
+    'data-fps-history-length': stats?.fpsHistoryLength,
+    'data-glyph-count': stats?.glyphCount,
+    'data-missing-glyph-count': stats?.missingGlyphCount,
+    'data-draw-count': stats?.drawCount,
+    'data-renderer-init-ms': stats?.rendererInitMs,
+    'data-strike-ppem': stats?.strikePpem,
+    'data-css-font-size': stats?.cssFontSize,
+    'data-rendered-device-px': stats?.renderedPpem,
+    'data-scale-ratio': stats?.scaleRatio,
+    'data-font-load-ms': stats?.fontLoadMs,
+    'data-text-ready-ms': stats?.textReadyMs,
+    'data-first-draw-ms': stats?.firstDrawMs,
+    'data-upload-frame-gpu-ms': stats?.uploadFrameGpuMs,
+    'data-upload-frame-complete-ms': stats?.uploadFrameCompleteMs,
+    'data-startup-ms': stats?.startupMs,
+    'data-source-text-length': text.length,
+    'data-text-align': textAlign,
+    'data-artifact-bytes': stats?.artifactBytes,
+    'data-atlas-gpu-bytes': stats?.atlasGpuBytes,
+    'data-total-gpu-bytes': stats?.totalGpuBytes,
+    'data-settled-revision': settledRevision,
+    'data-settled-text-length': settledTextLength,
+    'data-settled-tick': settledTimelineTick,
+    'data-presentation-matched-glyphs': presentationEvidence.matchedGlyphs,
+    'data-presentation-progress': presentationEvidence.progress,
+    'data-presentation-revision': presentationEvidence.revision,
+    'data-presentation-target-glyphs': presentationEvidence.targetGlyphs,
+    'data-backend': stats?.backend,
+    'data-dpr': stats?.dpr,
+    'data-font-delivery': stats?.delivery,
+    'data-core-bake-ms': stats?.coreBakeMs,
+    'data-raster-bake-ms': stats?.rasterBakeMs,
+    'data-source-font-bytes': stats?.sourceFontBytes,
+    'data-core-artifact-bytes': stats?.coreArtifactBytes,
+    'data-raster-artifact-bytes': stats?.rasterArtifactBytes,
+    'data-gpu-history-length': stats?.gpuHistoryLength,
+    'data-gpu-timing-supported': stats?.gpuTimingSupported,
+  };
+}
+
+interface BitmapTextViewportProps {
+  readonly backend: GraphicsBackend;
+  readonly delivery: FontDelivery;
+  readonly dpr: 1 | 2;
+  readonly fontSize: number;
+  readonly grid: boolean;
+  readonly suppressLoading: boolean;
+  readonly stats: BitmapTextLiveStats | undefined;
+  readonly surfaceAnchorRef: RefObject<HTMLDivElement | null>;
+  readonly textConfiguration: LiveTextConfiguration;
+  readonly workload: string;
+  readonly onStats: (stats: BitmapTextLiveStats) => void;
 }
 
 function BitmapTextViewport({
@@ -2407,38 +2586,36 @@ function BitmapTextViewport({
   dpr,
   fontSize,
   grid,
+  suppressLoading,
+  stats,
+  surfaceAnchorRef,
   textConfiguration,
+  workload,
   onStats,
-}: {
-  readonly backend: GraphicsBackend
-  readonly delivery: FontDelivery
-  readonly dpr: 1 | 2
-  readonly fontSize: number
-  readonly grid: boolean
-  readonly textConfiguration: LiveTextConfiguration
-  readonly onStats: (stats: BitmapTextLiveStats) => void
-}) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const previewRef = useRef<BitmapTextPreview>(undefined)
-  const [stats, setStats] = useState<BitmapTextLiveStats>()
-  const [settledRevision, setSettledRevision] = useState(0)
-  const [settledTextLength, setSettledTextLength] = useState(0)
-  const [settledTimelineTick, setSettledTimelineTick] = useState<number>()
+}: BitmapTextViewportProps) {
+  const { activateSurface } = usePersistentRenderHost();
+  const activatePersistentSurface = useEffectEvent(activateSurface);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<BitmapTextPersistentScene>(undefined);
+  const updateQueueRef = useRef<LatestAsyncQueue<RetainedLiveTextUpdate, BitmapTextPreviewSnapshot>>(undefined);
+  const pendingSettledWorkloadRef = useRef<string>(undefined);
+  const [settledRevision, setSettledRevision] = useState(0);
+  const [settledTextLength, setSettledTextLength] = useState(0);
+  const [settledTimelineTick, setSettledTimelineTick] = useState<number>();
+  const [settledWorkload, setSettledWorkload] = useState<string>();
   const [presentationEvidence, setPresentationEvidence] = useState<PresentationEvidence>({
     revision: 0,
     progress: 1,
     matchedGlyphs: 0,
     targetGlyphs: 0,
-  })
-  const [error, setError] = useState<string>()
+  });
+  const [error, setError] = useState<string>();
   const {
     active: bakeProgressActive,
     finish: finishBakeProgress,
     publish: publishBakeProgress,
-    reset: resetBakeProgress,
     value: bakeProgressValue,
-  } = useBakeProgress('bitmap')
+  } = useBakeProgress('bitmap');
   const {
     anchor,
     animatePresentation,
@@ -2451,18 +2628,22 @@ function BitmapTextViewport({
     text,
     textAlign,
     timelineTick,
-  } = textConfiguration
+  } = textConfiguration;
   const publishStats = useEffectEvent((next: BitmapTextLiveStats) => {
-    finishBakeProgress()
-    setStats(next)
-    onStats(next)
-    setError(undefined)
-  })
+    finishBakeProgress();
+    onStats(next);
+    setError(undefined);
+    const pendingWorkload = pendingSettledWorkloadRef.current;
+    if (pendingWorkload !== undefined) {
+      pendingSettledWorkloadRef.current = undefined;
+      setSettledWorkload(pendingWorkload);
+    }
+  });
   const publishError = useEffectEvent((caught: unknown) => {
-    if (caught instanceof DOMException && caught.name === 'AbortError') return
-    finishBakeProgress()
-    setError(caught instanceof Error ? caught.message : String(caught))
-  })
+    if (caught instanceof DOMException && caught.name === 'AbortError') return;
+    finishBakeProgress();
+    setError(caught instanceof Error ? caught.message : String(caught));
+  });
   const previewConfiguration = useEffectEvent(() => ({
     anchor,
     direction,
@@ -2476,268 +2657,267 @@ function BitmapTextViewport({
     text,
     textAlign,
     timelineTick,
-  }))
+    workload,
+  }));
   const publishSettledRevision = useEffectEvent((revision: number) => {
-    setSettledRevision(revision)
-  })
+    setSettledRevision(revision);
+  });
   const publishSettledTimelineTick = useEffectEvent((tick: number | undefined) => {
-    setSettledTimelineTick(tick)
-  })
+    setSettledTimelineTick(tick);
+  });
   const publishSettledTextLength = useEffectEvent((length: number) => {
-    setSettledTextLength(length)
-  })
-  const publishPresentation = useEffectEvent(
-    (snapshot: BitmapTextPreviewSnapshot, progress: 0 | 1) => {
-      setPresentationEvidence({
-        revision: snapshot.revision,
-        progress,
-        matchedGlyphs: snapshot.matchedGlyphs,
-        targetGlyphs: snapshot.targetGlyphs,
-      })
-    },
-  )
+    setSettledTextLength(length);
+  });
+  const publishSettledWorkload = useEffectEvent((value: string) => {
+    pendingSettledWorkloadRef.current = value;
+  });
+  const publishPresentation = useEffectEvent((snapshot: BitmapTextPreviewSnapshot, progress: 0 | 1) => {
+    setPresentationEvidence({
+      revision: snapshot.revision,
+      progress,
+      matchedGlyphs: snapshot.matchedGlyphs,
+      targetGlyphs: snapshot.targetGlyphs,
+    });
+  });
 
   useEffect(() => {
-    const canvas = canvasRef.current
-    const container = containerRef.current
-    if (canvas === null || container === null) return
-    const controller = new AbortController()
-    resetBakeProgress()
-    const configuration = previewConfiguration()
-    let preview:
-      | Awaited<ReturnType<(typeof import('./renderer/bitmap-text'))['createBitmapTextPreview']>>
-      | undefined
-    let lifecycleLease: Awaited<ReturnType<typeof liveRendererLifecycle.acquire>> | undefined
-    let cancelled = false
-    const resize = (): void => {
-      if (preview === undefined) return
-      const bounds = container.getBoundingClientRect()
-      preview.resize(Math.max(1, bounds.width), Math.max(1, bounds.height))
-    }
-    const observer = new ResizeObserver(resize)
-    observer.observe(container)
+    const container = containerRef.current;
+    const surfaceAnchor = surfaceAnchorRef.current;
+    if (container === null || surfaceAnchor === null) return;
+    const controller = new AbortController();
+    const configuration = previewConfiguration();
+    let preview: BitmapTextPersistentScene | undefined;
+    let updateQueue: LatestAsyncQueue<RetainedLiveTextUpdate, BitmapTextPreviewSnapshot> | undefined;
+    let surfaceLease: Awaited<ReturnType<typeof activateSurface>> | undefined;
+    let cancelled = false;
     const initialization = (async () => {
-      lifecycleLease = await liveRendererLifecycle.acquire(controller.signal)
-      try {
-        if (cancelled) return
-        const { createBitmapTextPreview } = await import('./renderer/bitmap-text')
-        if (cancelled) return
-        const bounds = container.getBoundingClientRect()
-        const created = await createBitmapTextPreview({
-          anchor: configuration.anchor,
-          backend,
-          canvas,
-          delivery,
-          dpr,
-          ...(configuration.expectedGlyphCount === undefined
-            ? {}
-            : { expectedGlyphCount: configuration.expectedGlyphCount }),
-          fontFixture: configuration.fontFixture,
-          fontSize: configuration.fontSize,
-          height: Math.max(1, bounds.height),
-          showGrid: configuration.showGrid,
-          layoutWidth: Math.max(120, bounds.width * configuration.layoutWidthRatio),
-          text: configuration.text,
-          language: configuration.language,
-          direction: configuration.direction,
-          features: configuration.features,
-          width: Math.max(1, bounds.width),
-          signal: controller.signal,
-          onError: publishError,
-          onStats: publishStats,
-          onBakeProgress: publishBakeProgress,
-        })
-        if (cancelled) {
-          await created.dispose()
-          return
-        }
-        preview = created
-        previewRef.current = created
-        publishSettledTimelineTick(configuration.timelineTick)
-        publishSettledTextLength(configuration.text.length)
-        resize()
-      } catch (caught) {
-        lifecycleLease.release()
-        lifecycleLease = undefined
-        throw caught
+      const { createBitmapTextPersistentScene } = await import('./renderer/bitmap-text');
+      if (cancelled) return;
+      const created = createBitmapTextPersistentScene({
+        anchor: configuration.anchor,
+        backend,
+        delivery,
+        ...(configuration.expectedGlyphCount === undefined
+          ? {}
+          : { expectedGlyphCount: configuration.expectedGlyphCount }),
+        fontFixture: configuration.fontFixture,
+        fontSize: configuration.fontSize,
+        showGrid: configuration.showGrid,
+        layoutWidth: benchmarkContentWidth(container.clientWidth, configuration.layoutWidthRatio),
+        layoutWidthRatio: configuration.layoutWidthRatio,
+        text: configuration.text,
+        language: configuration.language,
+        direction: configuration.direction,
+        features: configuration.features,
+        textAlign: configuration.textAlign,
+        onError: publishError,
+        onStats: publishStats,
+        onBakeProgress: publishBakeProgress,
+      });
+      preview = created;
+      previewRef.current = created;
+      updateQueue = createLatestAsyncQueue((update: RetainedLiveTextUpdate) => created.update(update));
+      updateQueueRef.current = updateQueue;
+      surfaceLease = await activatePersistentSurface(
+        {
+          anchor: surfaceAnchor,
+          controller: previewRef,
+          label: `Live bitmap benchmark using ${backend}`,
+          pan: true,
+          scene: created,
+          zoom: false,
+        },
+        controller.signal,
+      );
+      if (cancelled) {
+        await surfaceLease.release();
+        return;
       }
-    })()
-    void initialization.catch(publishError)
+      const committed = await updateQueue.enqueue(previewConfiguration());
+      publishSettledTimelineTick(committed.input.timelineTick);
+      publishSettledTextLength(committed.input.text.length);
+      publishSettledWorkload(committed.input.workload);
+    })();
+    void initialization.catch(publishError);
     return () => {
-      cancelled = true
-      controller.abort()
-      observer.disconnect()
+      cancelled = true;
+      controller.abort();
       void initialization.then(
         async () => {
-          try {
-            if (preview === undefined) return
-            const current = preview
-            preview = undefined
-            if (previewRef.current === current) previewRef.current = undefined
-            await current.dispose()
-          } finally {
-            lifecycleLease?.release()
-            lifecycleLease = undefined
-          }
+          const current = preview;
+          preview = undefined;
+          if (previewRef.current === current) previewRef.current = undefined;
+          if (updateQueueRef.current === updateQueue) updateQueueRef.current = undefined;
+          await surfaceLease?.release();
         },
         () => {
-          lifecycleLease?.release()
-          lifecycleLease = undefined
+          const current = preview;
+          preview = undefined;
+          if (previewRef.current === current) previewRef.current = undefined;
+          if (updateQueueRef.current === updateQueue) updateQueueRef.current = undefined;
         },
-      )
-    }
-  }, [backend, delivery, dpr, publishBakeProgress, resetBakeProgress])
+      );
+    };
+  }, [backend, delivery, publishBakeProgress, surfaceAnchorRef]);
 
   useEffect(() => {
-    previewRef.current?.setGridVisible(grid)
-  }, [grid])
+    previewRef.current?.setGridVisible(grid);
+  }, [grid]);
 
   useEffect(() => {
-    const preview = previewRef.current
-    if (preview === undefined) return
-    let cancelled = false
-    let animationFrame: number | undefined
-    const publishSettled = (snapshot: BitmapTextPreviewSnapshot): void => {
-      if (cancelled) return
-      publishPresentation(snapshot, 1)
-      publishSettledRevision(snapshot.revision)
-      publishSettledTimelineTick(timelineTick)
-      publishSettledTextLength(text.length)
-    }
-    void preview
-      .update({
+    const preview = previewRef.current;
+    const updateQueue = updateQueueRef.current;
+    if (preview === undefined || updateQueue === undefined) return;
+    let cancelled = false;
+    let animationFrame: number | undefined;
+    const publishSettled = (snapshot: BitmapTextPreviewSnapshot, input: RetainedLiveTextUpdate): void => {
+      if (cancelled) return;
+      publishPresentation(snapshot, 1);
+      publishSettledRevision(snapshot.revision);
+      publishSettledTimelineTick(input.timelineTick);
+      publishSettledTextLength(input.text.length);
+      publishSettledWorkload(input.workload);
+    };
+    void updateQueue
+      .enqueue({
         anchor,
+        fontFixture,
         fontSize,
         layoutWidthRatio,
         text,
         language,
         direction,
+        expectedGlyphCount,
         features,
         textAlign,
+        timelineTick,
+        workload,
       })
-      .then((snapshot) => {
-        if (cancelled) return
-        publishPresentation(snapshot, 0)
+      .then(({ input, output: snapshot }) => {
+        if (cancelled) return;
+        publishPresentation(snapshot, 0);
         if (!animatePresentation) {
-          publishSettled(preview.finishPresentation(snapshot.revision))
-          return
+          publishSettled(preview.finishPresentation(snapshot.revision), input);
+          return;
         }
-        const startedAt = performance.now()
+        const startedAt = performance.now();
         const animate = (timestamp: number): void => {
-          if (cancelled) return
-          const linearProgress = Math.min(
-            1,
-            Math.max(0, (timestamp - startedAt) / GLYPH_POSITION_TRANSITION_MS),
-          )
-          const easedProgress = linearProgress * linearProgress * (3 - 2 * linearProgress)
-          const presented = preview.setPresentationProgress(snapshot.revision, easedProgress)
+          if (cancelled) return;
+          const linearProgress = Math.min(1, Math.max(0, (timestamp - startedAt) / GLYPH_POSITION_TRANSITION_MS));
+          const easedProgress = linearProgress * linearProgress * (3 - 2 * linearProgress);
+          const presented = preview.setPresentationProgress(snapshot.revision, easedProgress);
           if (linearProgress === 1) {
-            publishSettled(presented)
-            return
+            publishSettled(presented, input);
+            return;
           }
-          animationFrame = requestAnimationFrame(animate)
-        }
-        animationFrame = requestAnimationFrame(animate)
+          animationFrame = requestAnimationFrame(animate);
+        };
+        animationFrame = requestAnimationFrame(animate);
       })
-      .catch(publishError)
+      .catch(publishError);
     return () => {
-      cancelled = true
-      if (animationFrame !== undefined) cancelAnimationFrame(animationFrame)
-    }
+      cancelled = true;
+      if (animationFrame !== undefined) cancelAnimationFrame(animationFrame);
+    };
   }, [
     anchor,
     animatePresentation,
     direction,
     dpr,
+    expectedGlyphCount,
     features,
+    fontFixture,
     fontSize,
     language,
     layoutWidthRatio,
     text,
     textAlign,
     timelineTick,
-  ])
+    workload,
+  ]);
 
   return (
     <div
-      className="relative min-h-0 flex-1 overflow-hidden rounded border border-border bg-background"
-      data-canvas-grid={String(grid)}
-      data-anchor={anchor}
-      data-layout-width={stats?.layoutWidth}
-      data-layout-width-ratio={layoutWidthRatio}
-      data-line-count={stats?.lineCount}
-      data-frame-count={stats?.frameCount}
-      data-frames-per-second={stats?.framesPerSecond}
-      data-font-fixture={fontFixture}
-      data-median-submit-ms={stats?.medianSubmitMs}
-      data-p95-submit-ms={stats?.p95SubmitMs}
-      data-gpu-frame-ms={stats?.gpuFrameMs}
-      data-median-gpu-ms={stats?.medianGpuMs}
-      data-p95-gpu-ms={stats?.p95GpuMs}
-      data-submit-history-length={stats?.submitHistoryLength}
-      data-fps-history-length={stats?.fpsHistoryLength}
-      data-glyph-count={stats?.glyphCount}
-      data-missing-glyph-count={stats?.missingGlyphCount}
-      data-draw-count={stats?.drawCount}
-      data-renderer-init-ms={stats?.rendererInitMs}
-      data-strike-ppem={stats?.strikePpem}
-      data-css-font-size={stats?.cssFontSize}
-      data-rendered-device-px={stats?.renderedPpem}
-      data-scale-ratio={stats?.scaleRatio}
-      data-font-load-ms={stats?.fontLoadMs}
-      data-text-ready-ms={stats?.textReadyMs}
-      data-first-draw-ms={stats?.firstDrawMs}
-      data-upload-frame-gpu-ms={stats?.uploadFrameGpuMs}
-      data-upload-frame-complete-ms={stats?.uploadFrameCompleteMs}
-      data-startup-ms={stats?.startupMs}
-      data-source-text-length={text.length}
-      data-text-align={textAlign}
-      data-artifact-bytes={stats?.artifactBytes}
-      data-atlas-gpu-bytes={stats?.atlasGpuBytes}
-      data-total-gpu-bytes={stats?.totalGpuBytes}
-      data-settled-revision={settledRevision}
-      data-settled-text-length={settledTextLength}
-      data-settled-tick={settledTimelineTick}
-      data-presentation-matched-glyphs={presentationEvidence.matchedGlyphs}
-      data-presentation-progress={presentationEvidence.progress}
-      data-presentation-revision={presentationEvidence.revision}
-      data-presentation-target-glyphs={presentationEvidence.targetGlyphs}
-      data-backend={stats?.backend}
-      data-dpr={stats?.dpr}
-      data-font-delivery={stats?.delivery}
-      data-core-bake-ms={stats?.coreBakeMs}
-      data-raster-bake-ms={stats?.rasterBakeMs}
-      data-source-font-bytes={stats?.sourceFontBytes}
-      data-core-artifact-bytes={stats?.coreArtifactBytes}
-      data-raster-artifact-bytes={stats?.rasterArtifactBytes}
-      data-gpu-history-length={stats?.gpuHistoryLength}
-      data-gpu-timing-supported={stats?.gpuTimingSupported}
+      className="pointer-events-none absolute inset-0 overflow-hidden rounded border border-border"
+      {...bitmapViewportEvidence({
+        anchor,
+        fontFixture,
+        grid,
+        layoutWidthRatio,
+        presentationEvidence,
+        settledRevision,
+        settledTextLength,
+        settledTimelineTick,
+        stats,
+        text,
+        textAlign,
+      })}
       data-testid="bitmap-live-viewport"
+      data-workload={settledWorkload}
+      data-presentation-pending={settledWorkload !== workload}
       ref={containerRef}
     >
-      <InteractiveCanvas
-        label={`Live bitmap benchmark using ${backend}`}
-        canvasRef={canvasRef}
-        controllerRef={previewRef}
+      <BitmapViewportChrome
+        backend={backend}
+        bakeProgressActive={bakeProgressActive}
+        bakeProgressValue={bakeProgressValue}
+        delivery={delivery}
+        dpr={dpr}
+        error={error}
+        fontSize={fontSize}
+        stats={stats}
+        suppressLoading={suppressLoading}
       />
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/70 to-transparent px-3 py-2 font-mono text-[9px] text-muted">
+    </div>
+  );
+}
+
+function BitmapViewportChrome({
+  backend,
+  bakeProgressActive,
+  bakeProgressValue,
+  delivery,
+  dpr,
+  error,
+  fontSize,
+  stats,
+  suppressLoading,
+}: {
+  readonly backend: GraphicsBackend;
+  readonly bakeProgressActive: boolean;
+  readonly bakeProgressValue: BakeProgress | undefined;
+  readonly delivery: FontDelivery;
+  readonly dpr: 1 | 2;
+  readonly error: string | undefined;
+  readonly fontSize: number;
+  readonly stats: BitmapTextLiveStats | undefined;
+  readonly suppressLoading: boolean;
+}) {
+  return (
+    <>
+      <div
+        className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/70 to-transparent px-3 py-2 font-mono text-[9px] text-muted"
+        data-testid="canvas-render-status"
+      >
         <span>
-          {delivery === 'runtime' ? 'RUNTIME' : 'BAKED'} {stats?.strikePpem ?? 16} PPEM · {fontSize}{' '}
-          CSS PX / {stats?.renderedPpem ?? fontSize * dpr} DEVICE PX ·{' '}
-          {(stats?.scaleRatio ?? 1).toFixed(2)}×
+          {delivery === 'runtime' ? 'RUNTIME' : 'BAKED'} {stats?.strikePpem ?? 16} PPEM · {fontSize} CSS PX /{' '}
+          {stats?.renderedPpem ?? fontSize * dpr} DEVICE PX · {(stats?.scaleRatio ?? 1).toFixed(2)}×
         </span>
         <span>{dpr}× DPR</span>
       </div>
-      {(stats === undefined || bakeProgressActive) && error === undefined && (
+      {!suppressLoading && (stats === undefined || bakeProgressActive) && error === undefined && (
         <BakeProgressOverlay backend={backend} progress={bakeProgressValue} technique="BITMAP" />
       )}
       {error !== undefined && (
-        <div className="absolute inset-0 z-10 grid place-items-center bg-background p-3 text-center text-[10px] text-danger">
+        <div
+          className="absolute inset-0 z-10 grid place-items-center bg-background p-3 text-center text-[10px] text-danger"
+          data-testid="mtsdf-live-error"
+        >
           {error}
         </div>
       )}
-    </div>
-  )
+    </>
+  );
 }
 
 function MtsdfTextViewport({
@@ -2746,163 +2926,189 @@ function MtsdfTextViewport({
   dpr,
   fontSize,
   grid,
+  suppressLoading,
+  stats,
+  surfaceAnchorRef,
   textConfiguration,
+  workload,
   onStats,
 }: {
-  readonly backend: GraphicsBackend
-  readonly delivery: FontDelivery
-  readonly dpr: 1 | 2
-  readonly fontSize: number
-  readonly grid: boolean
-  readonly textConfiguration: LiveTextConfiguration
-  readonly onStats: (stats: LiveTextStats) => void
+  readonly backend: GraphicsBackend;
+  readonly delivery: FontDelivery;
+  readonly dpr: 1 | 2;
+  readonly fontSize: number;
+  readonly grid: boolean;
+  readonly suppressLoading: boolean;
+  readonly stats: MtsdfTextLiveStats | undefined;
+  readonly surfaceAnchorRef: RefObject<HTMLDivElement | null>;
+  readonly textConfiguration: LiveTextConfiguration;
+  readonly workload: string;
+  readonly onStats: (stats: LiveTextStats) => void;
 }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const previewRef = useRef<MtsdfTextPreview>(undefined)
-  const [stats, setStats] = useState<MtsdfTextLiveStats>()
-  const [error, setError] = useState<string>()
+  const { activateSurface } = usePersistentRenderHost();
+  const activatePersistentSurface = useEffectEvent(activateSurface);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<MtsdfTextPersistentScene>(undefined);
+  const updateQueueRef = useRef<LatestAsyncQueue<RetainedLiveTextUpdate, void>>(undefined);
+  const pendingSettledWorkloadRef = useRef<string>(undefined);
+  const [error, setError] = useState<string>();
+  const [settledWorkload, setSettledWorkload] = useState<string>();
   const {
     active: bakeProgressActive,
     finish: finishBakeProgress,
     publish: publishBakeProgress,
-    reset: resetBakeProgress,
     value: bakeProgressValue,
-  } = useBakeProgress('MSDF')
-  const { anchor, direction, features, fontFixture, language, layoutWidthRatio, text, textAlign } =
-    textConfiguration
+  } = useBakeProgress('MSDF');
+  const { anchor, direction, features, fontFixture, language, layoutWidthRatio, text, textAlign, timelineTick } =
+    textConfiguration;
   const publishStats = useEffectEvent((next: MtsdfTextLiveStats) => {
-    finishBakeProgress()
-    setStats(next)
-    onStats(next)
-    setError(undefined)
-  })
+    finishBakeProgress();
+    onStats(next);
+    setError(undefined);
+    const pendingWorkload = pendingSettledWorkloadRef.current;
+    if (pendingWorkload !== undefined) {
+      pendingSettledWorkloadRef.current = undefined;
+      setSettledWorkload(pendingWorkload);
+    }
+  });
   const publishError = useEffectEvent((caught: unknown) => {
-    if (caught instanceof DOMException && caught.name === 'AbortError') return
-    finishBakeProgress()
-    setError(caught instanceof Error ? caught.message : String(caught))
-  })
+    if (caught instanceof DOMException && caught.name === 'AbortError') return;
+    finishBakeProgress();
+    setError(caught instanceof Error ? caught.message : String(caught));
+  });
   const previewConfiguration = useEffectEvent(() => ({
     anchor,
     direction,
     features,
+    fontFixture,
     fontSize,
     language,
     layoutWidthRatio,
     showGrid: grid,
     text,
     textAlign,
-  }))
+    timelineTick,
+    workload,
+  }));
+  const publishSettledWorkload = useEffectEvent((value: string) => {
+    pendingSettledWorkloadRef.current = value;
+  });
 
   useEffect(() => {
-    const canvas = canvasRef.current
-    const container = containerRef.current
-    if (canvas === null || container === null) return
-    const controller = new AbortController()
-    resetBakeProgress()
-    const configuration = previewConfiguration()
-    let preview: MtsdfTextPreview | undefined
-    let lifecycleLease: Awaited<ReturnType<typeof liveRendererLifecycle.acquire>> | undefined
-    let cancelled = false
-    const resize = (): void => {
-      if (preview === undefined) return
-      const bounds = container.getBoundingClientRect()
-      preview.resize(Math.max(1, bounds.width), Math.max(1, bounds.height))
-    }
-    const observer = new ResizeObserver(resize)
-    observer.observe(container)
+    const container = containerRef.current;
+    const surfaceAnchor = surfaceAnchorRef.current;
+    if (container === null || surfaceAnchor === null) return;
+    const controller = new AbortController();
+    const configuration = previewConfiguration();
+    let preview: MtsdfTextPersistentScene | undefined;
+    let updateQueue: LatestAsyncQueue<RetainedLiveTextUpdate, void> | undefined;
+    let surfaceLease: Awaited<ReturnType<typeof activateSurface>> | undefined;
+    let cancelled = false;
     const initialization = (async () => {
-      lifecycleLease = await liveRendererLifecycle.acquire(controller.signal)
-      try {
-        if (cancelled) return
-        const { createMtsdfTextPreview } = await import('./renderer/mtsdf-text')
-        if (cancelled) return
-        const bounds = container.getBoundingClientRect()
-        const created = await createMtsdfTextPreview({
-          anchor: configuration.anchor,
-          backend,
-          canvas,
-          delivery,
-          dpr,
-          fontSize: configuration.fontSize,
-          fontFixture,
-          height: Math.max(1, bounds.height),
-          showGrid: configuration.showGrid,
-          layoutWidth: Math.max(120, bounds.width * configuration.layoutWidthRatio),
-          text: configuration.text,
-          textAlign: configuration.textAlign,
-          language: configuration.language,
-          direction: configuration.direction,
-          features: configuration.features,
-          width: Math.max(1, bounds.width),
-          signal: controller.signal,
-          onError: publishError,
-          onStats: publishStats,
-          onBakeProgress: publishBakeProgress,
-        })
-        if (cancelled) {
-          await created.dispose()
-          return
-        }
-        preview = created
-        previewRef.current = created
-        resize()
-      } catch (caught) {
-        lifecycleLease.release()
-        lifecycleLease = undefined
-        throw caught
+      const { createMtsdfTextPersistentScene } = await import('./renderer/mtsdf-text');
+      if (cancelled) return;
+      const created = createMtsdfTextPersistentScene({
+        anchor: configuration.anchor,
+        backend,
+        delivery,
+        fontSize: configuration.fontSize,
+        fontFixture: configuration.fontFixture,
+        showGrid: configuration.showGrid,
+        layoutWidth: benchmarkContentWidth(container.clientWidth, configuration.layoutWidthRatio),
+        layoutWidthRatio: configuration.layoutWidthRatio,
+        text: configuration.text,
+        textAlign: configuration.textAlign,
+        language: configuration.language,
+        direction: configuration.direction,
+        features: configuration.features,
+        onError: publishError,
+        onStats: publishStats,
+        onBakeProgress: publishBakeProgress,
+      });
+      preview = created;
+      previewRef.current = created;
+      updateQueue = createLatestAsyncQueue((update: RetainedLiveTextUpdate) => created.update(update));
+      updateQueueRef.current = updateQueue;
+      surfaceLease = await activatePersistentSurface(
+        {
+          anchor: surfaceAnchor,
+          controller: previewRef,
+          label: `Live MSDF benchmark using ${backend}`,
+          pan: true,
+          scene: created,
+          zoom: false,
+        },
+        controller.signal,
+      );
+      if (cancelled) await surfaceLease.release();
+      else {
+        const committed = await updateQueue.enqueue(previewConfiguration());
+        publishSettledWorkload(committed.input.workload);
       }
-    })()
-    void initialization.catch(publishError)
+    })();
+    void initialization.catch(publishError);
     return () => {
-      cancelled = true
-      controller.abort()
-      observer.disconnect()
+      cancelled = true;
+      controller.abort();
       void initialization.then(
         async () => {
-          try {
-            if (preview === undefined) return
-            const current = preview
-            preview = undefined
-            if (previewRef.current === current) previewRef.current = undefined
-            await current.dispose()
-          } finally {
-            lifecycleLease?.release()
-            lifecycleLease = undefined
-          }
+          const current = preview;
+          preview = undefined;
+          if (previewRef.current === current) previewRef.current = undefined;
+          if (updateQueueRef.current === updateQueue) updateQueueRef.current = undefined;
+          await surfaceLease?.release();
         },
         () => {
-          lifecycleLease?.release()
-          lifecycleLease = undefined
+          const current = preview;
+          preview = undefined;
+          if (previewRef.current === current) previewRef.current = undefined;
+          if (updateQueueRef.current === updateQueue) updateQueueRef.current = undefined;
         },
-      )
-    }
-  }, [backend, delivery, dpr, fontFixture, publishBakeProgress, resetBakeProgress])
+      );
+    };
+  }, [backend, delivery, publishBakeProgress, surfaceAnchorRef]);
 
   useEffect(() => {
-    previewRef.current?.setGridVisible(grid)
-  }, [grid])
+    previewRef.current?.setGridVisible(grid);
+  }, [grid]);
 
   useEffect(() => {
-    const preview = previewRef.current
-    if (preview === undefined) return
-    void preview
-      .update({
+    const updateQueue = updateQueueRef.current;
+    if (updateQueue === undefined) return;
+    void updateQueue
+      .enqueue({
         anchor,
         direction,
         features,
+        fontFixture,
         fontSize,
         language,
         layoutWidthRatio,
         text,
         textAlign,
+        timelineTick,
+        workload,
       })
-      .catch(publishError)
-  }, [anchor, direction, dpr, features, fontSize, language, layoutWidthRatio, text, textAlign])
+      .then(({ input }) => publishSettledWorkload(input.workload))
+      .catch(publishError);
+  }, [
+    anchor,
+    direction,
+    dpr,
+    features,
+    fontFixture,
+    fontSize,
+    language,
+    layoutWidthRatio,
+    text,
+    textAlign,
+    timelineTick,
+    workload,
+  ]);
 
   return (
     <div
-      className="relative min-h-0 flex-1 overflow-hidden rounded border border-border bg-background"
+      className="pointer-events-none absolute inset-0 overflow-hidden rounded border border-border"
       data-canvas-grid={String(grid)}
       data-anchor={anchor}
       data-artifact-bytes={stats?.artifactBytes}
@@ -2925,6 +3131,9 @@ function MtsdfTextViewport({
       data-gpu-timing-supported={stats?.gpuTimingSupported}
       data-layout-width={stats?.layoutWidth}
       data-layout-width-ratio={layoutWidthRatio}
+      data-content-inset={BENCHMARK_CONTENT_INSET}
+      data-content-min-width={BENCHMARK_CONTENT_MINIMUM_VIEWPORT_WIDTH * layoutWidthRatio}
+      data-content-policy="bounded-pan"
       data-line-count={stats?.lineCount}
       data-median-gpu-ms={stats?.medianGpuMs}
       data-median-submit-ms={stats?.medianSubmitMs}
@@ -2941,30 +3150,33 @@ function MtsdfTextViewport({
       data-text-align={textAlign}
       data-timeline-tick={textConfiguration.timelineTick}
       data-testid="mtsdf-live-viewport"
+      data-workload={settledWorkload}
+      data-presentation-pending={settledWorkload !== workload}
       ref={containerRef}
     >
-      <InteractiveCanvas
-        label={`Live MSDF benchmark using ${backend}`}
-        canvasRef={canvasRef}
-        controllerRef={previewRef}
-      />
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/70 to-transparent px-3 py-2 font-mono text-[9px] text-muted">
+      <div
+        className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/70 to-transparent px-3 py-2 font-mono text-[9px] text-muted"
+        data-testid="canvas-render-status"
+      >
         <span>
-          MTSDF {stats?.rasterEmSize ?? '—'} PX/EM · {fontSize} CSS PX /{' '}
-          {stats?.renderedPpem ?? '—'} DEVICE PX · {stats?.scaleRatio.toFixed(2) ?? '—'}×
+          MTSDF {stats?.rasterEmSize ?? '—'} PX/EM · {fontSize} CSS PX / {stats?.renderedPpem ?? '—'} DEVICE PX ·{' '}
+          {stats?.scaleRatio.toFixed(2) ?? '—'}×
         </span>
         <span>{dpr}× DPR</span>
       </div>
-      {(stats === undefined || bakeProgressActive) && error === undefined && (
+      {!suppressLoading && (stats === undefined || bakeProgressActive) && error === undefined && (
         <BakeProgressOverlay backend={backend} progress={bakeProgressValue} technique="MSDF" />
       )}
       {error !== undefined && (
-        <div className="absolute inset-0 z-10 grid place-items-center bg-background p-3 text-center text-[10px] text-danger">
+        <div
+          className="absolute inset-0 z-10 grid place-items-center bg-background p-3 text-center text-[10px] text-danger"
+          data-testid="slug-live-error"
+        >
           {error}
         </div>
       )}
     </div>
-  )
+  );
 }
 
 function SlugTextViewport({
@@ -2973,163 +3185,188 @@ function SlugTextViewport({
   dpr,
   fontSize,
   grid,
+  suppressLoading,
+  stats,
+  surfaceAnchorRef,
   textConfiguration,
+  workload,
   onStats,
 }: {
-  readonly backend: GraphicsBackend
-  readonly delivery: FontDelivery
-  readonly dpr: 1 | 2
-  readonly fontSize: number
-  readonly grid: boolean
-  readonly textConfiguration: LiveTextConfiguration
-  readonly onStats: (stats: LiveTextStats) => void
+  readonly backend: GraphicsBackend;
+  readonly delivery: FontDelivery;
+  readonly dpr: 1 | 2;
+  readonly fontSize: number;
+  readonly grid: boolean;
+  readonly suppressLoading: boolean;
+  readonly stats: SlugTextLiveStats | undefined;
+  readonly surfaceAnchorRef: RefObject<HTMLDivElement | null>;
+  readonly textConfiguration: LiveTextConfiguration;
+  readonly workload: string;
+  readonly onStats: (stats: LiveTextStats) => void;
 }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const previewRef = useRef<SlugTextPreview>(undefined)
-  const [stats, setStats] = useState<SlugTextLiveStats>()
-  const [error, setError] = useState<string>()
+  const { activateSurface } = usePersistentRenderHost();
+  const activatePersistentSurface = useEffectEvent(activateSurface);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<SlugTextPersistentScene>(undefined);
+  const updateQueueRef = useRef<LatestAsyncQueue<RetainedLiveTextUpdate, void>>(undefined);
+  const pendingSettledWorkloadRef = useRef<string>(undefined);
+  const [error, setError] = useState<string>();
+  const [settledWorkload, setSettledWorkload] = useState<string>();
   const {
     active: bakeProgressActive,
     finish: finishBakeProgress,
     publish: publishBakeProgress,
-    reset: resetBakeProgress,
     value: bakeProgressValue,
-  } = useBakeProgress('Slug')
-  const { anchor, direction, features, fontFixture, language, layoutWidthRatio, text, textAlign } =
-    textConfiguration
+  } = useBakeProgress('Slug');
+  const { anchor, direction, features, fontFixture, language, layoutWidthRatio, text, textAlign, timelineTick } =
+    textConfiguration;
   const publishStats = useEffectEvent((next: SlugTextLiveStats) => {
-    finishBakeProgress()
-    setStats(next)
-    onStats(next)
-    setError(undefined)
-  })
+    finishBakeProgress();
+    onStats(next);
+    setError(undefined);
+    const pendingWorkload = pendingSettledWorkloadRef.current;
+    if (pendingWorkload !== undefined) {
+      pendingSettledWorkloadRef.current = undefined;
+      setSettledWorkload(pendingWorkload);
+    }
+  });
   const publishError = useEffectEvent((caught: unknown) => {
-    if (caught instanceof DOMException && caught.name === 'AbortError') return
-    finishBakeProgress()
-    setError(caught instanceof Error ? caught.message : String(caught))
-  })
+    if (caught instanceof DOMException && caught.name === 'AbortError') return;
+    finishBakeProgress();
+    setError(caught instanceof Error ? caught.message : String(caught));
+  });
   const previewConfiguration = useEffectEvent(() => ({
     anchor,
     direction,
     features,
+    fontFixture,
     fontSize,
     language,
     layoutWidthRatio,
     showGrid: grid,
     text,
     textAlign,
-  }))
+    timelineTick,
+    workload,
+  }));
+  const publishSettledWorkload = useEffectEvent((value: string) => {
+    pendingSettledWorkloadRef.current = value;
+  });
 
   useEffect(() => {
-    const canvas = canvasRef.current
-    const container = containerRef.current
-    if (canvas === null || container === null) return
-    const controller = new AbortController()
-    resetBakeProgress()
-    const configuration = previewConfiguration()
-    let preview: SlugTextPreview | undefined
-    let lifecycleLease: Awaited<ReturnType<typeof liveRendererLifecycle.acquire>> | undefined
-    let cancelled = false
-    const resize = (): void => {
-      if (preview === undefined) return
-      const bounds = container.getBoundingClientRect()
-      preview.resize(Math.max(1, bounds.width), Math.max(1, bounds.height))
-    }
-    const observer = new ResizeObserver(resize)
-    observer.observe(container)
+    const container = containerRef.current;
+    const surfaceAnchor = surfaceAnchorRef.current;
+    if (container === null || surfaceAnchor === null) return;
+    const controller = new AbortController();
+    const configuration = previewConfiguration();
+    let preview: SlugTextPersistentScene | undefined;
+    let updateQueue: LatestAsyncQueue<RetainedLiveTextUpdate, void> | undefined;
+    let surfaceLease: Awaited<ReturnType<typeof activateSurface>> | undefined;
+    let cancelled = false;
     const initialization = (async () => {
-      lifecycleLease = await liveRendererLifecycle.acquire(controller.signal)
-      try {
-        if (cancelled) return
-        const { createSlugTextPreview } = await import('./renderer/slug-text')
-        if (cancelled) return
-        const bounds = container.getBoundingClientRect()
-        const created = await createSlugTextPreview({
-          anchor: configuration.anchor,
-          backend,
-          canvas,
-          delivery,
-          dpr,
-          fontSize: configuration.fontSize,
-          fontFixture,
-          height: Math.max(1, bounds.height),
-          showGrid: configuration.showGrid,
-          layoutWidth: Math.max(120, bounds.width * configuration.layoutWidthRatio),
-          text: configuration.text,
-          textAlign: configuration.textAlign,
-          language: configuration.language,
-          direction: configuration.direction,
-          features: configuration.features,
-          width: Math.max(1, bounds.width),
-          signal: controller.signal,
-          onError: publishError,
-          onStats: publishStats,
-          onBakeProgress: publishBakeProgress,
-        })
-        if (cancelled) {
-          await created.dispose()
-          return
-        }
-        preview = created
-        previewRef.current = created
-        resize()
-      } catch (caught) {
-        lifecycleLease.release()
-        lifecycleLease = undefined
-        throw caught
+      const { createSlugTextPersistentScene } = await import('./renderer/slug-text');
+      if (cancelled) return;
+      const created = createSlugTextPersistentScene({
+        anchor: configuration.anchor,
+        backend,
+        delivery,
+        fontSize: configuration.fontSize,
+        fontFixture: configuration.fontFixture,
+        showGrid: configuration.showGrid,
+        layoutWidthRatio: configuration.layoutWidthRatio,
+        text: configuration.text,
+        textAlign: configuration.textAlign,
+        language: configuration.language,
+        direction: configuration.direction,
+        features: configuration.features,
+        onError: publishError,
+        onStats: publishStats,
+        onBakeProgress: publishBakeProgress,
+      });
+      preview = created;
+      previewRef.current = created;
+      updateQueue = createLatestAsyncQueue((update: RetainedLiveTextUpdate) => created.update(update));
+      updateQueueRef.current = updateQueue;
+      surfaceLease = await activatePersistentSurface(
+        {
+          anchor: surfaceAnchor,
+          controller: previewRef,
+          label: `Live Slug benchmark using ${backend}`,
+          pan: true,
+          scene: created,
+          zoom: false,
+        },
+        controller.signal,
+      );
+      if (cancelled) await surfaceLease.release();
+      else {
+        const committed = await updateQueue.enqueue(previewConfiguration());
+        publishSettledWorkload(committed.input.workload);
       }
-    })()
-    void initialization.catch(publishError)
+    })();
+    void initialization.catch(publishError);
     return () => {
-      cancelled = true
-      controller.abort()
-      observer.disconnect()
+      cancelled = true;
+      controller.abort();
       void initialization.then(
         async () => {
-          try {
-            if (preview === undefined) return
-            const current = preview
-            preview = undefined
-            if (previewRef.current === current) previewRef.current = undefined
-            await current.dispose()
-          } finally {
-            lifecycleLease?.release()
-            lifecycleLease = undefined
-          }
+          const current = preview;
+          preview = undefined;
+          if (previewRef.current === current) previewRef.current = undefined;
+          if (updateQueueRef.current === updateQueue) updateQueueRef.current = undefined;
+          await surfaceLease?.release();
         },
         () => {
-          lifecycleLease?.release()
-          lifecycleLease = undefined
+          const current = preview;
+          preview = undefined;
+          if (previewRef.current === current) previewRef.current = undefined;
+          if (updateQueueRef.current === updateQueue) updateQueueRef.current = undefined;
         },
-      )
-    }
-  }, [backend, delivery, dpr, fontFixture, publishBakeProgress, resetBakeProgress])
+      );
+    };
+  }, [backend, delivery, publishBakeProgress, surfaceAnchorRef]);
 
   useEffect(() => {
-    previewRef.current?.setGridVisible(grid)
-  }, [grid])
+    previewRef.current?.setGridVisible(grid);
+  }, [grid]);
 
   useEffect(() => {
-    const preview = previewRef.current
-    if (preview === undefined) return
-    void preview
-      .update({
+    const updateQueue = updateQueueRef.current;
+    if (updateQueue === undefined) return;
+    void updateQueue
+      .enqueue({
         anchor,
         direction,
         features,
+        fontFixture,
         fontSize,
         language,
         layoutWidthRatio,
         text,
         textAlign,
+        timelineTick,
+        workload,
       })
-      .catch(publishError)
-  }, [anchor, direction, dpr, features, fontSize, language, layoutWidthRatio, text, textAlign])
+      .then(({ input }) => publishSettledWorkload(input.workload))
+      .catch(publishError);
+  }, [
+    anchor,
+    direction,
+    dpr,
+    features,
+    fontFixture,
+    fontSize,
+    language,
+    layoutWidthRatio,
+    text,
+    textAlign,
+    timelineTick,
+    workload,
+  ]);
 
   return (
     <div
-      className="relative min-h-0 flex-1 overflow-hidden rounded border border-border bg-background"
+      className="pointer-events-none absolute inset-0 overflow-hidden rounded border border-border"
       data-canvas-grid={String(grid)}
       data-anchor={anchor}
       data-artifact-bytes={stats?.artifactBytes}
@@ -3150,6 +3387,9 @@ function SlugTextViewport({
       data-gpu-timing-supported={stats?.gpuTimingSupported}
       data-layout-width={stats?.layoutWidth}
       data-layout-width-ratio={layoutWidthRatio}
+      data-content-inset={BENCHMARK_CONTENT_INSET}
+      data-content-min-width={BENCHMARK_CONTENT_MINIMUM_VIEWPORT_WIDTH * layoutWidthRatio}
+      data-content-policy="bounded-pan"
       data-line-count={stats?.lineCount}
       data-median-gpu-ms={stats?.medianGpuMs}
       data-median-submit-ms={stats?.medianSubmitMs}
@@ -3168,22 +3408,21 @@ function SlugTextViewport({
       data-text-align={textAlign}
       data-timeline-tick={textConfiguration.timelineTick}
       data-testid="slug-live-viewport"
+      data-workload={settledWorkload}
+      data-presentation-pending={settledWorkload !== workload}
       ref={containerRef}
     >
-      <InteractiveCanvas
-        label={`Live Slug benchmark using ${backend}`}
-        canvasRef={canvasRef}
-        controllerRef={previewRef}
-      />
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/70 to-transparent px-3 py-2 font-mono text-[9px] text-muted">
+      <div
+        className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/70 to-transparent px-3 py-2 font-mono text-[9px] text-muted"
+        data-testid="canvas-render-status"
+      >
         <span>
           SLUG ANALYTIC · {stats?.slugPageCount ?? '—'} PAGE
-          {stats?.slugPageCount === 1 ? '' : 'S'} · {fontSize} CSS PX / {stats?.renderedPpem ?? '—'}{' '}
-          DEVICE PX
+          {stats?.slugPageCount === 1 ? '' : 'S'} · {fontSize} CSS PX / {stats?.renderedPpem ?? '—'} DEVICE PX
         </span>
         <span>{dpr}× DPR</span>
       </div>
-      {(stats === undefined || bakeProgressActive) && error === undefined && (
+      {!suppressLoading && (stats === undefined || bakeProgressActive) && error === undefined && (
         <BakeProgressOverlay backend={backend} progress={bakeProgressValue} technique="SLUG" />
       )}
       {error !== undefined && (
@@ -3192,7 +3431,141 @@ function SlugTextViewport({
         </div>
       )}
     </div>
-  )
+  );
+}
+
+function comparisonViewportEvidence({
+  layoutWidthRatio,
+  stats,
+  technique,
+  workload,
+  workloadFonts,
+}: {
+  readonly layoutWidthRatio: number;
+  readonly stats: ComparisonWorkloadStats | undefined;
+  readonly technique: RasterTechnique;
+  readonly workload: ComparisonWorkloadId;
+  readonly workloadFonts: ReturnType<typeof liveWorkloadFontFixtures>;
+}): Record<`data-${string}`, string | number | boolean | undefined> {
+  const iconStats = stats?.workload === 'icon-grid' ? stats : undefined;
+  const paintStats = stats?.workload === 'paint-effects' ? stats : undefined;
+  const zoomStats = stats?.workload === 'zoom-text' ? stats : undefined;
+  const appliedWorkloadFonts =
+    stats === undefined ? undefined : liveWorkloadFontFixtures(stats.workload, stats.appliedFontFixture);
+  const requestedFontFixture = workloadFonts.kind === 'icon-grid' ? workloadFonts.labels : workloadFonts.primary;
+  const animatedStats = stats;
+  return {
+    'data-canvas-grid': stats === undefined ? undefined : String(stats.showGrid),
+    'data-artifact-bytes': stats?.artifactBytes,
+    'data-atlas-gpu-bytes': stats?.atlasGpuBytes,
+    'data-backend': stats?.backend,
+    'data-dpr': stats?.dpr,
+    'data-font-delivery': stats?.delivery,
+    'data-core-bake-ms': stats?.coreBakeMs,
+    'data-raster-bake-ms': stats?.rasterBakeMs,
+    'data-source-font-bytes': stats?.sourceFontBytes,
+    'data-core-artifact-bytes': stats?.coreArtifactBytes,
+    'data-raster-artifact-bytes': stats?.rasterArtifactBytes,
+    'data-draw-count': stats?.drawCount,
+    'data-first-draw-ms': stats?.firstDrawMs,
+    'data-font-fixture': appliedWorkloadFonts?.primary,
+    'data-label-font-fixture': appliedWorkloadFonts?.kind === 'icon-grid' ? appliedWorkloadFonts.labels : undefined,
+    'data-font-load-ms': stats?.fontLoadMs,
+    'data-frames-per-second': stats?.framesPerSecond,
+    'data-glyph-count': stats?.glyphCount,
+    'data-gpu-history-length': stats?.gpuHistoryLength,
+    'data-gpu-timing-supported': stats?.gpuTimingSupported,
+    'data-layout-width': stats?.layoutWidth,
+    'data-content-inset': BENCHMARK_CONTENT_INSET,
+    'data-content-min-width':
+      workload === 'text-ladder' || workload === 'icon-grid' || workload === 'zoom-text'
+        ? undefined
+        : (workload === 'dynamic-layout' ? 1_000 : BENCHMARK_CONTENT_MINIMUM_VIEWPORT_WIDTH) * layoutWidthRatio,
+    'data-content-policy':
+      workload === 'text-ladder' || workload === 'icon-grid' ? 'pan' : workload === 'zoom-text' ? 'fit' : 'bounded-pan',
+    'data-icon-item-count': iconStats?.iconItemCount,
+    'data-icon-label-count': iconStats?.iconLabelCount,
+    'data-icon-column-count': iconStats?.iconColumnCount,
+    'data-icon-row-count': iconStats?.iconRowCount,
+    'data-icon-size': iconStats?.appliedFontSize,
+    'data-icon-grid-width': iconStats?.iconGridWidth,
+    'data-icon-grid-height': iconStats?.iconGridHeight,
+    'data-icon-label-size': iconStats?.iconLabelSize,
+    'data-icon-pool-capacity': iconStats?.iconPoolCapacity,
+    'data-icon-assigned-count': iconStats?.iconAssignedCount,
+    'data-icon-render-visible-count': iconStats?.iconRenderVisibleCount,
+    'data-icon-assignment-signature': iconStats?.iconAssignmentSignature,
+    'data-icon-first-visible-index': iconStats?.iconFirstVisibleIndex,
+    'data-icon-last-visible-index': iconStats?.iconLastVisibleIndex,
+    'data-icon-recycle-count': iconStats?.iconRecycleCount,
+    'data-icon-window-revision': iconStats?.iconWindowRevision,
+    'data-icon-overscan-rows': iconStats?.iconOverscanRows,
+    'data-icon-overscan-columns': iconStats?.iconOverscanColumns,
+    'data-icon-scroll-x': iconStats?.iconScrollX,
+    'data-icon-scroll-y': iconStats?.iconScrollY,
+    'data-icon-maximum-scroll-x': iconStats?.iconMaximumScrollX,
+    'data-icon-maximum-scroll-y': iconStats?.iconMaximumScrollY,
+    'data-line-count': stats?.lineCount,
+    'data-median-gpu-ms': stats?.medianGpuMs,
+    'data-median-submit-ms': stats?.medianSubmitMs,
+    'data-missing-glyph-count': stats?.missingGlyphCount,
+    'data-p95-gpu-ms': stats?.p95GpuMs,
+    'data-p95-submit-ms': stats?.p95SubmitMs,
+    'data-renderer-init-ms': stats?.rendererInitMs,
+    'data-configuration-revision': stats?.configurationRevision,
+    'data-camera-kind': stats?.cameraKind,
+    'data-applied-font-size': stats?.appliedFontSize,
+    'data-applied-workload-amount': stats?.appliedAmount,
+    'data-layout-width-ratio': stats?.appliedLayoutWidthRatio,
+    'data-paint-opacity': paintStats?.appliedPaintOpacity,
+    'data-paint-shadow-enabled': paintStats === undefined ? undefined : String(paintStats.appliedPaintShadowEnabled),
+    'data-paint-stroke-width': paintStats?.appliedPaintStrokeWidth,
+    'data-paint-revision': paintStats?.paintRevision,
+    'data-paint-update-ms': paintStats?.lastPaintUpdateMs,
+    'data-presentation-pending':
+      stats !== undefined &&
+      (stats.technique !== technique ||
+        stats.workload !== workload ||
+        stats.appliedFontFixture !== requestedFontFixture),
+    'data-layout-bounds-visible':
+      stats?.workload === 'dynamic-layout' ? String(stats.appliedShowLayoutBounds) : undefined,
+    'data-reflow-count': stats?.reflowCount,
+    'data-reflow-ms': stats?.lastReflowMs,
+    'data-rendered-device-px': stats?.renderedPpem,
+    'data-raster-em-size': stats?.technique === 'mtsdf' ? stats.rasterEmSize : undefined,
+    'data-raster-pixel-range': stats?.technique === 'mtsdf' ? stats.rasterPixelRange : undefined,
+    'data-scale-ratio': stats?.technique === 'slug' ? undefined : stats?.scaleRatio,
+    'data-slug-curve-gpu-bytes': stats?.technique === 'slug' ? stats.slugCurveGpuBytes : undefined,
+    'data-slug-header-gpu-bytes': stats?.technique === 'slug' ? stats.slugHeaderGpuBytes : undefined,
+    'data-slug-page-count': stats?.technique === 'slug' ? stats.slugPageCount : undefined,
+    'data-slug-reference-gpu-bytes': stats?.technique === 'slug' ? stats.slugReferenceGpuBytes : undefined,
+    'data-slug-gpu-bytes': stats?.technique === 'slug' ? stats.slugGpuBytes : undefined,
+    'data-startup-ms': stats?.startupMs,
+    'data-source-text-length': stats?.sourceTextLength,
+    'data-submit-history-length': stats?.submitHistoryLength,
+    'data-text-ready-ms': stats?.textReadyMs,
+    'data-text-update-sample-count': stats?.textUpdateTimings.sampleCount,
+    'data-technique': technique,
+    'data-total-gpu-bytes': stats?.totalGpuBytes,
+    'data-upload-frame-gpu-ms': stats?.uploadFrameGpuMs,
+    'data-upload-frame-complete-ms': stats?.uploadFrameCompleteMs,
+    'data-workload': stats?.workload,
+    'data-zoom-text': zoomStats?.zoomText,
+    'data-zoom-language': zoomStats?.zoomLanguage,
+    'data-zoom-phrase-index': zoomStats?.zoomPhraseIndex,
+    'data-zoom-phrase-revision': zoomStats?.zoomPhraseRevision,
+    'data-zoom-base-css-px': zoomStats?.zoomBaseCssPx,
+    'data-zoom-effective-css-px': zoomStats?.zoomEffectiveCssPx,
+    'data-zoom-maximum-css-px': zoomStats?.zoomMaximumCssPx,
+    'data-zoom-scale': zoomStats?.zoomScale,
+    'data-zoom-maximum-scale': zoomStats?.zoomMaximumScale,
+    'data-workload-amount':
+      stats === undefined || workloadAmountLabel(stats.workload, stats.appliedAmount) === undefined
+        ? undefined
+        : stats.appliedAmount,
+    'data-animation-enabled': animatedStats === undefined ? undefined : String(animatedStats.appliedAnimationEnabled),
+    'data-animation-speed': animatedStats?.appliedAnimationSpeed,
+  };
 }
 
 function ComparisonWorkloadViewport({
@@ -3209,169 +3582,147 @@ function ComparisonWorkloadViewport({
   paintOpacity,
   paintShadowEnabled,
   paintStrokeWidth,
+  presentationPreset,
   showLayoutBounds,
+  suppressLoading,
+  stats,
+  surfaceAnchorRef,
   technique,
   workload,
   onStats,
 }: {
-  readonly amount: number
-  readonly animationEnabled: boolean
-  readonly animationSpeed: number
-  readonly backend: GraphicsBackend
-  readonly delivery: FontDelivery
-  readonly dpr: 1 | 2
-  readonly fontFixture: BenchmarkFontFixture
-  readonly fontSize: number
-  readonly grid: boolean
-  readonly layoutWidthRatio: number
-  readonly paintOpacity: number
-  readonly paintShadowEnabled: boolean
-  readonly paintStrokeWidth: number
-  readonly showLayoutBounds: boolean
-  readonly technique: RasterTechnique
-  readonly workload: ComparisonWorkloadId
-  readonly onStats: (stats: LiveTextStats) => void
+  readonly amount: number;
+  readonly animationEnabled: boolean;
+  readonly animationSpeed: number;
+  readonly backend: GraphicsBackend;
+  readonly delivery: FontDelivery;
+  readonly dpr: 1 | 2;
+  readonly fontFixture: BenchmarkFontFixture;
+  readonly fontSize: number;
+  readonly grid: boolean;
+  readonly layoutWidthRatio: number;
+  readonly paintOpacity: number;
+  readonly paintShadowEnabled: boolean;
+  readonly paintStrokeWidth: number;
+  readonly presentationPreset: PresentationPreset | undefined;
+  readonly showLayoutBounds: boolean;
+  readonly suppressLoading: boolean;
+  readonly stats: ComparisonWorkloadStats | undefined;
+  readonly surfaceAnchorRef: RefObject<HTMLDivElement | null>;
+  readonly technique: RasterTechnique;
+  readonly workload: ComparisonWorkloadId;
+  readonly onStats: (stats: LiveTextStats) => void;
 }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const previewRef = useRef<ComparisonWorkloadPreview>(undefined)
-  const surfaceKey = `${backend}:${delivery}:${String(dpr)}:${fontFixture}:${technique}:${workload}`
-  const [publishedStats, setPublishedStats] = useState<
-    Readonly<{
-      fontFixture: BenchmarkFontFixture
-      key: string
-      value: ComparisonWorkloadStats
-    }>
-  >()
-  const stats = publishedStats?.value
-  const workloadFonts = liveWorkloadFontFixtures(workload, fontFixture)
-  const [error, setError] = useState<string>()
+  const { activateSurface, configureSurface } = usePersistentRenderHost();
+  const activatePersistentSurface = useEffectEvent(activateSurface);
+  const configurePersistentSurface = useEffectEvent(configureSurface);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<ComparisonWorkloadPersistentScene>(undefined);
+  const workloadFonts = liveWorkloadFontFixtures(workload, fontFixture);
+  const [error, setError] = useState<string>();
   const {
     active: bakeProgressActive,
     finish: finishBakeProgress,
     publish: publishBakeProgress,
-    reset: resetBakeProgress,
     value: bakeProgressValue,
-  } = useBakeProgress(techniqueLabel(technique))
-  const publishStats = useEffectEvent((key: string, next: ComparisonWorkloadStats) => {
-    if (key !== surfaceKey) return
-    finishBakeProgress()
-    setPublishedStats({ fontFixture, key, value: next })
-    onStats(next)
-    setError(undefined)
-  })
+  } = useBakeProgress(techniqueLabel(technique));
+  const publishStats = useEffectEvent((next: ComparisonWorkloadStats) => {
+    finishBakeProgress();
+    onStats(next);
+    setError(undefined);
+  });
   const publishError = useEffectEvent((caught: unknown) => {
-    if (caught instanceof DOMException && caught.name === 'AbortError') return
-    finishBakeProgress()
-    setError(caught instanceof Error ? caught.message : String(caught))
-  })
-  const currentConfiguration = useEffectEvent(() => ({
-    amount,
-    animationEnabled,
-    animationSpeed,
-    fontFixture,
-    fontSize,
-    layoutWidthRatio,
-    paintOpacity,
-    paintShadowEnabled,
-    paintStrokeWidth,
-    showGrid: grid,
-    showLayoutBounds,
-    workload,
-  }))
+    if (caught instanceof DOMException && caught.name === 'AbortError') return;
+    finishBakeProgress();
+    setError(caught instanceof Error ? caught.message : String(caught));
+  });
+  const currentConfiguration = useEffectEvent(
+    (): ComparisonWorkloadConfiguration => ({
+      amount,
+      animationEnabled,
+      animationSpeed,
+      fontFixture,
+      fontSize,
+      iconGridView: presentationPreset === 'icon-grid-return' ? 'alternate' : 'origin',
+      layoutWidthRatio,
+      paintOpacity,
+      paintShadowEnabled,
+      paintStrokeWidth,
+      showGrid: grid,
+      showLayoutBounds,
+      workload,
+    }),
+  );
 
   useEffect(() => {
-    const canvas = canvasRef.current
-    const container = containerRef.current
-    if (canvas === null || container === null) return
-    const controller = new AbortController()
-    resetBakeProgress()
-    const effectSurfaceKey = surfaceKey
-    let preview: ComparisonWorkloadPreview | undefined
-    let lifecycleLease: Awaited<ReturnType<typeof liveRendererLifecycle.acquire>> | undefined
-    let cancelled = false
-    const resize = (): void => {
-      if (preview === undefined) return
-      const bounds = container.getBoundingClientRect()
-      preview.resize(Math.max(1, bounds.width), Math.max(1, bounds.height))
-    }
-    const observer = new ResizeObserver(resize)
-    observer.observe(container)
+    const container = containerRef.current;
+    const surfaceAnchor = surfaceAnchorRef.current;
+    if (container === null || surfaceAnchor === null) return;
+    const controller = new AbortController();
+    let preview: ComparisonWorkloadPersistentScene | undefined;
+    let surfaceLease: Awaited<ReturnType<typeof activateSurface>> | undefined;
+    let cancelled = false;
     const initialization = (async () => {
-      lifecycleLease = await liveRendererLifecycle.acquire(controller.signal)
-      try {
-        if (cancelled) return
-        const { createComparisonWorkloadPreview } = await preloadComparisonWorkload()
-        if (cancelled) return
-        const bounds = container.getBoundingClientRect()
-        const configuration = currentConfiguration()
-        const created = await createComparisonWorkloadPreview({
-          ...configuration,
-          backend,
-          canvas,
-          delivery,
-          dpr,
-          height: Math.max(1, bounds.height),
-          signal: controller.signal,
-          technique,
-          width: Math.max(1, bounds.width),
-          onError: publishError,
-          onStats: (next) => publishStats(effectSurfaceKey, next),
-          onBakeProgress: publishBakeProgress,
-        })
-        if (cancelled) {
-          await created.dispose()
-          return
-        }
-        preview = created
-        previewRef.current = created
-        resize()
-      } catch (caught) {
-        lifecycleLease.release()
-        lifecycleLease = undefined
-        throw caught
-      }
-    })()
-    void initialization.catch(publishError)
+      const { createComparisonWorkloadPersistentScene } = await preloadComparisonWorkload();
+      if (cancelled) return;
+      const configuration = currentConfiguration();
+      const created = createComparisonWorkloadPersistentScene({
+        ...configuration,
+        backend,
+        delivery,
+        technique,
+        onError: publishError,
+        onStats: publishStats,
+        onBakeProgress: publishBakeProgress,
+      });
+      preview = created;
+      previewRef.current = created;
+      surfaceLease = await activatePersistentSurface(
+        {
+          anchor: surfaceAnchor,
+          controller: previewRef,
+          label: `Live ${techniqueLabel(technique)} benchmark using ${backend}`,
+          pan: configuration.workload !== 'zoom-text',
+          scene: created,
+          zoom: configuration.workload === 'off-axis-3d',
+        },
+        controller.signal,
+      );
+      if (cancelled) await surfaceLease.release();
+    })();
+    void initialization.catch(publishError);
     return () => {
-      cancelled = true
-      controller.abort()
-      observer.disconnect()
+      cancelled = true;
+      controller.abort();
       void initialization.then(
         async () => {
-          try {
-            if (preview === undefined) return
-            const current = preview
-            preview = undefined
-            if (previewRef.current === current) previewRef.current = undefined
-            await current.dispose()
-          } finally {
-            lifecycleLease?.release()
-            lifecycleLease = undefined
-          }
+          const current = preview;
+          preview = undefined;
+          if (previewRef.current === current) previewRef.current = undefined;
+          await surfaceLease?.release();
         },
         () => {
-          lifecycleLease?.release()
-          lifecycleLease = undefined
+          const current = preview;
+          preview = undefined;
+          if (previewRef.current === current) previewRef.current = undefined;
         },
-      )
-    }
-  }, [
-    backend,
-    delivery,
-    dpr,
-    fontFixture,
-    publishBakeProgress,
-    resetBakeProgress,
-    surfaceKey,
-    technique,
-    workload,
-  ])
+      );
+    };
+  }, [backend, delivery, publishBakeProgress, surfaceAnchorRef, technique]);
 
   useEffect(() => {
-    const preview = previewRef.current
-    if (preview === undefined) return
-    void preview.update(currentConfiguration()).catch(publishError)
+    configurePersistentSurface({
+      controller: previewRef,
+      label: `Live ${techniqueLabel(technique)} benchmark using ${backend}`,
+      pan: workload !== 'zoom-text',
+      zoom: workload === 'off-axis-3d',
+    });
+  }, [backend, technique, workload]);
+
+  useEffect(() => {
+    const preview = previewRef.current;
+    if (preview === undefined) return;
+    void preview.update(currentConfiguration()).catch(publishError);
   }, [
     amount,
     animationEnabled,
@@ -3383,155 +3734,31 @@ function ComparisonWorkloadViewport({
     paintOpacity,
     paintShadowEnabled,
     paintStrokeWidth,
+    presentationPreset,
     grid,
     showLayoutBounds,
     workload,
-  ])
+  ]);
 
   const rangeLabel =
     workload === 'text-ladder'
-      ? '8–512 CSS PX'
-      : workload === 'icon-grid'
-        ? `${fontSize} CSS PX ICONS`
-        : `${fontSize} CSS PX`
+      ? '8–1024 CSS PX'
+      : workload === 'zoom-text'
+        ? '8 PT · 10.67 CSS PX → VIEWPORT FIT'
+        : workload === 'icon-grid'
+          ? `${fontSize} CSS PX ICONS`
+          : `${fontSize} CSS PX`;
   return (
     <div
-      className="relative min-h-0 flex-1 overflow-hidden rounded border border-border bg-background"
-      data-canvas-grid={String(grid)}
-      data-artifact-bytes={stats?.artifactBytes}
-      data-atlas-gpu-bytes={stats?.atlasGpuBytes}
-      data-backend={stats?.backend}
-      data-dpr={stats?.dpr}
-      data-font-delivery={stats?.delivery}
-      data-core-bake-ms={stats?.coreBakeMs}
-      data-raster-bake-ms={stats?.rasterBakeMs}
-      data-source-font-bytes={stats?.sourceFontBytes}
-      data-core-artifact-bytes={stats?.coreArtifactBytes}
-      data-raster-artifact-bytes={stats?.rasterArtifactBytes}
-      data-draw-count={stats?.drawCount}
-      data-first-draw-ms={stats?.firstDrawMs}
-      data-font-fixture={workloadFonts.primary}
-      data-label-font-fixture={
-        workloadFonts.kind === 'icon-grid' ? workloadFonts.labels : undefined
-      }
-      data-font-load-ms={stats?.fontLoadMs}
-      data-frames-per-second={stats?.framesPerSecond}
-      data-glyph-count={stats?.glyphCount}
-      data-gpu-history-length={stats?.gpuHistoryLength}
-      data-gpu-timing-supported={stats?.gpuTimingSupported}
-      data-layout-width={stats?.layoutWidth}
-      data-icon-item-count={stats?.workload === 'icon-grid' ? stats.iconItemCount : undefined}
-      data-icon-label-count={stats?.workload === 'icon-grid' ? stats.iconLabelCount : undefined}
-      data-icon-column-count={stats?.workload === 'icon-grid' ? stats.iconColumnCount : undefined}
-      data-icon-row-count={stats?.workload === 'icon-grid' ? stats.iconRowCount : undefined}
-      data-icon-size={stats?.workload === 'icon-grid' ? stats.appliedFontSize : undefined}
-      data-icon-grid-width={stats?.workload === 'icon-grid' ? stats.iconGridWidth : undefined}
-      data-icon-grid-height={stats?.workload === 'icon-grid' ? stats.iconGridHeight : undefined}
-      data-icon-label-size={stats?.workload === 'icon-grid' ? stats.iconLabelSize : undefined}
-      data-icon-pool-capacity={stats?.workload === 'icon-grid' ? stats.iconPoolCapacity : undefined}
-      data-icon-assigned-count={
-        stats?.workload === 'icon-grid' ? stats.iconAssignedCount : undefined
-      }
-      data-icon-assignment-signature={
-        stats?.workload === 'icon-grid' ? stats.iconAssignmentSignature : undefined
-      }
-      data-icon-first-visible-index={
-        stats?.workload === 'icon-grid' ? stats.iconFirstVisibleIndex : undefined
-      }
-      data-icon-last-visible-index={
-        stats?.workload === 'icon-grid' ? stats.iconLastVisibleIndex : undefined
-      }
-      data-icon-recycle-count={stats?.workload === 'icon-grid' ? stats.iconRecycleCount : undefined}
-      data-icon-window-revision={
-        stats?.workload === 'icon-grid' ? stats.iconWindowRevision : undefined
-      }
-      data-icon-overscan-rows={stats?.workload === 'icon-grid' ? stats.iconOverscanRows : undefined}
-      data-icon-overscan-columns={
-        stats?.workload === 'icon-grid' ? stats.iconOverscanColumns : undefined
-      }
-      data-icon-scroll-x={stats?.workload === 'icon-grid' ? stats.iconScrollX : undefined}
-      data-icon-scroll-y={stats?.workload === 'icon-grid' ? stats.iconScrollY : undefined}
-      data-icon-maximum-scroll-x={
-        stats?.workload === 'icon-grid' ? stats.iconMaximumScrollX : undefined
-      }
-      data-icon-maximum-scroll-y={
-        stats?.workload === 'icon-grid' ? stats.iconMaximumScrollY : undefined
-      }
-      data-line-count={stats?.lineCount}
-      data-median-gpu-ms={stats?.medianGpuMs}
-      data-median-submit-ms={stats?.medianSubmitMs}
-      data-missing-glyph-count={stats?.missingGlyphCount}
-      data-p95-gpu-ms={stats?.p95GpuMs}
-      data-p95-submit-ms={stats?.p95SubmitMs}
-      data-renderer-init-ms={stats?.rendererInitMs}
-      data-configuration-revision={stats?.configurationRevision}
-      data-paint-opacity={
-        stats?.workload === 'paint-effects' ? stats.appliedPaintOpacity : undefined
-      }
-      data-paint-shadow-enabled={
-        stats?.workload === 'paint-effects' ? String(stats.appliedPaintShadowEnabled) : undefined
-      }
-      data-paint-stroke-width={
-        stats?.workload === 'paint-effects' ? stats.appliedPaintStrokeWidth : undefined
-      }
-      data-paint-revision={stats?.workload === 'paint-effects' ? stats.paintRevision : undefined}
-      data-paint-update-ms={
-        stats?.workload === 'paint-effects' ? stats.lastPaintUpdateMs : undefined
-      }
-      data-presentation-pending={publishedStats !== undefined && publishedStats.key !== surfaceKey}
-      data-layout-bounds-visible={
-        stats?.workload === 'dynamic-layout' ? String(stats.appliedShowLayoutBounds) : undefined
-      }
-      data-reflow-count={stats?.reflowCount}
-      data-reflow-ms={stats?.lastReflowMs}
-      data-rendered-device-px={stats?.renderedPpem}
-      data-raster-em-size={stats?.technique === 'mtsdf' ? stats.rasterEmSize : undefined}
-      data-raster-pixel-range={stats?.technique === 'mtsdf' ? stats.rasterPixelRange : undefined}
-      data-scale-ratio={stats?.technique === 'slug' ? undefined : stats?.scaleRatio}
-      data-slug-curve-gpu-bytes={stats?.technique === 'slug' ? stats.slugCurveGpuBytes : undefined}
-      data-slug-header-gpu-bytes={
-        stats?.technique === 'slug' ? stats.slugHeaderGpuBytes : undefined
-      }
-      data-slug-page-count={stats?.technique === 'slug' ? stats.slugPageCount : undefined}
-      data-slug-reference-gpu-bytes={
-        stats?.technique === 'slug' ? stats.slugReferenceGpuBytes : undefined
-      }
-      data-slug-gpu-bytes={stats?.technique === 'slug' ? stats.slugGpuBytes : undefined}
-      data-startup-ms={stats?.startupMs}
-      data-source-text-length={stats?.sourceTextLength}
-      data-submit-history-length={stats?.submitHistoryLength}
-      data-text-ready-ms={stats?.textReadyMs}
-      data-technique={technique}
+      className="pointer-events-none absolute inset-0 overflow-hidden rounded border border-border"
+      {...comparisonViewportEvidence({ stats, technique, workload, workloadFonts, layoutWidthRatio })}
       data-testid="comparison-live-viewport"
-      data-total-gpu-bytes={stats?.totalGpuBytes}
-      data-upload-frame-gpu-ms={stats?.uploadFrameGpuMs}
-      data-upload-frame-complete-ms={stats?.uploadFrameCompleteMs}
-      data-workload={stats?.workload}
-      data-workload-amount={
-        stats === undefined ||
-        workloadAmountLabel(stats.workload, stats.appliedAmount) === undefined
-          ? undefined
-          : stats.appliedAmount
-      }
-      data-animation-enabled={
-        stats?.workload === 'dynamic-layout' || stats?.workload === 'paint-effects'
-          ? String(stats.appliedAnimationEnabled)
-          : undefined
-      }
-      data-animation-speed={
-        stats?.workload === 'dynamic-layout' || stats?.workload === 'paint-effects'
-          ? stats.appliedAnimationSpeed
-          : undefined
-      }
       ref={containerRef}
     >
-      <InteractiveCanvas
-        label={`Live ${techniqueLabel(technique)} ${workload} benchmark using ${backend}`}
-        canvasRef={canvasRef}
-        controllerRef={previewRef}
-        zoom={workload === 'off-axis-3d'}
-      />
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/70 to-transparent px-3 py-2 font-mono text-[9px] text-muted">
+      <div
+        className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/70 to-transparent px-3 py-2 font-mono text-[9px] text-muted"
+        data-testid="canvas-render-status"
+      >
         <span>
           {stats?.technique === 'mtsdf'
             ? `MTSDF ${String(stats.rasterEmSize)} PX/EM`
@@ -3546,11 +3773,15 @@ function ComparisonWorkloadViewport({
                     : 'BITMAP — PX STRIKE'}{' '}
           · {rangeLabel}
         </span>
-        <span>
-          {workload === 'off-axis-3d' ? 'PAN · PINCH/WHEEL ZOOM' : 'PAN'} · {dpr}× DPR
-        </span>
       </div>
-      {(publishedStats === undefined || bakeProgressActive) && error === undefined && (
+      <div
+        className="pointer-events-none absolute bottom-0 left-0 bg-gradient-to-t from-black/70 to-transparent px-3 pb-2 pt-6 font-mono text-[9px] text-muted"
+        data-testid="canvas-navigation-status"
+      >
+        {workload === 'off-axis-3d' ? 'PAN · PINCH/WHEEL ZOOM' : workload === 'zoom-text' ? 'AUTO FIT' : 'PAN'} · {dpr}×
+        DPR
+      </div>
+      {!suppressLoading && (stats === undefined || bakeProgressActive) && error === undefined && (
         <BakeProgressOverlay
           backend={backend}
           progress={bakeProgressValue}
@@ -3563,42 +3794,34 @@ function ComparisonWorkloadViewport({
         </div>
       )}
     </div>
-  )
+  );
 }
 
 function useBakeProgress(label: string): {
-  readonly value: BakeProgress | undefined
-  readonly active: boolean
-  readonly publish: (progress: BakeProgress) => void
-  readonly finish: () => void
-  readonly reset: () => void
+  readonly value: BakeProgress | undefined;
+  readonly active: boolean;
+  readonly publish: (progress: BakeProgress) => void;
+  readonly finish: () => void;
 } {
-  const [value, setValue] = useState<BakeProgress>()
-  const [active, setActive] = useState(false)
-  const lastConsoleKey = useRef('')
+  const [value, setValue] = useState<BakeProgress>();
+  const [active, setActive] = useState(false);
+  const lastConsoleKey = useRef('');
   const publish = useCallback(
     (progress: BakeProgress) => {
-      setValue(progress)
-      setActive(true)
-      if (!import.meta.env.DEV) return
-      const percentage = Math.round((progress.completed / progress.total) * 100)
-      const bucket = Math.floor(percentage / 10) * 10
-      const key = `${progress.stage}:${progress.phase}:${String(bucket)}`
-      if (key === lastConsoleKey.current) return
-      lastConsoleKey.current = key
-      console.info(
-        `[pmndrs/text] ${label} ${progress.stage} bake: ${progress.phase} ${String(percentage)}%`,
-      )
+      setValue(progress);
+      setActive(true);
+      if (!import.meta.env.DEV) return;
+      const percentage = Math.round((progress.completed / progress.total) * 100);
+      const bucket = Math.floor(percentage / 10) * 10;
+      const key = `${progress.stage}:${progress.phase}:${String(bucket)}`;
+      if (key === lastConsoleKey.current) return;
+      lastConsoleKey.current = key;
+      console.info(`[pmndrs/text] ${label} ${progress.stage} bake: ${progress.phase} ${String(percentage)}%`);
     },
     [label],
-  )
-  const finish = useCallback(() => setActive(false), [])
-  const reset = useCallback(() => {
-    setValue(undefined)
-    setActive(false)
-    lastConsoleKey.current = ''
-  }, [])
-  return { value, active, publish, finish, reset }
+  );
+  const finish = useCallback(() => setActive(false), []);
+  return { value, active, publish, finish };
 }
 
 function BakeProgressOverlay({
@@ -3606,15 +3829,15 @@ function BakeProgressOverlay({
   progress,
   technique,
 }: {
-  readonly backend: GraphicsBackend
-  readonly progress: BakeProgress | undefined
-  readonly technique: 'BITMAP' | 'MSDF' | 'SLUG'
+  readonly backend: GraphicsBackend;
+  readonly progress: BakeProgress | undefined;
+  readonly technique: 'BITMAP' | 'MSDF' | 'SLUG';
 }) {
-  const percentage = bakeProgressPercentage(progress)
+  const percentage = bakeProgressPercentage(progress);
   const label =
     progress === undefined
       ? `INITIALIZING ${technique} ${backend.toUpperCase()}`
-      : `${progress.stage === 'font' ? 'FONT' : technique} ${progress.phase.toUpperCase()}`
+      : `${progress.stage === 'font' ? 'FONT' : technique} ${progress.phase.toUpperCase()}`;
   return (
     <div className="absolute inset-0 z-10 grid place-items-center bg-background px-8">
       <div className="w-full max-w-sm" data-testid="bake-progress">
@@ -3630,1232 +3853,24 @@ function BakeProgressOverlay({
         />
       </div>
     </div>
-  )
+  );
 }
 
 function bakeProgressPercentage(progress: BakeProgress | undefined): number {
-  if (progress === undefined) return 0
-  const ratio = progress.completed / progress.total
+  if (progress === undefined) return 0;
+  const ratio = progress.completed / progress.total;
   if (progress.stage === 'font') {
-    if (progress.phase === 'loading') return 2
-    if (progress.phase === 'baking') return 8
-    if (progress.phase === 'packaging') return 16
-    if (progress.phase === 'transferring') return 19
-    if (progress.phase === 'complete') return 20
-    return Math.round(ratio * 20)
+    if (progress.phase === 'loading') return 2;
+    if (progress.phase === 'baking') return 8;
+    if (progress.phase === 'packaging') return 16;
+    if (progress.phase === 'transferring') return 19;
+    if (progress.phase === 'complete') return 20;
+    return Math.round(ratio * 20);
   }
-  if (progress.phase === 'loading') return 22
-  if (progress.phase === 'rasterizing') return 25 + Math.round(ratio * 65)
-  if (progress.phase === 'packaging') return 92
-  if (progress.phase === 'transferring') return 97
-  if (progress.phase === 'complete') return 100
-  return 20
-}
-
-const TELEMETRY_CHART_TRANSITION_MS = 250
-
-function TelemetryCharts({ stats }: { readonly stats: LiveTextStats | undefined }) {
-  const fpsCanvasRef = useRef<HTMLCanvasElement>(null)
-  const cpuCanvasRef = useRef<HTMLCanvasElement>(null)
-  const gpuCanvasRef = useRef<HTMLCanvasElement>(null)
-  const readStats = useEffectEvent(() => stats)
-  useEffect(() => {
-    const charts = [
-      { id: 'fps', canvas: fpsCanvasRef.current, tone: 'success' },
-      { id: 'cpu', canvas: cpuCanvasRef.current, tone: 'cyan' },
-      { id: 'gpu', canvas: gpuCanvasRef.current, tone: 'warning' },
-    ] as const
-    if (charts.some(({ canvas }) => canvas === null)) return
-    const drawing = charts.map(({ canvas, id, tone }) => {
-      if (canvas === null) throw new TypeError(`missing ${id} telemetry canvas`)
-      const context = canvas.getContext('2d')
-      if (context === null) throw new TypeError(`missing ${id} telemetry context`)
-      return { canvas, context, height: 1, id, pixelRatio: 0, tone, width: 1 }
-    })
-    const resize = (chart: (typeof drawing)[number]): void => {
-      const { canvas, context, tone } = chart
-      const bounds = canvas.getBoundingClientRect()
-      const metrics = sparklineCanvasMetrics(bounds.width, bounds.height, window.devicePixelRatio)
-      chart.width = metrics.cssWidth
-      chart.height = metrics.cssHeight
-      chart.pixelRatio = metrics.pixelRatio
-      if (canvas.width !== metrics.backingWidth || canvas.height !== metrics.backingHeight) {
-        canvas.width = metrics.backingWidth
-        canvas.height = metrics.backingHeight
-      }
-      context.setTransform(metrics.scaleX, 0, 0, metrics.scaleY, 0, 0)
-      context.strokeStyle = getComputedStyle(canvas).getPropertyValue(`--${tone}`)
-      context.lineWidth = 1.5
-      canvas.dataset.backingHeight = String(metrics.backingHeight)
-      canvas.dataset.backingWidth = String(metrics.backingWidth)
-      canvas.dataset.cssHeight = String(metrics.cssHeight)
-      canvas.dataset.cssWidth = String(metrics.cssWidth)
-      canvas.dataset.pixelRatio = String(metrics.pixelRatio)
-    }
-    const resizeObserver = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const chart = drawing.find(({ canvas }) => canvas === entry.target)
-        if (chart !== undefined) resize(chart)
-      }
-    })
-    for (const chart of drawing) {
-      resizeObserver.observe(chart.canvas)
-      resize(chart)
-    }
-    let animationFrame = 0
-    let transitionStartedAt = performance.now() - TELEMETRY_CHART_TRANSITION_MS
-    let historySignature = ''
-    const draw = (timestamp: number): void => {
-      for (const chart of drawing) {
-        if (chart.pixelRatio !== Math.max(1, window.devicePixelRatio)) resize(chart)
-      }
-      const current = readStats()
-      if (current !== undefined) {
-        const signature = `${current.fpsHistoryCursor.length}:${current.fpsHistoryCursor.nextIndex}`
-        if (signature !== historySignature) {
-          historySignature = signature
-          transitionStartedAt = timestamp
-        }
-        const progress = sparklineMotionProgress(
-          timestamp - transitionStartedAt,
-          TELEMETRY_CHART_TRANSITION_MS,
-        )
-        for (const chart of drawing) {
-          const series = telemetryChartSeries(current, chart.id)
-          drawTelemetrySeries(
-            chart,
-            series.values,
-            series.length,
-            series.nextIndex,
-            series.maximum,
-            progress,
-          )
-        }
-      } else {
-        for (const { context, width, height } of drawing) context.clearRect(0, 0, width, height)
-      }
-      animationFrame = requestAnimationFrame(draw)
-    }
-    animationFrame = requestAnimationFrame(draw)
-    return () => {
-      cancelAnimationFrame(animationFrame)
-      resizeObserver.disconnect()
-    }
-  }, [])
-  return (
-    <>
-      <TelemetryChartPanel
-        canvasRef={fpsCanvasRef}
-        current={latestHistoryValue(stats?.fpsHistory, stats?.fpsHistoryCursor)}
-        id="fps"
-        label="FPS"
-        maximum={stats?.maximumFramesPerSecond}
-        minimum={stats?.minimumFramesPerSecond}
-        scaleMaximum={stats?.refreshRateHz}
-        tone="success"
-        unit="fps"
-      />
-      <TelemetryChartPanel
-        canvasRef={cpuCanvasRef}
-        current={latestHistoryValue(stats?.submitHistory, stats?.submitHistoryCursor)}
-        id="cpu"
-        label="CPU"
-        maximum={stats?.maximumSubmitMs}
-        minimum={stats?.minimumSubmitMs}
-        scaleMaximum={stats?.frameBudgetMs}
-        tone="cyan"
-        unit="ms"
-      />
-      <TelemetryChartPanel
-        canvasRef={gpuCanvasRef}
-        current={latestHistoryValue(stats?.gpuHistory, stats?.gpuHistoryCursor)}
-        emptyLabel={
-          stats?.gpuTimingSupported === true ? 'Resolving GPU timing' : 'GPU timing unavailable'
-        }
-        id="gpu"
-        label="GPU"
-        maximum={stats?.maximumGpuMs}
-        minimum={stats?.minimumGpuMs}
-        scaleMaximum={stats?.frameBudgetMs}
-        tone="warning"
-        unit="ms"
-      />
-    </>
-  )
-}
-
-function TelemetryChartPanel({
-  canvasRef,
-  current,
-  emptyLabel,
-  id,
-  label,
-  maximum,
-  minimum,
-  scaleMaximum,
-  tone,
-  unit,
-}: {
-  readonly canvasRef: RefObject<HTMLCanvasElement | null>
-  readonly current: number | undefined
-  readonly emptyLabel?: string
-  readonly id: 'cpu' | 'fps' | 'gpu'
-  readonly label: string
-  readonly maximum: number | undefined
-  readonly minimum: number | undefined
-  readonly scaleMaximum: number | undefined
-  readonly tone: 'cyan' | 'success' | 'warning'
-  readonly unit: 'fps' | 'ms'
-}) {
-  return (
-    <div
-      className="flex min-h-0 flex-col bg-surface p-2"
-      data-scale-maximum={scaleMaximum}
-      data-testid={`sparkline-${id}`}
-      data-tone={tone}
-    >
-      <div
-        className={`flex items-baseline justify-between gap-2 font-mono text-[8px] uppercase tracking-wider ${sparklineToneClass(tone)}`}
-      >
-        <div className="flex items-baseline gap-2">
-          <p>{label}</p>
-          <p className="tabular-nums">{formatSparklineValue(current, unit)}</p>
-        </div>
-        <p className="text-right tabular-nums">
-          {formatSparklineValue(minimum, unit)} – {formatSparklineValue(maximum, unit)}
-        </p>
-      </div>
-      <div className="relative mt-1 min-h-4 w-full flex-1">
-        <canvas
-          aria-label={`${label} history`}
-          className="absolute inset-0 size-full"
-          ref={canvasRef}
-        />
-        {current === undefined && emptyLabel !== undefined && (
-          <span className="absolute inset-0 grid place-items-center font-mono text-[8px] text-dim">
-            {emptyLabel}
-          </span>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function drawTelemetrySeries(
-  chart: {
-    readonly context: CanvasRenderingContext2D
-    readonly height: number
-    readonly width: number
-  },
-  values: Float32Array,
-  length: number,
-  nextIndex: number,
-  maximum: number,
-  progress: number,
-): void {
-  const { context, height, width } = chart
-  context.clearRect(0, 0, width, height)
-  context.beginPath()
-  const start = length === values.length ? nextIndex : 0
-  let drawing = false
-  for (let index = 0; index < length; index += 1) {
-    const value = values[(start + index) % values.length] ?? Number.NaN
-    if (!Number.isFinite(value)) {
-      drawing = false
-      continue
-    }
-    const x = sparklineAnimatedSampleX(index, length, values.length, width, progress)
-    const y = sparklineSampleY(value, maximum, height)
-    if (!drawing) context.moveTo(x, y)
-    else context.lineTo(x, y)
-    drawing = true
-  }
-  context.stroke()
-}
-
-function telemetryChartSeries(stats: LiveTextStats, id: 'cpu' | 'fps' | 'gpu') {
-  switch (id) {
-    case 'fps':
-      return {
-        length: stats.fpsHistoryLength,
-        maximum: stats.refreshRateHz,
-        nextIndex: stats.fpsHistoryCursor.nextIndex,
-        values: stats.fpsHistory,
-      }
-    case 'cpu':
-      return {
-        length: stats.submitHistoryLength,
-        maximum: stats.frameBudgetMs,
-        nextIndex: stats.submitHistoryCursor.nextIndex,
-        values: stats.submitHistory,
-      }
-    case 'gpu':
-      return {
-        length: stats.gpuHistoryLength,
-        maximum: stats.frameBudgetMs,
-        nextIndex: stats.gpuHistoryCursor.nextIndex,
-        values: stats.gpuHistory,
-      }
-  }
-}
-
-function latestHistoryValue(
-  values: Float32Array | undefined,
-  cursor: { readonly length: number; readonly nextIndex: number } | undefined,
-): number | undefined {
-  if (values === undefined || cursor === undefined || cursor.length === 0) return undefined
-  const value = values[(cursor.nextIndex + values.length - 1) % values.length]
-  return value !== undefined && Number.isFinite(value) ? value : undefined
-}
-
-function formatSparklineValue(value: number | undefined, unit: 'fps' | 'ms'): string {
-  if (value === undefined) return '—'
-  if (unit === 'fps') return value.toFixed(1)
-  if (value > 0 && value < 0.01) return '<0.01 ms'
-  return `${value.toFixed(2)} ms`
-}
-
-function sparklineToneClass(tone: 'cyan' | 'success' | 'warning'): string {
-  switch (tone) {
-    case 'cyan':
-      return 'text-cyan'
-    case 'success':
-      return 'text-success'
-    case 'warning':
-      return 'text-warning'
-  }
-}
-
-function Controls({
-  animationEnabled,
-  animationSpeed,
-  backend,
-  delivery,
-  comparisonText,
-  conformanceView,
-  dpr,
-  fontFixture,
-  liveStats,
-  fontSize,
-  layoutWidthPercent,
-  paintOpacityPercent,
-  paintShadowEnabled,
-  paintStrokePercent,
-  selectedFontFixture,
-  workloadAmount,
-  mode,
-  technique,
-  workload,
-  samples,
-  showcaseFrame,
-  showcaseState,
-  showGrid,
-  showLayoutBounds,
-  warmup,
-  webgpu,
-  onBackend,
-  onDelivery,
-  onAnimationEnabled,
-  onAnimationSpeed,
-  onComparisonText,
-  onConformanceReset,
-  onConformanceZoom,
-  onDpr,
-  onFontSize,
-  onFontNotices,
-  onLayoutWidthPercent,
-  onPaintOpacityPercent,
-  onPaintShadowEnabled,
-  onPaintStrokePercent,
-  onSelectedFontFixture,
-  onWorkloadAmount,
-  onSamples,
-  onShowcase,
-  onShowGrid,
-  onShowLayoutBounds,
-  onWarmup,
-}: {
-  readonly animationEnabled: boolean
-  readonly animationSpeed: number
-  readonly backend: GraphicsBackend
-  readonly delivery: FontDelivery
-  readonly comparisonText: string
-  readonly conformanceView: ConformanceView
-  readonly dpr: 1 | 2
-  readonly fontFixture: BenchmarkFontFixture
-  readonly liveStats: LiveTextStats | undefined
-  readonly fontSize: number
-  readonly layoutWidthPercent: number
-  readonly paintOpacityPercent: number
-  readonly paintShadowEnabled: boolean
-  readonly paintStrokePercent: number
-  readonly selectedFontFixture: SelectableFontFixture
-  readonly workloadAmount: number
-  readonly mode: HarnessMode
-  readonly technique: RasterTechnique
-  readonly workload: string
-  readonly samples: number
-  readonly showcaseFrame: AdvancedShapingFrame
-  readonly showcaseState: AdvancedShapingState
-  readonly showGrid: boolean
-  readonly showLayoutBounds: boolean
-  readonly warmup: number
-  readonly webgpu: boolean
-  readonly onBackend: (backend: GraphicsBackend) => void
-  readonly onDelivery: (delivery: FontDelivery) => void
-  readonly onAnimationEnabled: (value: boolean) => void
-  readonly onAnimationSpeed: (value: number) => void
-  readonly onComparisonText: (value: string) => void
-  readonly onConformanceReset: () => void
-  readonly onConformanceZoom: (zoom: number) => void
-  readonly onDpr: (dpr: 1 | 2) => void
-  readonly onFontSize: (value: number) => void
-  readonly onFontNotices: () => void
-  readonly onLayoutWidthPercent: (value: number) => void
-  readonly onPaintOpacityPercent: (value: number) => void
-  readonly onPaintShadowEnabled: (value: boolean) => void
-  readonly onPaintStrokePercent: (value: number) => void
-  readonly onSelectedFontFixture: (value: SelectableFontFixture) => void
-  readonly onWorkloadAmount: (value: number) => void
-  readonly onSamples: (value: number) => void
-  readonly onShowcase: (command: AdvancedShapingCommand) => void
-  readonly onShowGrid: (value: boolean) => void
-  readonly onShowLayoutBounds: (value: boolean) => void
-  readonly onWarmup: (value: number) => void
-}) {
-  return (
-    <section className="grid min-w-0 gap-4 [&>*]:min-w-0" data-testid="controls">
-      <div>
-        <p className="eyebrow">Inspection controls</p>
-        <h2 className="mt-1 text-base font-semibold">Render configuration</h2>
-      </div>
-      {workload !== 'advanced-shaping' && (
-        <div className="min-[1200px]:hidden">
-          {workload === 'icon-grid' ? (
-            <div className="grid gap-1.5">
-              <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-dim">
-                Font fixture
-              </span>
-              <div
-                className="rounded-md border border-border bg-background px-2.5 py-2 text-xs text-foreground"
-                data-icon-font-fixture={ICON_GRID_FONT_FIXTURE}
-              >
-                {BENCHMARK_FONT_LABELS[ICON_GRID_FONT_FIXTURE]}
-              </div>
-            </div>
-          ) : (
-            <SelectField
-              label="Font fixture"
-              value={selectedFontFixture}
-              onChange={(value) => onSelectedFontFixture(selectableFontFixture(value))}
-            >
-              {SELECTABLE_FONT_FIXTURES.map((fixture) => (
-                <option key={fixture.id} value={fixture.id}>
-                  {fixture.label} · {fixture.metadata}
-                </option>
-              ))}
-            </SelectField>
-          )}
-        </div>
-      )}
-      <div>
-        <p className="mb-2 font-mono text-[9px] uppercase text-dim">Backend</p>
-        <div className="grid grid-cols-2 gap-2">
-          <Button
-            disabled={!webgpu}
-            variant={backend === 'webgpu' ? 'primary' : 'secondary'}
-            onClick={() => onBackend('webgpu')}
-          >
-            WebGPU
-          </Button>
-          <Button
-            variant={backend === 'webgl2' ? 'primary' : 'secondary'}
-            onClick={() => onBackend('webgl2')}
-          >
-            WebGL
-          </Button>
-        </div>
-      </div>
-      <div data-testid="font-delivery-switcher">
-        <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-end gap-2">
-          <fieldset className="grid min-w-0 gap-1.5">
-            <legend className="font-mono text-[9px] uppercase text-dim">DPR</legend>
-            <div className="grid grid-cols-2 rounded-md border border-border bg-background p-0.5">
-              <button
-                aria-pressed={dpr === 1}
-                className={`min-h-7 rounded px-3 text-[11px] font-medium transition-colors ${dpr === 1 ? 'bg-accent text-white' : 'text-muted hover:bg-surface hover:text-foreground'}`}
-                type="button"
-                onClick={() => onDpr(1)}
-              >
-                1×
-              </button>
-              <button
-                aria-pressed={dpr === 2}
-                className={`min-h-7 rounded px-3 text-[11px] font-medium transition-colors ${dpr === 2 ? 'bg-accent text-white' : 'text-muted hover:bg-surface hover:text-foreground'}`}
-                type="button"
-                onClick={() => onDpr(2)}
-              >
-                2×
-              </button>
-            </div>
-          </fieldset>
-          <div className="grid gap-1.5">
-            <p className="font-mono text-[9px] uppercase text-dim">Source</p>
-            <Button
-              aria-pressed={delivery === 'baked'}
-              className="min-w-[84px] gap-1.5"
-              variant={delivery === 'baked' ? 'primary' : 'secondary'}
-              onClick={() => onDelivery(delivery === 'baked' ? 'runtime' : 'baked')}
-            >
-              <span aria-hidden="true" className="inline-block w-3 text-center">
-                {delivery === 'baked' ? '✓' : ''}
-              </span>
-              Baked
-            </Button>
-          </div>
-          <div className="grid gap-1.5">
-            <p className="font-mono text-[9px] uppercase text-dim">Grid</p>
-            <Button
-              aria-label="Show canvas grid"
-              aria-pressed={showGrid}
-              className="w-8 px-0"
-              title="Show canvas grid"
-              variant={showGrid ? 'primary' : 'secondary'}
-              onClick={() => onShowGrid(!showGrid)}
-            >
-              <svg aria-hidden="true" className="size-3.5" fill="none" viewBox="0 0 16 16">
-                <path d="M1.5 5.5h13m-13 5h13m-9-9v13m5-13v13" stroke="currentColor" />
-                <rect height="13" rx="1" stroke="currentColor" width="13" x="1.5" y="1.5" />
-              </svg>
-            </Button>
-          </div>
-        </div>
-      </div>
-      {mode === 'conformance' && (
-        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2 rounded-md border border-border bg-surface p-3">
-          <Field
-            label={`Zoom · ${conformanceView.zoom.toFixed(2)}×`}
-            max={8}
-            min={1}
-            step={0.25}
-            type="range"
-            value={conformanceView.zoom}
-            onChange={(event) => onConformanceZoom(event.currentTarget.valueAsNumber)}
-          />
-          <Button variant="secondary" onClick={onConformanceReset}>
-            Reset zoom
-          </Button>
-        </div>
-      )}
-      {mode === 'conformance' && workload === 'mtsdf-slug-compare' && (
-        <div className="rounded-md border border-border bg-surface p-3">
-          <TextareaField
-            label="Comparison text"
-            value={comparisonText}
-            onChange={(event) => onComparisonText(event.currentTarget.value)}
-          />
-        </div>
-      )}
-      {mode === 'benchmark' && (
-        <div className="grid gap-3 rounded-md border border-border bg-surface p-3">
-          <p className="eyebrow">Live workload</p>
-          {workload === 'text-ladder' ? (
-            <p className="font-mono text-[9px] uppercase text-muted">
-              Rendered range · 8–512 CSS px
-            </p>
-          ) : (
-            <Field
-              label={`${workload === 'icon-grid' ? 'Icon size' : 'Rendered size'} · ${fontSize} CSS px`}
-              max={workload === 'icon-grid' ? 1_024 : 96}
-              min={8}
-              rangeScale={workload === 'icon-grid' ? 'logarithmic' : 'linear'}
-              step={1}
-              type="range"
-              value={fontSize}
-              {...(workload === 'icon-grid' ? { onRangeValueChange: onFontSize } : {})}
-              onChange={
-                workload === 'icon-grid'
-                  ? undefined
-                  : (event) => onFontSize(event.currentTarget.valueAsNumber)
-              }
-            />
-          )}
-          {workloadHasLayoutWidth(workload) && (
-            <Field
-              label={`Layout width · ${layoutWidthPercent}%`}
-              max={100}
-              min={40}
-              step={2}
-              type="range"
-              value={layoutWidthPercent}
-              onChange={(event) => onLayoutWidthPercent(event.currentTarget.valueAsNumber)}
-            />
-          )}
-          {workloadAmountLabel(workload, workloadAmount) !== undefined && (
-            <Field
-              label={workloadAmountLabel(workload, workloadAmount)!}
-              max={100}
-              min={0}
-              step={1}
-              type="range"
-              value={workloadAmount}
-              onChange={(event) => onWorkloadAmount(event.currentTarget.valueAsNumber)}
-            />
-          )}
-          {(workload === 'dynamic-layout' || workload === 'paint-effects') && (
-            <>
-              <Toggle checked={animationEnabled} label="Animate" onChange={onAnimationEnabled} />
-              <Field
-                label={`Animation speed · ${animationSpeed}%`}
-                max={100}
-                min={0}
-                step={1}
-                type="range"
-                value={animationSpeed}
-                onChange={(event) => onAnimationSpeed(event.currentTarget.valueAsNumber)}
-              />
-            </>
-          )}
-          {workload === 'dynamic-layout' && (
-            <Toggle
-              checked={showLayoutBounds}
-              label="Show layout bounds"
-              onChange={onShowLayoutBounds}
-            />
-          )}
-          {workload === 'paint-effects' && (
-            <>
-              <Field
-                label={`Opacity · ${paintOpacityPercent}%`}
-                max={100}
-                min={0}
-                step={1}
-                type="range"
-                value={paintOpacityPercent}
-                onChange={(event) => onPaintOpacityPercent(event.currentTarget.valueAsNumber)}
-              />
-              <Field
-                disabled={technique !== 'mtsdf'}
-                label={
-                  technique === 'mtsdf'
-                    ? `Stroke width · ${paintStrokePercent}%`
-                    : technique === 'slug'
-                      ? 'Stroke width · unavailable for Slug V0'
-                      : 'Stroke width · unavailable for bitmap'
-                }
-                max={100}
-                min={0}
-                step={1}
-                type="range"
-                value={technique === 'mtsdf' ? paintStrokePercent : 0}
-                onChange={(event) => onPaintStrokePercent(event.currentTarget.valueAsNumber)}
-              />
-              <Toggle
-                checked={technique === 'mtsdf' && paintShadowEnabled}
-                disabled={technique !== 'mtsdf'}
-                label={
-                  technique === 'mtsdf'
-                    ? 'Shadow'
-                    : technique === 'slug'
-                      ? 'Shadow · unavailable for Slug V0'
-                      : 'Shadow · unavailable for bitmap'
-                }
-                onChange={onPaintShadowEnabled}
-              />
-            </>
-          )}
-          <p className="min-h-[30px] text-[10px] leading-relaxed text-muted">
-            {liveWorkloadControlDescription(workload, technique)}
-          </p>
-        </div>
-      )}
-      {mode === 'benchmark' && workload === 'advanced-shaping' && (
-        <div className="grid gap-3 rounded-md border border-border bg-surface p-3">
-          <p className="eyebrow">Shaping timeline</p>
-          <SelectField
-            label="Case"
-            value={showcaseState.caseId}
-            onChange={(caseId) => {
-              const definition = ADVANCED_SHAPING_CASES.find((entry) => entry.id === caseId)
-              if (definition !== undefined) {
-                onShowcase({ kind: 'select-case', caseId: definition.id })
-              }
-            }}
-          >
-            {ADVANCED_SHAPING_CASES.map((definition) => (
-              <option key={definition.id} value={definition.id}>
-                {definition.label}
-              </option>
-            ))}
-          </SelectField>
-          <TextareaField
-            label="Live text"
-            value={showcaseFrame.text}
-            onChange={(event) => onShowcase({ kind: 'edit', text: event.currentTarget.value })}
-          />
-          <div className="grid grid-cols-2 gap-1.5">
-            <Button
-              variant={showcaseState.playing ? 'primary' : 'secondary'}
-              onClick={() => onShowcase({ kind: showcaseState.playing ? 'pause' : 'play' })}
-            >
-              {showcaseState.playing ? 'Pause' : 'Play'}
-            </Button>
-            <Button onClick={() => onShowcase({ kind: 'reset' })}>Reset</Button>
-          </div>
-          <Field
-            label={`Timeline · ${showcaseFrame.tick} / ${showcaseFrame.tickCount}`}
-            max={showcaseFrame.tickCount}
-            min={0}
-            step={1}
-            type="range"
-            value={showcaseFrame.tick}
-            onChange={(event) =>
-              onShowcase({ kind: 'seek', tick: event.currentTarget.valueAsNumber })
-            }
-          />
-          <p className="font-mono text-[9px] leading-relaxed text-muted">
-            {showcaseFrame.caseDefinition.language.toUpperCase()} ·{' '}
-            {showcaseFrame.caseDefinition.direction.toUpperCase()} · WIDTH{' '}
-            {(showcaseFrame.widthPermille / 10).toFixed(0)}%
-          </p>
-        </div>
-      )}
-      {mode === 'conformance' && (
-        <div className="grid grid-cols-2 gap-2">
-          <Field
-            label="Warmup"
-            min={0}
-            type="number"
-            value={warmup}
-            onChange={(event) => onWarmup(event.currentTarget.valueAsNumber)}
-          />
-          <Field
-            label="Samples"
-            min={1}
-            type="number"
-            value={samples}
-            onChange={(event) => onSamples(event.currentTarget.valueAsNumber)}
-          />
-        </div>
-      )}
-      <PayloadInspector
-        delivery={delivery}
-        fontFixture={fontFixture}
-        liveStats={liveStats}
-        technique={technique}
-        workload={workload}
-      />
-      <button
-        className="text-[9px] text-muted underline decoration-border underline-offset-4 hover:text-foreground"
-        type="button"
-        onClick={onFontNotices}
-      >
-        Font licenses &amp; notices
-      </button>
-    </section>
-  )
-}
-
-function PayloadInspector({
-  delivery,
-  fontFixture,
-  liveStats,
-  technique,
-  workload,
-}: {
-  readonly delivery: FontDelivery
-  readonly fontFixture: BenchmarkFontFixture
-  readonly liveStats: LiveTextStats | undefined
-  readonly technique: RasterTechnique
-  readonly workload: string
-}) {
-  const runtime = measuredPackageSizeIfAvailable(`${technique}-runtime-js`)
-  const shaper = measuredPackageSize('text-shaper-wasm')
-  const bakerHost = measuredPackageSizeIfAvailable(`${technique}-baker-js`)
-  const bakerWasm = measuredPackageSizeIfAvailable(`${technique}-baker-wasm`)
-  const runtimeBakerHost = measuredPackageSize('runtime-baker-host-js')
-  const runtimeBakerWorker = measuredPackageSize('runtime-baker-worker-js')
-  const coreBakerHost = measuredPackageSize('portable-baker-js')
-  const coreBakerWasm = measuredPackageSize('portable-baker-wasm')
-  const libraryTransferBytes =
-    runtime === undefined ? undefined : runtime.gzipBytes + shaper.gzipBytes
-  const bakerTransferBytes =
-    bakerHost === undefined || bakerWasm === undefined
-      ? undefined
-      : runtimeBakerHost.gzipBytes +
-        runtimeBakerWorker.gzipBytes +
-        coreBakerHost.gzipBytes +
-        coreBakerWasm.gzipBytes +
-        bakerHost.gzipBytes +
-        bakerWasm.gzipBytes
-  const bitmapStats = liveStats?.technique === 'bitmap' ? liveStats : undefined
-  const mtsdfStats = liveStats?.technique === 'mtsdf' ? liveStats : undefined
-  const slugStats = liveStats?.technique === 'slug' ? liveStats : undefined
-  const workloadFonts = liveWorkloadFontFixtures(workload, fontFixture)
-  const selectedFixtures: readonly {
-    readonly id: BenchmarkFontFixture
-    readonly role: 'font' | 'icons' | 'labels'
-  }[] =
-    workloadFonts.kind === 'icon-grid'
-      ? [
-          { id: workloadFonts.primary, role: 'icons' },
-          { id: workloadFonts.labels, role: 'labels' },
-        ]
-      : [{ id: workloadFonts.primary, role: 'font' }]
-  const selectedMtsdfFixtures =
-    technique === 'mtsdf'
-      ? selectedFixtures.map(({ id, role }) => ({
-          fixture: mtsdfFixtureFor(id),
-          fontFixture: id,
-          role,
-        }))
-      : []
-  const selectedSlugFixtures =
-    technique === 'slug'
-      ? selectedFixtures.map(({ id, role }) => ({
-          fixture: slugFixtureFor(id),
-          fontFixture: id,
-          role,
-        }))
-      : []
-  const selectedBitmapFixtures =
-    technique === 'bitmap'
-      ? selectedFixtures.map(({ id, role }) => ({
-          fixture: bitmapFixtureFor(id),
-          fontFixture: id,
-          role,
-        }))
-      : []
-  const mtsdfFixture = selectedMtsdfFixtures[0]?.fixture
-  const slugFixture = selectedSlugFixtures[0]?.fixture
-  const fontTransferBytes =
-    technique === 'mtsdf'
-      ? sumOptionalBytes(selectedMtsdfFixtures.map(({ fixture }) => fixture.compressed.bytes))
-      : technique === 'slug'
-        ? sumOptionalBytes(selectedSlugFixtures.map(({ fixture }) => fixture.compressed.bytes))
-        : sumOptionalBytes(selectedBitmapFixtures.map(({ fixture }) => fixture.bytes))
-  const textureGpuBytes =
-    technique === 'mtsdf'
-      ? (mtsdfStats?.atlasGpuBytes ??
-        sumOptionalBytes(
-          selectedMtsdfFixtures.map(
-            ({ fixture }) => fixture.raster.runtimeTextureArray.basePaddedGpuBytes,
-          ),
-        ))
-      : technique === 'slug'
-        ? (slugStats?.slugGpuBytes ??
-          sumOptionalBytes(
-            selectedSlugFixtures.map(({ fixture }) => fixture.raster.decodedGpuBytes),
-          ))
-        : (bitmapStats?.atlasGpuBytes ??
-          sumOptionalBytes(
-            selectedBitmapFixtures.map(({ fixture }) => fixture.raster.decodedGpuBytes),
-          ))
-  const bitmapPages =
-    bitmapStats === undefined
-      ? selectedBitmapFixtures.flatMap(({ fixture, fontFixture: pageFontFixture, role }) =>
-          fixture.raster.pages.map((page) => ({
-            key: `${pageFontFixture}-fixture-${page.index}`,
-            label: `${BENCHMARK_FONT_LABELS[pageFontFixture]} ${role} · page ${page.index + 1} · ${page.width}×${page.height}`,
-            embeddedBytes: page.encodedBytes,
-            gpuBytes: page.decodedGpuBytes,
-          })),
-        )
-      : bitmapStats.atlasPages.map((page) => ({
-          key: `${page.strikePpem}-${page.pageIndex}`,
-          label: `${page.strikePpem} px · page ${page.pageIndex + 1} · ${page.width}×${page.height}`,
-          embeddedBytes: undefined,
-          gpuBytes: page.gpuBytes,
-        }))
-  const pages =
-    technique === 'mtsdf'
-      ? selectedMtsdfFixtures.flatMap(({ fixture, fontFixture: pageFontFixture, role }) =>
-          fixture.raster.pages.map((page) => ({
-            key: `${pageFontFixture}-${String(page.index)}`,
-            label: `${BENCHMARK_FONT_LABELS[pageFontFixture]} ${role} · page ${page.index + 1} · ${page.width}×${page.height}`,
-            embeddedBytes: page.encodedBytes,
-            gpuBytes: page.decodedGpuBytes,
-          })),
-        )
-      : technique === 'slug'
-        ? slugStats === undefined
-          ? selectedSlugFixtures.flatMap(({ fixture, fontFixture: pageFontFixture, role }) =>
-              fixture.raster.pages.map((page) => ({
-                key: `${pageFontFixture}-slug-page-${page.index}`,
-                label: `${BENCHMARK_FONT_LABELS[pageFontFixture]} ${role} · page ${page.index + 1} analytic resources · ${page.width}×${page.height}`,
-                embeddedBytes: page.encodedBytes,
-                gpuBytes: page.decodedGpuBytes,
-              })),
-            )
-          : [
-              {
-                key: 'slug-curves',
-                label: `RGBA16F curves · ${slugStats.slugCurveTexelCount} texels`,
-                embeddedBytes: undefined,
-                gpuBytes: slugStats.slugCurveGpuBytes,
-              },
-              {
-                key: 'slug-headers',
-                label: `R32UI headers · ${slugStats.slugHeaderCount} used`,
-                embeddedBytes: undefined,
-                gpuBytes: slugStats.slugHeaderGpuBytes,
-              },
-              {
-                key: 'slug-references',
-                label: `R16UI references · ${slugStats.slugReferenceCount} used`,
-                embeddedBytes: undefined,
-                gpuBytes: slugStats.slugReferenceGpuBytes,
-              },
-            ]
-        : bitmapPages
-  const pageGpuBytes = pages.reduce((total, page) => total + page.gpuBytes, 0)
-  const textureBaseBytes = technique === 'slug' ? undefined : textureGpuBytes
-  const texturePaddingBytes =
-    textureBaseBytes === undefined ? undefined : Math.max(0, textureBaseBytes - pageGpuBytes)
-  const displayedFontTransferBytes =
-    delivery === 'runtime' ? liveStats?.sourceFontBytes : fontTransferBytes
-
-  return (
-    <>
-      <div
-        className="rounded-md border border-border bg-surface p-3"
-        data-testid="payload-inspector"
-      >
-        <InspectorTableHeader label="Payload" valueLabel="Gzip" />
-        <InspectorDisclosure
-          className="mt-3 border-b border-border pb-3"
-          label="Runtime"
-          status={runtime === undefined ? 'unloaded' : 'loaded'}
-          value={formatBytes(libraryTransferBytes)}
-        >
-          <PayloadRow
-            label={`${techniqueLabel(technique)} runtime`}
-            status={runtime === undefined ? 'unloaded' : 'loaded'}
-            value={formatBytes(runtime?.gzipBytes)}
-          />
-          <PayloadRow label={shaper.label} status="loaded" value={formatBytes(shaper.gzipBytes)} />
-          <p className="text-[9px] leading-relaxed text-dim">
-            Includes the pmndrs/text core, selected raster runtime, and shaper. External Three.js
-            and React peers are not included; font assets are listed below.
-          </p>
-        </InspectorDisclosure>
-        <InspectorDisclosure
-          className="pt-3"
-          label="Bake (lazy)"
-          status={delivery === 'runtime' ? 'loaded' : 'unloaded'}
-          value={formatBytes(bakerTransferBytes)}
-        >
-          <PayloadRow
-            label="Runtime baker host"
-            status={delivery === 'runtime' ? 'loaded' : 'unloaded'}
-            value={formatBytes(runtimeBakerHost.gzipBytes)}
-          />
-          <PayloadRow
-            label="Runtime baker worker"
-            status={delivery === 'runtime' ? 'loaded' : 'unloaded'}
-            value={formatBytes(runtimeBakerWorker.gzipBytes)}
-          />
-          <PayloadRow
-            label="Core baker host"
-            status={delivery === 'runtime' ? 'loaded' : 'unloaded'}
-            value={formatBytes(coreBakerHost.gzipBytes)}
-          />
-          <PayloadRow
-            label="Core baker Wasm"
-            status={delivery === 'runtime' ? 'loaded' : 'unloaded'}
-            value={formatBytes(coreBakerWasm.gzipBytes)}
-          />
-          <PayloadRow
-            label={`${techniqueLabel(technique)} baker host`}
-            status={delivery === 'runtime' && bakerHost !== undefined ? 'loaded' : 'unloaded'}
-            value={formatBytes(bakerHost?.gzipBytes)}
-          />
-          <PayloadRow
-            label={`${techniqueLabel(technique)} baker Wasm`}
-            status={delivery === 'runtime' && bakerWasm !== undefined ? 'loaded' : 'unloaded'}
-            value={formatBytes(bakerWasm?.gzipBytes)}
-          />
-        </InspectorDisclosure>
-      </div>
-      <div className="rounded-md border border-border bg-surface p-3">
-        <InspectorTableHeader
-          label="Asset"
-          valueLabel={delivery === 'baked' && technique !== 'bitmap' ? 'Gzip' : 'Bytes'}
-        />
-        <div className="mt-3 pl-6">
-          <PayloadRow
-            label={delivery === 'runtime' ? 'Source font' : 'Font assets'}
-            status={displayedFontTransferBytes === undefined ? 'unloaded' : 'loaded'}
-            value={formatBytes(displayedFontTransferBytes)}
-          />
-        </div>
-      </div>
-      <div
-        className="rounded-md border border-border bg-surface p-3"
-        data-testid="gpu-resource-inspector"
-      >
-        <InspectorTableHeader label="Resource" valueLabel="GPU" />
-        <InspectorDisclosure
-          className="mt-3"
-          label={technique === 'slug' ? 'Analytic textures' : 'Atlas textures'}
-          status={textureGpuBytes === undefined ? 'unloaded' : 'loaded'}
-          value={formatBytes(textureGpuBytes)}
-        >
-          {technique === 'mtsdf' && (
-            <p className="text-[9px] leading-relaxed text-dim">
-              MSDF · {mtsdfFixture?.configuration.emSize ?? 64} px/em ·{' '}
-              {mtsdfFixture?.configuration.pixelRange ?? 8} px range
-            </p>
-          )}
-          {technique === 'slug' && (
-            <p className="text-[9px] leading-relaxed text-dim">
-              Slug · exact RGBA16F curves, R32UI band headers, and R16UI references ·{' '}
-              {slugStats?.slugPageCount ?? slugFixture?.raster.pages.length ?? '—'} page
-              {(slugStats?.slugPageCount ?? slugFixture?.raster.pages.length) === 1 ? '' : 's'}
-            </p>
-          )}
-          {pages.length === 0 ? (
-            <p className="text-[9px] text-dim">Page dimensions appear after the font loads.</p>
-          ) : (
-            pages.map((page) => (
-              <PayloadRow
-                key={page.key}
-                label={page.label}
-                status="loaded"
-                value={formatBytes(page.gpuBytes)}
-              />
-            ))
-          )}
-          {texturePaddingBytes !== undefined && texturePaddingBytes > 0 && (
-            <PayloadRow
-              label="Layer padding"
-              status="loaded"
-              value={formatBytes(texturePaddingBytes)}
-            />
-          )}
-        </InspectorDisclosure>
-      </div>
-    </>
-  )
-}
-
-function sumOptionalBytes(values: readonly (number | undefined)[]): number | undefined {
-  if (values.length === 0) return undefined
-  let total = 0
-  for (const value of values) {
-    if (value === undefined) return undefined
-    total += value
-  }
-  return total
-}
-
-function PayloadRow({
-  emphasis = false,
-  label,
-  status,
-  value,
-}: {
-  readonly emphasis?: boolean
-  readonly label: string
-  readonly status?: 'loaded' | 'unloaded'
-  readonly value: string
-}) {
-  return (
-    <div
-      className={`grid grid-cols-[minmax(0,1fr)_2.5rem_3.5rem] items-center gap-x-2 text-[10px] ${emphasis ? 'font-medium' : ''}`}
-    >
-      <span className={emphasis ? 'text-foreground' : 'text-muted'}>{label}</span>
-      {status === undefined ? <span aria-hidden="true" /> : <PayloadStatus status={status} />}
-      <span className="whitespace-nowrap text-right font-mono tabular-nums text-dim">{value}</span>
-    </div>
-  )
-}
-
-function PayloadStatus({ status }: { readonly status: 'loaded' | 'unloaded' }) {
-  return (
-    <span
-      aria-label={status}
-      className={`grid size-4 place-items-center justify-self-center ${status === 'loaded' ? 'text-success' : 'text-dim'}`}
-      title={status}
-    >
-      <svg aria-hidden="true" className="size-3" viewBox="0 0 12 12">
-        {status === 'loaded' ? (
-          <path
-            d="m2 6 2.5 2.5L10 3"
-            fill="none"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="1.5"
-          />
-        ) : (
-          <path
-            d="m3 3 6 6m0-6L3 9"
-            fill="none"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeWidth="1.25"
-          />
-        )}
-      </svg>
-    </span>
-  )
-}
-
-function InspectorTableHeader({ label, valueLabel }: { label: string; valueLabel: string }) {
-  return (
-    <div className="grid grid-cols-[1rem_minmax(0,1fr)_2.5rem_3.5rem] items-center gap-x-2">
-      <span aria-hidden="true" />
-      <p className="eyebrow">{label}</p>
-      <span className="text-center font-mono text-[8px] uppercase text-dim">Loaded</span>
-      <span className="text-right font-mono text-[8px] uppercase text-dim">{valueLabel}</span>
-    </div>
-  )
-}
-
-function InspectorDisclosure({
-  children,
-  className,
-  label,
-  status,
-  value,
-}: {
-  readonly children: ReactNode
-  readonly className?: string
-  readonly label: string
-  readonly status: 'loaded' | 'unloaded'
-  readonly value: string
-}) {
-  return (
-    <details className={`group ${className ?? ''}`}>
-      <summary className="grid cursor-pointer list-none grid-cols-[1rem_minmax(0,1fr)_2.5rem_3.5rem] items-center gap-x-2 text-[10px] font-medium [&::-webkit-details-marker]:hidden">
-        <svg
-          aria-hidden="true"
-          className="size-4 shrink-0 origin-center text-dim transition-transform duration-150 group-open:rotate-90"
-          viewBox="0 0 16 16"
-        >
-          <path
-            d="m6 3 5 5-5 5"
-            fill="none"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="1.75"
-          />
-        </svg>
-        <span className="text-foreground">{label}</span>
-        <PayloadStatus status={status} />
-        <span className="whitespace-nowrap text-right font-mono tabular-nums text-dim">
-          {value}
-        </span>
-      </summary>
-      <div className="mt-3 grid gap-2 pl-6">{children}</div>
-    </details>
-  )
-}
-
-interface MeasuredPackageSize {
-  readonly id: string
-  readonly label: string
-  readonly status: string
-  readonly gzipBytes: number
-}
-
-function measuredPackageSize(id: string): MeasuredPackageSize {
-  const entry = measuredPackageSizeIfAvailable(id)
-  if (entry === undefined) throw new Error(`Missing measured package size: ${id}`)
-  return entry
-}
-
-function measuredPackageSizeIfAvailable(id: string): MeasuredPackageSize | undefined {
-  const entry = packageSizes.entries.find((candidate) => candidate.id === id)
-  return entry?.status === 'measured' ? entry : undefined
-}
-
-function CompactSheet({
-  children,
-  phone,
-  title,
-  onClose,
-}: {
-  readonly children: ReactNode
-  readonly phone: boolean
-  readonly title: string
-  readonly onClose: () => void
-}) {
-  return (
-    <>
-      <button
-        aria-label="Close controls"
-        className="fixed inset-0 top-[52px] z-20 bg-black/40"
-        type="button"
-        onClick={onClose}
-      />
-      <section
-        className={
-          phone
-            ? 'fixed inset-x-2 bottom-[66px] z-30 max-h-[calc(100dvh-126px)] overflow-y-auto overscroll-contain rounded-xl border border-border bg-chrome p-4 shadow-2xl'
-            : 'fixed right-2 top-[60px] z-30 max-h-[60dvh] w-[min(420px,calc(100vw-16px))] overflow-y-auto overscroll-contain rounded-xl border border-border bg-chrome p-4 shadow-2xl before:absolute before:-top-1.5 before:right-24 before:size-3 before:rotate-45 before:border-l before:border-t before:border-border before:bg-chrome'
-        }
-      >
-        <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-lg font-semibold">{title}</h1>
-          <Button aria-label="Close controls" onClick={onClose}>
-            ×
-          </Button>
-        </div>
-        {children}
-      </section>
-    </>
-  )
-}
-
-function CompactWorkloadPanel({
-  children,
-  phone,
-  onClose,
-}: {
-  readonly children: ReactNode
-  readonly phone: boolean
-  readonly onClose: () => void
-}) {
-  return (
-    <>
-      <button
-        aria-label="Close workload menu"
-        className="fixed inset-0 top-[52px] z-20 bg-black/40"
-        type="button"
-        onClick={onClose}
-      />
-      <div
-        className={`fixed left-2 top-[60px] z-30 max-h-[calc(100dvh-72px)] w-[min(360px,calc(100vw-16px))] overflow-hidden rounded-xl border border-border bg-chrome shadow-2xl before:absolute before:-top-1.5 before:left-3 before:size-3 before:rotate-45 before:border-l before:border-t before:border-border before:bg-chrome ${phone ? 'bottom-[66px]' : ''}`}
-      >
-        {children}
-      </div>
-    </>
-  )
-}
-
-function MobileNavigation({
-  location,
-  onLocation,
-}: {
-  readonly location: HarnessLocation
-  readonly onLocation: (value: Partial<HarnessLocation>) => void
-}) {
-  return (
-    <nav className="fixed inset-x-0 bottom-0 z-30 grid h-[58px] grid-cols-4 border-t border-border bg-chrome p-2 min-[700px]:hidden">
-      {(['scene', 'controls', 'report', 'export'] as const).map((view) => (
-        <button
-          aria-pressed={location.view === view}
-          className={`rounded-md font-mono text-[10px] capitalize ${location.view === view ? 'bg-surface-active text-foreground ring-1 ring-inset ring-accent' : 'text-muted hover:bg-surface hover:text-foreground'}`}
-          key={view}
-          type="button"
-          onClick={() => onLocation({ view })}
-        >
-          {view}
-        </button>
-      ))}
-    </nav>
-  )
+  if (progress.phase === 'loading') return 22;
+  if (progress.phase === 'rasterizing') return 25 + Math.round(ratio * 65);
+  if (progress.phase === 'packaging') return 92;
+  if (progress.phase === 'transferring') return 97;
+  if (progress.phase === 'complete') return 100;
+  return 20;
 }

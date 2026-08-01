@@ -25,7 +25,7 @@ sources:
     title: Shared benchmark lifecycle
 generated:
   by: openai-codex/gpt-5.6
-  at: "2026-07-26T03:32:25Z"
+  at: '2026-07-26T03:32:25Z'
 ---
 
 # Engineering house style
@@ -62,6 +62,7 @@ This standard is the canonical code-quality policy for `pmndrs/text`. It support
 
 ## TypeScript
 
+- Repository-authored TypeScript and JavaScript use the single root Oxfmt configuration: 120-column width, semicolons, single quotes, and trailing commas. Package-local formatter policies are not allowed; generated source and authenticated fixtures remain excluded from hand-formatting.
 - Prefer discriminated unions for protocol, lifecycle, result, and exclusive option states. Use exhaustive checks when a new variant must force downstream review.
 - Use branded primitives for opaque handles and hashes when equal representations have different identities.
 - Keep untyped boundary data `unknown`. A cast, `as Partial<T>`, object check, or property-presence check is not validation.
@@ -88,6 +89,7 @@ This standard is the canonical code-quality policy for `pmndrs/text`. It support
 
 ## Determinism, tests, and evidence
 
+- Encode repeatable development, build, check, test, profile, capture, and generation workflows as package-owned `pnpm` scripts. Expose maintainer-facing application workflows through short root aliases so humans, agents, and CI invoke the same command from a clean checkout; do not treat a temporary probe or shell recipe as durable evidence.
 - Unit tests cover local state transitions, parsing, arithmetic, and error variants.
 - Integration tests cross actual package, Worker, ABI, filesystem, and artifact boundaries.
 - End-to-end tests exercise a shipped product surface with real, licensed assets when behavior is observable there.

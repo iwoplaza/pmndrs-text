@@ -2,19 +2,32 @@
   "name": "pmndrs-text-workspace",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@11.15.1",
   "scripts": {
     "build": "pnpm --filter './packages/*' build && pnpm --filter './apps/*' build",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm docs:check",
+    "docs:digest": "ruby .agents/skills/open-knowledge-format/scripts/generate_package_digests.rb .",
     "docs:check": "ruby .agents/skills/open-knowledge-format/scripts/validate_okf.rb docs --workspace-root .",
     "format:check": "pnpm --filter './packages/*' --if-present format:check && pnpm --filter './apps/*' --if-present format:check",
     "lint": "pnpm --filter './packages/*' --if-present lint && pnpm --filter './apps/*' --if-present lint",
     "typecheck": "pnpm --filter './packages/*' build && pnpm --filter './packages/*' typecheck && pnpm --filter './apps/*' typecheck",
     "test": "pnpm --filter './packages/*' --if-present test && pnpm --filter './apps/*' --if-present test",
     "benchmarks": "pnpm --filter @pmndrs/text-benchmarks dev",
+    "benchmarks:check": "pnpm --filter @pmndrs/text-benchmarks check",
+    "benchmarks:test:live": "pnpm --filter @pmndrs/text-benchmarks test:live",
+    "benchmarks:test:presentation-demo": "pnpm --filter @pmndrs/text-benchmarks test:presentation-demo",
+    "benchmarks:test:presentation-controls": "pnpm --filter @pmndrs/text-benchmarks test:presentation-controls",
+    "benchmarks:test:raster-technique-compare": "pnpm --filter @pmndrs/text-benchmarks test:raster-technique-compare",
+    "benchmarks:profile:paragraph-layout": "pnpm --filter @pmndrs/text-benchmarks profile:paragraph-layout",
+    "benchmarks:profile:paragraph-font-size:bitmap": "pnpm --filter @pmndrs/text-benchmarks profile:paragraph-font-size:bitmap",
+    "benchmarks:profile:paragraph-font-size:bitmap:cpu": "pnpm --filter @pmndrs/text-benchmarks profile:paragraph-font-size:bitmap:cpu",
+    "benchmarks:profile:inspect:paragraph-font-size:bitmap": "pnpm --filter @pmndrs/text-benchmarks profile:inspect:paragraph-font-size:bitmap",
+    "benchmarks:profile:icon-grid:gc": "pnpm --filter @pmndrs/text-benchmarks profile:icon-grid:gc",
+    "benchmarks:profile:presentation-sweep": "pnpm --filter @pmndrs/text-benchmarks profile:presentation-sweep",
+    "benchmarks:generate:japanese-showcase-subset": "pnpm --filter @pmndrs/text-benchmarks generate:japanese-showcase-subset",
     "test:types": "pnpm --filter @pmndrs/text test:types"
   },
   "devDependencies": {
     "typescript": "7.0.2"
-  }
+  },
+  "packageManager": "pnpm@11.15.1"
 }

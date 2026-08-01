@@ -1,12 +1,25 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest';
 
 import {
-  sparklineAnimatedSampleX,
+  formatSparklineValue,
   sparklineCanvasMetrics,
-  sparklineMotionProgress,
-  sparklineSampleX,
+  sparklinePresentationTimestamp,
   sparklineSampleY,
-} from './sparkline'
+  sparklineTimestampX,
+} from './sparkline';
+
+describe('formatSparklineValue', () => {
+  it('keeps fixed decimal places for isolated high-resolution timing samples', () => {
+    expect(formatSparklineValue(0, 'ms')).toBe('0.00 ms');
+    expect(formatSparklineValue(3, 'ms')).toBe('3.00 ms');
+  });
+
+  it('preserves reported sub-millisecond timing and whole-frame FPS', () => {
+    expect(formatSparklineValue(0.8, 'ms')).toBe('0.80 ms');
+    expect(formatSparklineValue(0.001, 'ms')).toBe('<0.01 ms');
+    expect(formatSparklineValue(59.7, 'fps')).toBe('60');
+  });
+});
 
 describe('sparklineCanvasMetrics', () => {
   it('maps a fractional CSS box exactly onto its physical backing store', () => {
@@ -18,48 +31,57 @@ describe('sparklineCanvasMetrics', () => {
       pixelRatio: 2,
       scaleX: 2,
       scaleY: 2,
-    })
-  })
+    });
+  });
 
   it('uses the effective rounded backing-store scale instead of stretching later', () => {
-    const metrics = sparklineCanvasMetrics(287.25, 41.75, 2)
+    const metrics = sparklineCanvasMetrics(287.25, 41.75, 2);
 
-    expect(metrics.backingWidth).toBe(575)
-    expect(metrics.backingHeight).toBe(84)
-    expect(metrics.cssWidth * metrics.scaleX).toBe(575)
-    expect(metrics.cssHeight * metrics.scaleY).toBe(84)
-  })
-})
+    expect(metrics.backingWidth).toBe(575);
+    expect(metrics.backingHeight).toBe(84);
+    expect(metrics.cssWidth * metrics.scaleX).toBe(575);
+    expect(metrics.cssHeight * metrics.scaleY).toBe(84);
+  });
+});
 
-describe('sparklineSampleX', () => {
-  it('streams partial history in from the right without rescaling its width', () => {
-    expect(sparklineSampleX(0, 1, 4, 300)).toBe(300)
-    expect(sparklineSampleX(0, 2, 4, 300)).toBe(200)
-    expect(sparklineSampleX(1, 2, 4, 300)).toBe(300)
-  })
+describe('sparklineTimestampX', () => {
+  it('places samples on a fixed timestamp window', () => {
+    expect(sparklineTimestampX(1_000, 1_000, 300, 300)).toBe(300);
+    expect(sparklineTimestampX(850, 1_000, 300, 300)).toBe(150);
+    expect(sparklineTimestampX(700, 1_000, 300, 300)).toBe(0);
+  });
 
-  it('uses the full fixed domain once the history window is full', () => {
-    expect(sparklineSampleX(0, 4, 4, 300)).toBe(0)
-    expect(sparklineSampleX(1, 4, 4, 300)).toBe(100)
-    expect(sparklineSampleX(3, 4, 4, 300)).toBe(300)
-  })
-})
+  it('moves the same sample continuously as RAF time advances', () => {
+    expect(sparklineTimestampX(1_000, 1_010, 300, 300)).toBe(290);
+    expect(sparklineTimestampX(1_000, 1_020, 300, 300)).toBe(280);
+  });
+});
 
-describe('sparkline animation', () => {
-  it('eases every series through the same normalized phase', () => {
-    expect(sparklineMotionProgress(0, 250)).toBe(0)
-    expect(sparklineMotionProgress(125, 250)).toBe(0.5)
-    expect(sparklineMotionProgress(250, 250)).toBe(1)
-  })
+describe('sparklinePresentationTimestamp', () => {
+  it('holds the shared chart head behind RAF time so delayed samples settle before display', () => {
+    const presentationTimestamp = sparklinePresentationTimestamp(1_250, 250);
 
-  it('slides a newly aligned row in by exactly one history slot', () => {
-    expect(sparklineAnimatedSampleX(2, 4, 4, 300, 0)).toBe(300)
-    expect(sparklineAnimatedSampleX(2, 4, 4, 300, 1)).toBe(200)
-  })
+    expect(presentationTimestamp).toBe(1_000);
+    expect(sparklineTimestampX(1_000, presentationTimestamp, 300, 300)).toBe(300);
+    expect(sparklineTimestampX(1_100, presentationTimestamp, 300, 300)).toBeGreaterThan(300);
+  });
 
-  it('uses a fixed domain and clips missed budgets to the chart ceiling', () => {
-    expect(sparklineSampleY(0, 16, 42)).toBe(40)
-    expect(sparklineSampleY(8, 16, 42)).toBe(21)
-    expect(sparklineSampleY(32, 16, 42)).toBe(2)
-  })
-})
+  it('treats invalid delays as no presentation delay', () => {
+    expect(sparklinePresentationTimestamp(1_000, -1)).toBe(1_000);
+    expect(sparklinePresentationTimestamp(1_000, Number.NaN)).toBe(1_000);
+  });
+});
+
+describe('sparklineSampleY', () => {
+  it('maps zero to the floor and the refresh ceiling to the top of the FPS chart', () => {
+    expect(sparklineSampleY(0, 60, 42)).toBe(40);
+    expect(sparklineSampleY(30, 60, 42)).toBe(21);
+    expect(sparklineSampleY(60, 60, 42)).toBe(2);
+  });
+
+  it('uses the same ascending fixed domain for frame-time charts', () => {
+    expect(sparklineSampleY(0, 16, 42)).toBe(40);
+    expect(sparklineSampleY(8, 16, 42)).toBe(21);
+    expect(sparklineSampleY(32, 16, 42)).toBe(2);
+  });
+});
