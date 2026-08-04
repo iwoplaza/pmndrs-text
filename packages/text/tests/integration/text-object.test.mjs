@@ -85,6 +85,91 @@ test('Text commits layout and draw generations atomically', async () => {
   assert.throws(() => text.setProperties({ opacity: 1 }), /disposed/);
 });
 
+test('Text no-op updates preserve one pending initial generation', async () => {
+  const restoreFetch = installFileFetch();
+  const registry = new FontRegistry();
+  const font = await registry.registerAsset(await readFile(fixtureUrl));
+  const request = bitmap({ strikes: [16] });
+  const decodeStarted = Promise.withResolvers();
+  const releaseDecode = Promise.withResolvers();
+  let decodeCount = 0;
+  let decodeSignal;
+  const raster = defineRaster({
+    ...request.module,
+    async decode(...arguments_) {
+      decodeCount += 1;
+      decodeSignal = arguments_[2];
+      decodeStarted.resolve();
+      await releaseDecode.promise;
+      decodeSignal?.throwIfAborted();
+      return request.module.decode(...arguments_);
+    },
+  });
+  const text = new Text({
+    text: 'one cold generation',
+    font,
+    raster: { module: raster, options: request.options },
+    fontSize: 16,
+    opacity: 0.5,
+  });
+  try {
+    const initialReady = text.ready;
+    await decodeStarted.promise;
+    text.setProperties({});
+    text.setProperties({ opacity: 0.5 });
+    let committedLayout;
+    text.setProperties({ onLayout: (layout) => (committedLayout = layout) });
+
+    assert.equal(text.ready, initialReady, 'semantic no-ops retain the original readiness observation');
+    assert.equal(decodeCount, 1, 'semantic no-ops do not restart raster decoding');
+    assert.equal(decodeSignal?.aborted, false, 'semantic no-ops do not abort the pending generation');
+
+    releaseDecode.resolve();
+    await initialReady;
+    assert.equal(text.children.length, 1);
+    assert.equal(decodeCount, 1);
+    assert.equal(committedLayout, text.layout, 'the latest callback observes the pending generation at commit');
+  } finally {
+    releaseDecode.resolve();
+    text.dispose();
+    font.dispose();
+    restoreFetch();
+  }
+});
+
+test('Text semantic no-ops retry a failed generation', async () => {
+  const restoreFetch = installFileFetch();
+  const registry = new FontRegistry();
+  const font = await registry.registerAsset(await readFile(fixtureUrl));
+  const request = bitmap({ strikes: [16] });
+  let decodeCount = 0;
+  const raster = defineRaster({
+    ...request.module,
+    async decode(...arguments_) {
+      decodeCount += 1;
+      if (decodeCount === 1) throw new Error('synthetic decode failure');
+      return request.module.decode(...arguments_);
+    },
+  });
+  const text = new Text({
+    text: 'retry the same generation',
+    font,
+    raster: { module: raster, options: request.options },
+    fontSize: 16,
+  });
+  try {
+    await assert.rejects(text.ready, /synthetic decode failure/);
+    text.setProperties({});
+    await text.ready;
+    assert.equal(decodeCount, 2);
+    assert.equal(text.children.length, 1);
+  } finally {
+    text.dispose();
+    font.dispose();
+    restoreFetch();
+  }
+});
+
 test('bitmap glyph-position transitions preserve authoritative layouts and pixel-snap inputs', async () => {
   const restoreFetch = installFileFetch();
   const registry = new FontRegistry();
@@ -393,14 +478,48 @@ test('disposing a registered font invalidates live Text batches before raster re
   try {
     await text.ready;
     assert.equal(text.children.length, 1);
+    text.setProperties({ opacity: 0.5 });
+    await text.ready;
     text.visible = false;
     font.dispose();
+    const invalidatedReady = text.ready;
+    text.setProperties({});
+    assert.equal(text.ready, invalidatedReady, 'semantic no-ops preserve terminal font invalidation');
     assert.equal(text.children.length, 0);
     assert.equal(text.layout, undefined);
     assert.equal(text.visible, false, 'font lifecycle does not override caller visibility');
     await assert.rejects(text.ready, /font used by this text was disposed/i);
   } finally {
     text.dispose();
+    restoreFetch();
+  }
+});
+
+test('disposing a superseded font does not terminally invalidate its pending replacement', async () => {
+  const restoreFetch = installFileFetch();
+  const bytes = await readFile(fixtureUrl);
+  const registryA = new FontRegistry();
+  const registryB = new FontRegistry();
+  const fontA = await registryA.registerAsset(bytes);
+  const fontB = await registryB.registerAsset(bytes);
+  const text = new Text({
+    text: 'font replacement lifecycle',
+    font: fontA,
+    raster: bitmap({ strikes: [16] }),
+    fontSize: 16,
+  });
+  try {
+    await text.ready;
+    text.setProperties({ font: fontB });
+    fontA.dispose();
+    await text.ready.catch(() => undefined);
+    text.setProperties({});
+    await text.ready;
+    assert.equal(text.children.length, 1);
+  } finally {
+    text.dispose();
+    fontA.dispose();
+    fontB.dispose();
     restoreFetch();
   }
 });

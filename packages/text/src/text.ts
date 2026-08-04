@@ -15,6 +15,7 @@ import {
   sameLayoutInput,
   samePaintInput,
   sameParagraphInput,
+  sameTextInput,
   type NormalizedRasterRequest,
   type TextState,
 } from './internal/text-properties.js';
@@ -155,7 +156,7 @@ interface OwnedBatch {
 }
 
 interface TextGeneration {
-  readonly state: TextState;
+  state: TextState;
   readonly paragraph: Paragraph;
   /** True only when this uncommitted generation acquired the paragraph it carries. */
   readonly createdParagraph: boolean;
@@ -183,6 +184,7 @@ export class Text extends THREE.Group {
   #state: TextState;
   #generation: TextGeneration | undefined;
   #pending: AbortController | undefined;
+  #invalidatedState: TextState | undefined;
   #revision = 0;
   #ready: Promise<void> = Promise.resolve();
   #disposed = false;
@@ -205,6 +207,16 @@ export class Text extends THREE.Group {
   setProperties(properties: TextUpdateProperties): void {
     this.#assertActive();
     const next = normalizeTextState(this.#state, properties, false);
+    if (sameTextInput(this.#state, next)) {
+      this.#state = next;
+      if (this.#invalidatedState !== undefined && sameTextInput(this.#invalidatedState, next)) return;
+      if (this.#pending !== undefined) return;
+      if (this.#generation !== undefined && sameTextInput(this.#generation.state, next)) {
+        this.#generation.state = next;
+        return;
+      }
+      if (next.font === undefined) return;
+    }
     let prevalidatedPaint: GlyphPaint | undefined;
     if (this.#generation !== undefined && sameLayoutInput(this.#generation.state, next)) {
       prevalidatedPaint = resolveGlyphPaint(next, this.#generation.paintPlan);
@@ -223,10 +235,12 @@ export class Text extends THREE.Group {
     this.#pending = undefined;
     this.#disposeGeneration(this.#generation);
     this.#generation = undefined;
+    this.#invalidatedState = undefined;
     this.#setCancelledReady(reason);
   }
 
   #schedule(prevalidatedPaint?: GlyphPaint): void {
+    this.#invalidatedState = undefined;
     this.#revision += 1;
     const revision = this.#revision;
     this.#pending?.abort();
@@ -246,7 +260,7 @@ export class Text extends THREE.Group {
           owned.module.updatePaint(owned.batch, paint, owned.fontSlot);
         }
       }
-      this.#generation = { ...this.#generation, state: this.#state };
+      this.#generation.state = this.#state;
       this.#ready = Promise.resolve();
       return;
     }
@@ -264,6 +278,7 @@ export class Text extends THREE.Group {
       const previous = this.#generation;
       for (const update of generation.batchUpdates) update.commit();
       generation.batchUpdates.length = 0;
+      generation.state = this.#state;
       this.#generation = generation;
       previous?.releaseFontDisposal();
       for (const owned of previous?.batches ?? []) {
@@ -277,11 +292,13 @@ export class Text extends THREE.Group {
       for (const owned of generation.batches) {
         if (owned.batch.object.parent !== this) this.add(owned.batch.object);
       }
-      generation.state.onLayout?.(generation.layout);
+      this.#state.onLayout?.(generation.layout);
     });
     // `ready` remains an observation channel that rejects on failure or cancellation. The
     // internal branch prevents an abandoned generation from becoming an unhandled rejection.
-    void ready.catch(() => undefined);
+    void ready.catch(() => {
+      if (this.#pending === controller) this.#pending = undefined;
+    });
     this.#ready = ready;
   }
 
@@ -423,6 +440,7 @@ export class Text extends THREE.Group {
 
   #invalidateGeneration(generation: TextGeneration, reason: unknown): void {
     if (this.#generation !== generation) return;
+    this.#invalidatedState = generation.state;
     this.#revision += 1;
     this.#pending?.abort(reason);
     this.#pending = undefined;
