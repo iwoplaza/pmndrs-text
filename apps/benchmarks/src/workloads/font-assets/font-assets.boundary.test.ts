@@ -28,16 +28,33 @@ describe('benchmark font-asset boundaries', () => {
     expect(sources[1]).toContain("import('@pmndrs/text/runtime-bake')");
   });
 
-  it('keeps renderer scenes on the asset adapter rather than the runtime-bake entrypoint', async () => {
+  it('keeps technique scenes on the asset adapter rather than the runtime-bake entrypoint', async () => {
     const renderers = await Promise.all(
-      ['../../renderer/bitmap-text.ts', '../../renderer/mtsdf-text.ts', '../../renderer/slug-text.ts'].map((name) =>
-        readFile(new URL(name, fontAssetsRoot), 'utf8'),
-      ),
+      [
+        '../../techniques/bitmap/persistent-scene.ts',
+        '../../techniques/mtsdf/persistent-scene.ts',
+        '../../techniques/slug/persistent-scene.ts',
+      ].map((name) => readFile(new URL(name, fontAssetsRoot), 'utf8')),
     );
 
     for (const renderer of renderers) {
       expect(renderer).not.toContain('@pmndrs/text/runtime-bake');
       expect(renderer).not.toContain('@pmndrs/text-font-baker');
+    }
+  });
+
+  it('keeps loading and raster metadata ownership out of retained technique-scene exports', async () => {
+    const renderers = await Promise.all(
+      [
+        '../../techniques/bitmap/persistent-scene.ts',
+        '../../techniques/mtsdf/persistent-scene.ts',
+        '../../techniques/slug/persistent-scene.ts',
+      ].map((name) => readFile(new URL(name, fontAssetsRoot), 'utf8')),
+    );
+
+    for (const renderer of renderers) {
+      expect(renderer).not.toMatch(/export (?:async )?function (?:load|registered)/);
+      expect(renderer).not.toMatch(/export \{ preload(?:Bitmap|Mtsdf|Slug)FontAssets \}/);
     }
   });
 });
