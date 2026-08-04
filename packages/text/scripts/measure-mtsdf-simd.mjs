@@ -10,6 +10,7 @@ import { brotliCompressSync, constants, gzipSync } from 'node:zlib';
 import { reproducibleRustEnvironment } from '../../font-baker/scripts/reproducible-rust-env.mjs';
 import { MtsdfGenerationError, createMtsdfGeneratorFromInstance } from '../dist/internal/mtsdf-generator.js';
 import { mtsdfOracleCases } from '../tests/fixtures/mtsdf-oracle-cases.mjs';
+import { assertHostVariantSizeEvidenceFresh } from './support/host-variant-size-evidence.mjs';
 
 const packageRoot = fileURLToPath(new URL('../', import.meta.url));
 const workspaceRoot = fileURLToPath(new URL('../../../', import.meta.url));
@@ -24,7 +25,24 @@ const variantDefinitions = [
   { id: 'scalar', simd: false, features: [] },
   { id: 'auto-vectorized', simd: true, features: [] },
   { id: 'explicit-simd128', simd: true, features: ['simd128-experiment'] },
+  {
+    id: 'adjacent-scalar-tile',
+    simd: false,
+    features: ['adjacent-texel-tile-experiment'],
+  },
+  {
+    id: 'adjacent-simd128',
+    simd: true,
+    features: ['adjacent-texel-simd-experiment'],
+  },
 ];
+const variantSizeBudgets = {
+  scalar: { optimizedBytes: 54_000, gzipBytes: 24_000, brotliBytes: 21_000 },
+  'auto-vectorized': { optimizedBytes: 54_000, gzipBytes: 24_000, brotliBytes: 21_000 },
+  'explicit-simd128': { optimizedBytes: 54_000, gzipBytes: 24_000, brotliBytes: 21_000 },
+  'adjacent-scalar-tile': { optimizedBytes: 65_000, gzipBytes: 27_000, brotliBytes: 23_000 },
+  'adjacent-simd128': { optimizedBytes: 65_000, gzipBytes: 27_000, brotliBytes: 23_000 },
+};
 
 try {
   const variants = [];
@@ -116,18 +134,25 @@ async function checkEvidence(report) {
   if (evidence.kind !== 'mtsdf-simd-decision' || evidence.decision?.selected !== 'scalar') {
     throw new Error('MTSDF SIMD evidence does not select the admitted scalar kernel');
   }
+  checkDecisionObservations(evidence);
+  const currentHost = `${report.environment.platform}-${report.environment.architecture}`;
   for (const variant of report.variants) {
     const recorded = evidence.variants?.[variant.id];
-    if (
-      !sameStrings(recorded?.targetFeatures ?? [], variant.targetFeatures) ||
-      recorded?.optimizedBytes !== variant.wasm.optimizedBytes ||
-      recorded?.gzipBytes !== variant.wasm.gzipBytes ||
-      recorded?.brotliBytes !== variant.wasm.brotliBytes ||
-      recorded?.optimizedSha256 !== variant.wasm.optimizedSha256
-    ) {
+    try {
+      assertHostVariantSizeEvidenceFresh(
+        evidence.toolchain?.platform,
+        currentHost,
+        recorded,
+        { targetFeatures: variant.targetFeatures, ...variant.wasm },
+        variantSizeBudgets[variant.id],
+      );
+    } catch (error) {
       throw new Error(
         `${variant.id} MTSDF SIMD size evidence is stale\n${JSON.stringify({
+          recordedHost: evidence.toolchain?.platform,
+          currentHost,
           recorded: {
+            targetFeatures: recorded?.targetFeatures,
             optimizedBytes: recorded?.optimizedBytes,
             gzipBytes: recorded?.gzipBytes,
             brotliBytes: recorded?.brotliBytes,
@@ -139,7 +164,10 @@ async function checkEvidence(report) {
             brotliBytes: variant.wasm.brotliBytes,
             optimizedSha256: variant.wasm.optimizedSha256,
           },
+          budget: variantSizeBudgets[variant.id],
+          cause: error instanceof Error ? error.message : String(error),
         })}`,
+        { cause: error },
       );
     }
     if (!variant.exactOracleHashes) {
@@ -157,6 +185,38 @@ async function checkEvidence(report) {
     }
   }
   if (report.fullFont !== undefined) checkFullFontEvidence(report.fullFont, evidence);
+}
+
+function checkDecisionObservations(evidence) {
+  const scalar = evidence.variants?.scalar;
+  if (scalar === undefined) throw new Error('MTSDF SIMD evidence is missing the scalar decision baseline');
+  for (const id of ['adjacent-scalar-tile', 'adjacent-simd128']) {
+    const candidate = evidence.variants?.[id];
+    const recorded = evidence.decision?.observations?.[id];
+    if (candidate === undefined || recorded === undefined) {
+      throw new Error(`MTSDF SIMD evidence is missing the ${id} decision observation`);
+    }
+    const expected = {
+      nodeSevenCaseSpeedupPercent: roundedPercent(
+        scalar.nodeSevenCaseWarmMedianMs,
+        candidate.nodeSevenCaseWarmMedianMs,
+      ),
+      browserSevenCaseSpeedupPercent: roundedPercent(
+        scalar.browserSevenCaseWarmMedianMs,
+        candidate.browserSevenCaseWarmMedianMs,
+      ),
+      completeInterWarmSpeedupPercent: roundedPercent(scalar.interWarmMs, candidate.interWarmMs),
+      optimizedByteGrowthPercent: roundedPercent(scalar.optimizedBytes, candidate.optimizedBytes) * -1,
+      brotliByteGrowthPercent: roundedPercent(scalar.brotliBytes, candidate.brotliBytes) * -1,
+    };
+    if (JSON.stringify(recorded) !== JSON.stringify(expected)) {
+      throw new Error(`${id} MTSDF SIMD decision rationale is stale\n${JSON.stringify({ recorded, expected })}`);
+    }
+  }
+}
+
+function roundedPercent(baseline, candidate) {
+  return Math.round(((baseline - candidate) / baseline) * 1_000) / 10;
 }
 
 function checkFullFontEvidence(fullFont, evidence) {
@@ -400,10 +460,6 @@ function sameNumbers(left, right) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-function sameStrings(left, right) {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
 function fnv1a(bytes) {
   let hash = 2_166_136_261;
   for (const byte of bytes) hash = Math.imul(hash ^ byte, 16_777_619) >>> 0;
@@ -458,6 +514,9 @@ async function prepareObservations(variants) {
   for (const variant of variants) {
     const compileStart = performance.now();
     const module = await WebAssembly.compile(variant.optimized);
+    if (WebAssembly.Module.imports(module).length !== 0) {
+      throw new Error(`${variant.id} introduced a host import`);
+    }
     const compileMilliseconds = performance.now() - compileStart;
     const initializationStart = performance.now();
     const instance = await WebAssembly.instantiate(module, {});
@@ -503,6 +562,10 @@ function summarize(observation, allocationEvidence) {
     id: observation.id,
     targetFeatures: observation.simd ? ['simd128'] : [],
     explicitSimd: observation.features.includes('simd128-experiment'),
+    adjacentTexelTile:
+      observation.features.includes('adjacent-texel-tile-experiment') ||
+      observation.features.includes('adjacent-texel-simd-experiment'),
+    adjacentTexelSimd: observation.features.includes('adjacent-texel-simd-experiment'),
     exactOracleHashes: true,
     wasm: {
       rawBytes: observation.raw.byteLength,
