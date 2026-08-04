@@ -65,6 +65,63 @@ describe('independent package-size report', () => {
     }
   });
 
+  it('bounds the accepted coverage-capability growth from its pre-coverage baseline', () => {
+    const coverageGrowth = {
+      'browser-core': {
+        rawBytes: { baseline: 324_269, maximumGrowth: 5_400 },
+        minifiedBytes: { baseline: 247_205, maximumGrowth: 4_000 },
+        gzipBytes: { baseline: 72_108, maximumGrowth: 1_000 },
+        brotliBytes: { baseline: 55_251, maximumGrowth: 800 },
+      },
+      'bitmap-baker-js': {
+        rawBytes: { baseline: 17_478, maximumGrowth: 5_700 },
+        minifiedBytes: { baseline: 11_682, maximumGrowth: 4_000 },
+        gzipBytes: { baseline: 3_893, maximumGrowth: 900 },
+        brotliBytes: { baseline: 3_448, maximumGrowth: 800 },
+      },
+      'bitmap-baker-wasm': {
+        rawBytes: { baseline: 606_995, maximumGrowth: 20_000 },
+        minifiedBytes: { baseline: 606_995, maximumGrowth: 20_000 },
+        gzipBytes: { baseline: 226_702, maximumGrowth: 8_100 },
+        brotliBytes: { baseline: 173_552, maximumGrowth: 7_000 },
+      },
+      'bitmap-runtime-js': {
+        rawBytes: { baseline: 361_809, maximumGrowth: 9_500 },
+        minifiedBytes: { baseline: 271_005, maximumGrowth: 6_400 },
+        gzipBytes: { baseline: 78_673, maximumGrowth: 1_400 },
+        brotliBytes: { baseline: 60_857, maximumGrowth: 1_300 },
+      },
+      'mtsdf-baker-wasm': {
+        rawBytes: { baseline: 534_709, maximumGrowth: 18_500 },
+        minifiedBytes: { baseline: 534_709, maximumGrowth: 18_500 },
+        gzipBytes: { baseline: 208_474, maximumGrowth: 6_700 },
+        brotliBytes: { baseline: 163_570, maximumGrowth: 5_800 },
+      },
+      'mtsdf-baker-js': {
+        rawBytes: { baseline: 21_809, maximumGrowth: 5_200 },
+        minifiedBytes: { baseline: 15_430, maximumGrowth: 3_800 },
+        gzipBytes: { baseline: 4_701, maximumGrowth: 900 },
+        brotliBytes: { baseline: 4_176, maximumGrowth: 800 },
+      },
+      'mtsdf-runtime-js': {
+        rawBytes: { baseline: 370_255, maximumGrowth: 8_050 },
+        minifiedBytes: { baseline: 275_271, maximumGrowth: 5_500 },
+        gzipBytes: { baseline: 79_993, maximumGrowth: 1_300 },
+        brotliBytes: { baseline: 62_081, maximumGrowth: 1_050 },
+      },
+    } as const;
+    const fields = ['rawBytes', 'minifiedBytes', 'gzipBytes', 'brotliBytes'] as const;
+    for (const [id, expectation] of Object.entries(coverageGrowth)) {
+      const entry = report.entries.find((candidate) => candidate.id === id);
+      expect(entry?.status).toBe('measured');
+      if (entry?.status !== 'measured') throw new Error(`Missing measured size entry: ${id}`);
+      for (const field of fields) {
+        const { baseline, maximumGrowth } = expectation[field];
+        expect(entry[field] - baseline).toBeLessThanOrEqual(maximumGrowth);
+      }
+    }
+  });
+
   it('keeps the lazy validator out of the initial browser-core measurement', () => {
     const core = report.entries.find((candidate) => candidate.id === 'browser-core');
     const validator = report.entries.find((candidate) => candidate.id === 'font-validator-js');
