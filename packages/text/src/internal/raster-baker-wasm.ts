@@ -48,7 +48,7 @@ export interface DirectRasterBakerAbi {
   };
 }
 
-interface DirectRasterBakerExports {
+export interface DirectRasterBakerExports {
   readonly memory: WebAssembly.Memory;
   readonly allocate: (length: number) => number;
   readonly deallocate: (pointer: number, length: number) => void;
@@ -131,9 +131,9 @@ export function createDirectRasterBakerFromInstance<Request, Kind extends string
         const response = memoryRange(exports.memory, responsePointer, responseLength, spec.label);
         return decodeResponse(response, abi, spec);
       } finally {
-        if (sourcePointer !== 0) exports.deallocate(sourcePointer, source.byteLength);
-        if (requestPointer !== 0) exports.deallocate(requestPointer, requestBytes.byteLength);
-        if (responsePointer !== 0 && responseLength !== 0) {
+        if (sourcePointer) exports.deallocate(sourcePointer, source.byteLength);
+        if (requestPointer) exports.deallocate(requestPointer, requestBytes.byteLength);
+        if (responsePointer && responseLength) {
           exports.deallocate(responsePointer, responseLength);
         }
         if (segmentedResponse) exports.segmented?.release();
@@ -142,7 +142,7 @@ export function createDirectRasterBakerFromInstance<Request, Kind extends string
   };
 }
 
-function readExports(
+export function readExports(
   wasmExports: WebAssembly.Exports,
   abi: DirectRasterBakerAbi,
   label: string,
@@ -195,7 +195,7 @@ function readSegmentedExports(
   return values as DirectRasterBakerExports['segmented'];
 }
 
-function copyIntoWasm(exports: DirectRasterBakerExports, bytes: Uint8Array, label: string): number {
+export function copyIntoWasm(exports: DirectRasterBakerExports, bytes: Uint8Array, label: string): number {
   const pointer = u32(exports.allocate(bytes.byteLength));
   if (pointer === 0 && bytes.byteLength !== 0) {
     throw new RangeError(`${label} Wasm allocation failed`);
@@ -204,12 +204,12 @@ function copyIntoWasm(exports: DirectRasterBakerExports, bytes: Uint8Array, labe
     memoryRange(exports.memory, pointer, bytes.byteLength, label).set(bytes);
     return pointer;
   } catch (error) {
-    if (pointer !== 0) exports.deallocate(pointer, bytes.byteLength);
+    if (pointer) exports.deallocate(pointer, bytes.byteLength);
     throw error;
   }
 }
 
-function decodeSegmentedResponse<Kind extends string>(
+export function decodeSegmentedResponse<Kind extends string>(
   exports: DirectRasterBakerExports,
   abi: DirectRasterBakerAbi,
   spec: DirectRasterBakerSpec<Kind>,
@@ -293,7 +293,7 @@ function decodeSegmentedResponse<Kind extends string>(
   };
 }
 
-function decodeResponse<Kind extends string>(
+export function decodeResponse<Kind extends string>(
   response: Uint8Array,
   abi: DirectRasterBakerAbi,
   spec: DirectRasterBakerSpec<Kind>,
@@ -423,11 +423,11 @@ function parseError(value: unknown, label: string): SerializedBakeError {
   };
 }
 
-function u32(value: number): number {
+export function u32(value: number): number {
   return value >>> 0;
 }
 
-function memoryRange(memory: WebAssembly.Memory, pointer: number, length: number, label: string): Uint8Array {
+export function memoryRange(memory: WebAssembly.Memory, pointer: number, length: number, label: string): Uint8Array {
   const end = pointer + length;
   if (
     !Number.isSafeInteger(pointer) ||
