@@ -230,4 +230,4 @@ checks, provenance, and progressive-disclosure indexes.
 The workspace already implements the v1 shaping, horizontal paragraph, delivery, Three.js/React, and three-raster foundation.
 The renderer-agnostic core and additional engine integrations remain WIP alongside the roadmap's later layout and raster work.
 
-`@pmndrs/text` is MIT licensed. Contributions are welcome while the public v1 surface is being stabilized.
+`@pmndrs/text` is MIT licensed. Contributions are welcome.
