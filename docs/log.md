@@ -173,6 +173,13 @@
   and the renderer-neutral Paragraph context now follows `TextRuntime` disposal just as the Three coordinator already
   did. The example engine no longer asks callers to invent stack or session IDs it can allocate itself; stack
   registration returns the one handle text options genuinely reference.
+## 2026-08-29
+
+- **Framework-neutral raster shaders** — Moved Bitmap and MTSDF evaluation plus the analytic Slug fill algorithm into renderer-independent TypeGPU functions. The Slug core imports no renderer; neighboring TypeGPU modules own page texture reads and bounded band traversal, while the Three host supplies resources and node-valued glyph fields through `@typegpu/three`. Native TSL remains only for the writable varying and matrix-compatible dilation path. The benchmark comparison likewise computes its signed coverage heatmap through a plain-value TypeGPU function while retaining its native-TSL baseline.
+
+- **Build-time TypeGPU metadata** — Kept the repository-pinned TypeScript compiler as `@pmndrs/glyph`'s type and module emitter, then added a post-emit transform over staged JavaScript containing GPU directives. Published `/typegpu` modules and the TypeGPU-backed Slug host carry resolvable shader metadata without requiring consumer bundlers to transform package code; declarations and unrelated modules remain untouched.
+
+- **Portable Slug source gate** — Added a device-free package test that compiles the staged Slug graph through both Three.js node builders and verifies unique shared declarations, both bounded loops and terminators, the shared solver, and WebGL2 builtin compatibility. TypeGPU runtimes are optional peers, so renderer-neutral and baker consumers retain no static dependency on them.
 
 ## 2026-08-25
 

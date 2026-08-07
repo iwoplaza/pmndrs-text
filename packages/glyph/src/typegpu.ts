@@ -22,3 +22,24 @@ export {
   TypeGpuBitmapVertexInput,
   TypeGpuBitmapVertexOutput,
 } from './typegpu/bitmap-shader.js';
+export {
+  MsdfRenderInput,
+  msdfPosition,
+  msdfRender,
+  type MsdfRenderInput as TypeGpuMsdfRenderInput,
+} from './typegpu/msdf-shader.js';
+export {
+  calcCoverage as slugCoverage,
+  calcRootCode as slugRootCode,
+  slugBandCurveCount,
+  slugBandIndex,
+  slugBandReferenceOffset,
+  slugDilate,
+  slugHorizontalCurveContribution,
+  slugPixelsPerEm,
+  slugReferenceFromPair,
+  slugThickenFactor,
+  slugVerticalCurveContribution,
+  solveHorizontalPolynomial as solveSlugHorizontalPolynomial,
+  solveVerticalPolynomial as solveSlugVerticalPolynomial,
+} from './tsl/slug-shaders/core/index.js';

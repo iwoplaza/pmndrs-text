@@ -5,7 +5,7 @@ description: Implements portable font loading, retained Rust shaping and layout,
 resource: ../../packages/glyph
 workspace_package: '@pmndrs/glyph'
 documentation_type: reference
-source_digest: 'sha256:2e35a869ba21c62c088451c81123314aa04320d6e517f4105aa4dc0d4a6c6194'
+source_digest: 'sha256:4ec259b765b62a119d67876db1402aefe3ef8cdb6fd9cee897fd30808ae051e3'
 tags: [package, public-api, rust, wasm, threejs, typography]
 sources:
   - id: manifest
@@ -47,6 +47,12 @@ sources:
   - id: tsl-shaders
     resource: ../../packages/glyph/src/tsl.ts
     title: Technique shader library layer
+  - id: slug-shader-core
+    resource: ../../packages/glyph/src/tsl/slug-shaders/core
+    title: Host-agnostic TypeGPU Slug shader core
+  - id: slug-shader-host
+    resource: ../../packages/glyph/src/tsl/slug-shader.ts
+    title: TypeGPU-to-TSL Slug shader host
   - id: three-api
     resource: ../../packages/glyph/src/three.ts
     title: Three.js public exports
@@ -152,6 +158,22 @@ are removed. TypeGPU is a later adapter stack built against the Rust render plan
 the removed batch model. The exception is the `@pmndrs/glyph/typegpu` shader library, which publishes the same technique
 realizations as `/tsl` as typed TypeGPU functions for any WebGPU host; `typegpu` is an optional peer and the root entry
 has no static edge to it.
+
+The analytic Slug fill algorithm lives in `src/tsl/slug-shaders/core` as TypeGPU shader functions over plain values,
+and nothing in that directory imports a renderer.[^slug-shader-core] The stable q-form solver, root-eligibility table,
+per-curve coverage and antialiasing weight, band header and reference bit layout, screen-space scale, thickening,
+weighted blend, and row-based vertex dilation are expressed once. A vertical band is the horizontal band in the
+transposed frame with the opposite winding sense, so both axes share one curve evaluator and quadratic solver.
+
+The neighboring TypeGPU modules own page texture reads, grid addressing, band traversal, and the sorted-reference
+terminator. The Three.js host supplies textures and node-valued glyph fields through `@typegpu/three`, while retaining
+native TSL only for the writable inter-stage varying and the matrix-compatible dilation path. A device-free package test
+compiles the staged Slug graph through Three's WGSL and GLSL node builders and guards unique shared-function declarations,
+both bounded band loops and terminators, and cross-backend builtin compatibility.
+
+`typegpu`, `@typegpu/three`, and `@typegpu/gl` are optional peers because their runtime identities must be shared with the
+consumer, like Three.js and React. Bitmap- and MSDF-only consumers therefore do not install the Slug bridge runtimes, and
+package-size measurements externalize those peer graphs while retaining the package's emitted shader metadata.
 
 The package-owned `glyph` executable is available through `pnpm exec`; its `bake` command supports both project discovery
 and a direct known-font mode. Its stable packaged shim delegates to the built Node CLI, so workspace installs can link the
@@ -845,3 +867,5 @@ Before the foundation stack is publishable:
 The query/candidate-adoption API and the two publishing-feature stacks remain follow-on work after this foundation merge.
 They must reuse retained Rust paragraph state and the same render-plan architecture rather than reintroducing a second
 layout path.
+
+[^slug-shader-core]: The directory is the single renderer-independent expression of the analytic Slug fill algorithm.

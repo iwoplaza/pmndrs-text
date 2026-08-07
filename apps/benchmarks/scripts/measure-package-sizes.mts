@@ -47,18 +47,22 @@ const diagnosticCodeFragments = [
   'process.env.NODE_ENV',
 ];
 
+// The renderer and shader-authoring runtimes `@pmndrs/glyph` builds on are peer
+// dependencies, not vendored code: each keys its identity to a single instance, so a
+// duplicate copy breaks interop rather than merely wasting bytes. `typegpu` warns on a
+// duplicate version and derives every internal symbol from its version string, exactly
+// as Three.js and React require one instance. The consumer installs and dedupes them,
+// so they are outside what this package ships and outside its reviewed ceilings.
 function isTextPeerDependency(id: string): boolean {
   return (
     id === 'three' ||
     id.startsWith('three/') ||
     id === 'react' ||
     id.startsWith('@react-three/fiber') ||
-    // TypeGPU is the optional peer of the `/typegpu` shader subpath. It keys its identity
-    // to a single instance exactly as Three and React do, so the consumer-installed
-    // runtime stays outside what this package ships and outside its reviewed ceilings.
-    // `typed-binary` and `tinyest` are resolution internals reached only through TypeGPU.
     id === 'typegpu' ||
     id.startsWith('typegpu/') ||
+    id.startsWith('@typegpu/') ||
+    // Resolution internals reached only through TypeGPU.
     id === 'typed-binary' ||
     id === 'tinyest' ||
     id.startsWith('tinyest')

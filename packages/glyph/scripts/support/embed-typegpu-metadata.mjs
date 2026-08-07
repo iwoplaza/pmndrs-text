@@ -2,26 +2,37 @@ import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /**
- * Embeds TypeGPU's shader metadata into the emitted JavaScript of the `/typegpu` subpath.
+ * Embeds TypeGPU's shader metadata into emitted JavaScript that contains GPU functions.
  *
  * JavaScript-authored TypeGPU functions carry a `'use gpu'` directive that the TypeGPU
  * compiler normally consumes through a consumer-side bundler plugin
  * (`unplugin-typegpu`). A published subpath cannot demand that every consumer runs a
  * transform over this package's `dist`, so the build applies the same transform here,
- * once, over the staged `typegpu.js` entry and the modules beside it. The emitted
+ * once, over the staged TypeGPU library and the TSL modules that bridge TypeGPU
+ * functions into Three.js. The emitted
  * functions then resolve to WGSL in any host without extra tooling.
  *
  * The transform is additive: it wraps each shader function with its parsed syntax tree
- * and external-name table and never rewrites surrounding code, so `/core`, `/three`,
- * and `/tsl` outputs are untouched.
+ * and external-name table and never rewrites surrounding code.
  *
  * @param {string} stagingDirectory The staged distribution whose `typegpu` outputs are rewritten in place.
  */
 export async function embedTypeGpuMetadata(stagingDirectory) {
-  const moduleDirectory = join(stagingDirectory, 'typegpu');
+  const { default: typegpuPlugin } = await import('unplugin-typegpu/rollup');
+  const plugin = typegpuPlugin();
+  const typegpuDirectory = join(stagingDirectory, 'typegpu');
+  const slugShaderDirectory = join(stagingDirectory, 'tsl', 'slug-shaders');
+  const slugCoreDirectory = join(slugShaderDirectory, 'core');
   const entries = [
     'typegpu.js',
-    ...(await readdir(moduleDirectory)).filter((name) => name.endsWith('.js')).map((name) => join('typegpu', name)),
+    join('tsl', 'slug-shader.js'),
+    ...(await readdir(typegpuDirectory)).filter((name) => name.endsWith('.js')).map((name) => join('typegpu', name)),
+    ...(await readdir(slugShaderDirectory))
+      .filter((name) => name.endsWith('.js'))
+      .map((name) => join('tsl', 'slug-shaders', name)),
+    ...(await readdir(slugCoreDirectory))
+      .filter((name) => name.endsWith('.js'))
+      .map((name) => join('tsl', 'slug-shaders', 'core', name)),
   ];
   const { default: typegpuPlugin } = await import('unplugin-typegpu/rollup');
   const plugin = typegpuPlugin();
