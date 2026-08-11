@@ -1,6 +1,77 @@
 # pmndrs/text documentation update log
 
+## 2026-08-11
+
+- **Reconciled the public README and formatter-owned boundaries** — Replaced the obsolete TypeScript batch-target walkthrough with the shipped React and Three `Text`, `TextGroup`, span, mixed-technique font, Rust policy, and retained render-plan APIs. Added a compact Mermaid flow from mutations through renderer draws and stated the current third-party renderer boundary without claiming a stable TypeGPU host. Markdown now relies on viewer word wrapping. Canonical extension schemas and generated ABIs are excluded from formatting at their absorbed `packages/text` paths; the packaged font schema again matches its authoritative repository copy byte for byte, and the font-baker ABI again matches its Rust generator.
+
 ## 2026-08-10
+
+- **Standardized the React entry and polished the R3F example** — Renamed the sole declarative package entry from the
+  stale `@pmndrs/text/r3f` path to the originally specified `@pmndrs/text/react` path; React Three Fiber remains the
+  internal host reconciler and an optional peer rather than part of the public name. The hello-world example preloads
+  each multi-raster asset through the public hook cache, renders its controls with Slug, and uses a local `Button`
+  component with a TSL capsule-distance node over plane geometry. Technique colors connect each tracked uppercase label
+  to a nested globe span that binds its subsetted Font Awesome raster directly instead of requiring a font stack. Each
+  label is vertically centered by a shaped 44-unit line box whose extra leading is divided around the font metrics,
+  rather than by an arbitrary visual offset. A clean WebGPU browser run switches Bitmap, MSDF, and Slug without shader
+  errors or warnings.
+
+- **Removed redundant warm transform scans** — `TextGroup` now consumes Three's completed scene traversal and tracks
+  transform changes below the shared draw root. Camera or group motion leaves indexed transform storage untouched;
+  actual text, nested-parent, visibility, reparenting, and manual-matrix changes patch only their paragraph IDs. A
+  compiled-Wasm integration regression proves shared-root motion performs zero forced per-text world updates and no GPU
+  attribute version change, while a direct child move still updates its retained slot.
+
+- **Stabilized retained Icon Grid recycling** — Corrected the engine host's aggregate/per-paragraph limit split so 684
+  paragraphs no longer each reserve line scratch for the entire batch. A deterministic 200-cycle regression replaces
+  the former 17-update, 4.29 GB status-7 failure. Icon Grid now scrolls through its camera, avoids layout queries in
+  renderer telemetry and recycling, publishes each recycled window once, and leaves Bitmap pixel snapping opt-in.
+  Clean Chrome samples on the 120 Hz development display held roughly 116–120 FPS across Bitmap, MSDF, and Slug.
+
+- **Restored retained paragraph scaling and Bitmap CPU batching** — Metric-only style mutations now refresh shaping-run
+  typography before rebuilding cluster advances while retaining the HarfRust glyph result. Optimized-Wasm tests prove a
+  2× font-size change produces a 2× inline advance. Bitmap strikes now bind all atlas pages as one texture array with a
+  per-glyph layer lane, collapsing multi-page prose to one ordered draw. Clean Chrome Paragraph Stress verification kept
+  Bitmap, MSDF, and Slug correctly positioned at 96 px and during animated intermediate sizes; Bitmap CPU sampled at
+  0.47–1.3 ms instead of the reproduced roughly 80 ms failure, while GPU remained independently around 1–5 ms.
+
+- **Centered and simplified the R3F hello-world scene** — The public `Text` component now infers a runtime-selected
+  Bitmap/MSDF/Slug font-stack union without `Text<AnyRasterTechnique>`. The example removes its probe-only effect, ref,
+  frame callback, canvas attributes, redundant button-row group, and unnecessary independent-compositing declarations.
+  `Text` and `TextGroup` now construct through R3F host commits, so three React `Activity` branches pre-render complete
+  hidden technique layers instead of initializing them after the first click. Vitexec reads named R3F layers directly,
+  proves all six hidden planned meshes exist before switching, and verifies 2 draws / 11 visible records per revealed
+  technique. The controls form a centered top row and the world copy remains centered in the viewport. The benchmark's
+  exact React reconciliation target retains hash `bb15bbcc`, natural/narrow layout oracles, object identity, span paints,
+  and submitted draws; its explicit teardown releases the live paragraph before its target-owned font because R3F host
+  disposal runs at idle priority. The example's root `bake` and `bake:check` scripts now compose separate Inter and icon
+  commands, keeping each multi-technique GLB independently regenerable and verifiable. Two independent current bakes
+  reproduced each asset exactly. The icon migration changes only generator/source-provenance metadata; every binary view
+  is unchanged. Inter's extents and Bitmap/MSDF/Slug views are unchanged, while the package-owned subsetter serializes
+  same-length `GPOS`/`GSUB` tables differently; a full Basic Latin plus ligature/kerning stress pass produced identical
+  glyphs, clusters, positions, advances, lines, and measurements through both artifacts.
+
+- **Removed product HarfBuzz subprocesses** — `text glyphs`, `text bake --unicodes`, and programmatic
+  `@pmndrs/text/bake` now use the packaged Fontations/Skera baker Wasm. One normalized prepared source feeds core
+  shaping and every requested raster technique; HarfBuzz remains internal test-oracle tooling only.
+
+- **Package-owned font preparation** — Added generated `prepare` and `inspect` Wasm exports backed by Skera and Skrifa. The optional baker alone enables `std`; the same Rust source still passes its `wasm32 --no-default-features` compatibility build, and an ASCII subset is inspected and rebaked through the packaged direct-memory bridge. Measured `opt-level = "z"` plus Binaryen `-Oz` wins for this graph at 1,097,710 raw / 391,557 gzip bytes.
+
+- **Single-package bake ownership** — Folded the portable font-baker Rust/Wasm source, TypeScript bridge, validator, schemas, tests, and build tooling into `@pmndrs/text`. `@pmndrs/text/bake` is now the sole programmatic product surface, while package-boundary tests prove the ordinary root import retains no eager edge to baker Wasm, `std`-enabled subsetting dependencies, Ajv, or glTF Validator.
+
+- **Made multi-technique fonts one authored load and one CLI bake** — Direct `text bake` arguments now accept a
+  known input/output, shaping-font Unicode subsetting, Bitmap strikes, MSDF, Slug, and byte-exact check mode. The R3F
+  hello-world example deletes its custom baker script and invokes only that published CLI for both checked assets. Its
+  runtime surface now declares the three raster requests once per GLB and receives a position-preserving typed tuple;
+  the artifact is fetched and registered once while each technique retains its exact option and decoded-data type. The
+  package now exposes one `text` executable with command-specific help and version output; `text glyphs` surfaces real
+  font glyph names as JSON or a bake-ready Unicode set while omitting synthetic `gidN` labels.
+
+- **Simplified publishing-size evidence** — The benchmark UI and Size Limit pull-request comment now share one strict
+  nine-row projection: gzip for Core JS, Shaper Wasm, Three.js adapter JS, and Inter plus Font Awesome across Bitmap,
+  MTSDF, and Slug. Confusing arithmetic runtime/delivery totals and alternate compression columns no longer enter the
+  human report. The canonical record retains detailed independent measurements and budgets used by internal telemetry
+  and regression checks; Three.js, React, and R3F remain external peers.
 
 - **Provisioned the R3F asset subsetter on clean CI hosts** — The example's byte-exact asset check requires HarfBuzz
   14.2.0, but CI had provisioned only the separate 13.0.0 shaping oracle and CJK fixture tool. The authenticated utility

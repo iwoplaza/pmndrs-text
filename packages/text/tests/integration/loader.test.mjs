@@ -8,7 +8,7 @@ import test, { after, before } from 'node:test';
 import { FontLoader, FontLoadError, FontRegistry } from '@pmndrs/text';
 import { bakeFont } from '@pmndrs/text/bake';
 import { bitmapBaker } from '@pmndrs/text/bakers/bitmap';
-import { validateFontArtifact } from '@pmndrs/text-font-baker/validate';
+import { validateFontArtifact } from '@pmndrs/text/bake';
 
 import { getRegisteredFontData } from '../../dist/internal/registered-font.js';
 
@@ -174,6 +174,37 @@ test('an explicit baked null request skips sibling discovery and uses runtime ba
   assert.equal(font.glyphCount, 2937);
   assert.equal(bakes, 1);
   assert.deepEqual(calls, [sourceUrl]);
+});
+
+test('runtime persistence inherits source response cache policy', async () => {
+  const requests = [];
+  const now = Date.now();
+  const cacheable = new FontLoader({
+    fetch: async () =>
+      new Response(sourceBytes, {
+        headers: {
+          'cache-control': 'public, max-age=3600',
+          date: new Date(now).toUTCString(),
+        },
+      }),
+    async runtimeBake(request) {
+      requests.push(request);
+      return embeddedBytes;
+    },
+  });
+  await cacheable.load({ source: 'https://assets.test/cacheable.ttf', baked: null });
+  assert.ok(requests[0].cache.expiresAt > now);
+  assert.ok(requests[0].cache.expiresAt <= now + 3_600_000);
+
+  const uncacheable = new FontLoader({
+    fetch: async () => new Response(sourceBytes, { headers: { 'cache-control': 'no-store' } }),
+    async runtimeBake(request) {
+      requests.push(request);
+      return embeddedBytes;
+    },
+  });
+  await uncacheable.load({ source: 'https://assets.test/private.ttf', baked: null });
+  assert.equal(requests[1].cache, undefined);
 });
 
 test('missing and invalid probes fall back once with deduplicated diagnostics', async () => {

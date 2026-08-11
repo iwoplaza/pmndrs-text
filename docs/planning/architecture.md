@@ -248,7 +248,7 @@ The React integration owns no shaping, line-breaking, baking, raster decoding, s
 
 ```mermaid
 flowchart LR
-  React["@pmndrs/text/r3f"] --> Three["@pmndrs/text/three"] --> Core["@pmndrs/text"]
+  React["@pmndrs/text/react"] --> Three["@pmndrs/text/three"] --> Core["@pmndrs/text"]
   TypeGPU["@pmndrs/text/typegpu"] --> Core
   Gpucat["@pmndrs/text-gpucat"] --> Core
   Core --> Registry["asset validator / registry"]
@@ -380,7 +380,11 @@ V0 requires:
 - broad-run, line-shape, paragraph-analysis, and width-layout caches;
 - GPU resources by font, raster, logical page, selected variant, and device.
 
-Persistent runtime-bake caching is deferred, but the key shape is reserved for source hash, descriptor hash, format/baker/generator versions, and selected raster.
+Runtime baking persists only the final validated canonical GLB in Worker-owned `CacheStorage`. The exact key includes the
+source hash, face, normalized Unicode ranges, ordered raster descriptors and keys, and format/baker/generator versions.
+Persistence and expiration inherit the source response's cache policy; responses without reusable freshness, including
+`no-store` and `no-cache`, remain memory-only. Browser quota eviction owns storage pressure and storage failures are
+transparent misses. Preparation intermediates and partial raster results are never cached.
 
 ## Failure and warning model
 

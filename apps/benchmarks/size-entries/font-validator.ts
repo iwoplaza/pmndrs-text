@@ -1,1 +1,1 @@
-export * from '@pmndrs/text-font-baker/validate';
+export { validateFontArtifact } from '../../../packages/text/dist/font-baker/validator.js';

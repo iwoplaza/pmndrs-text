@@ -1,8 +1,8 @@
-import type { ParsedGlb, ValidatedFontArtifactV0 } from '@pmndrs/text-font-baker/validate';
+import type { ParsedGlb, ValidatedFontArtifactV0 } from './font-baker/validator.js';
 import {
   FONT_BAKER_VERSION as CORE_BAKER_VERSION,
   FONT_FORMAT_VERSION as CORE_FORMAT_VERSION,
-} from '@pmndrs/text-font-baker/contract';
+} from './font-baker/contract.js';
 
 import type { FontInput, FontMetrics, RegisteredFont } from './font.js';
 import type { FontHandle, FontKey, RasterHandle, RasterKey, Sha256Hex } from './identity.js';
@@ -24,6 +24,7 @@ import type {
   RegisteredRaster,
 } from './raster.js';
 import type { BakeProgressListener } from './bake.js';
+import type { RuntimeBakeRasterV0, RuntimeBakeUnicodeRangeV0 } from './internal/runtime-bake-protocol.js';
 
 const DEFAULT_MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
 const DEFAULT_MAX_BUFFER_VIEWS = 4_096;
@@ -32,7 +33,7 @@ const DEFAULT_MAX_RASTERS = 256;
 let nextRegistryId = 1;
 let nextFontHandle = 1;
 let nextRasterHandle = 1;
-let validatorPromise: Promise<typeof import('@pmndrs/text-font-baker/validate')> | undefined;
+let validatorPromise: Promise<typeof import('./font-baker/validator.js')> | undefined;
 let defaultRuntimeBakePromise: Promise<RuntimeFontBake> | undefined;
 
 export interface FontLoadOptions {
@@ -50,6 +51,10 @@ export interface RuntimeFontBakeRequest {
   readonly source: Uint8Array;
   readonly sourceUrl: string;
   readonly bakedUrl?: string;
+  /** Persistent derived-artifact lifetime inherited from the source response. Omitted means memory-only. */
+  readonly cache?: { readonly expiresAt: number };
+  readonly unicodeRanges?: readonly RuntimeBakeUnicodeRangeV0[];
+  readonly rasters?: readonly RuntimeBakeRasterV0[];
   readonly signal?: AbortSignal;
   readonly onProgress?: BakeProgressListener;
 }
@@ -62,6 +67,8 @@ export interface FontLoaderOptions {
   readonly fetch?: typeof fetch;
   readonly development?: boolean;
   readonly runtimeBake?: RuntimeFontBake;
+  /** @internal A transformed runtime source cannot be authenticated or retained as the baked shaping source. */
+  readonly runtimeSourceIdentity?: 'original' | 'transformed';
   readonly onDiagnostic?: (diagnostic: FontLoadDiagnostic) => void;
   readonly onWarning?: (diagnostic: FontLoadDiagnostic) => void;
 }
@@ -374,6 +381,7 @@ export class FontLoader {
   readonly #baseUrl: URL | undefined;
   readonly #development: boolean;
   readonly #runtimeBake: RuntimeFontBake | undefined;
+  readonly #runtimeSourceIdentity: 'original' | 'transformed';
   readonly #onDiagnostic: ((diagnostic: FontLoadDiagnostic) => void) | undefined;
   readonly #onWarning: ((diagnostic: FontLoadDiagnostic) => void) | undefined;
   readonly #loads = new Map<string, SharedFontLoad>();
@@ -389,6 +397,7 @@ export class FontLoader {
     this.#baseUrl = resolveBaseUrl(options.baseUrl);
     this.#development = options.development ?? defaultDevelopmentMode();
     this.#runtimeBake = options.runtimeBake;
+    this.#runtimeSourceIdentity = options.runtimeSourceIdentity ?? 'original';
     this.#onDiagnostic = options.onDiagnostic;
     this.#onWarning = options.onWarning;
   }
@@ -476,18 +485,20 @@ export class FontLoader {
     }
     const runtimeBake = this.#runtimeBake ?? (await loadDefaultRuntimeBake(request.sourceUrl));
     signal.throwIfAborted();
-    const source = await this.#fetchRequired(request.sourceUrl, 'FONT_SOURCE_FETCH', signal);
+    const sourceResponse = await this.#fetchRequired(request.sourceUrl, 'FONT_SOURCE_FETCH', signal);
+    const { bytes: source } = sourceResponse;
     const baked = await runtimeBake({
       source,
       sourceUrl: request.sourceUrl,
       ...(request.bakedUrl === undefined ? {} : { bakedUrl: request.bakedUrl }),
+      ...(sourceResponse.expiresAt === undefined ? {} : { cache: { expiresAt: sourceResponse.expiresAt } }),
       signal,
     });
     signal.throwIfAborted();
     return this.registry._registerAsset(baked, {
       ...(request.bakedUrl === undefined ? {} : { artifactUrl: request.bakedUrl }),
       sourceUrl: request.sourceUrl,
-      sourceBytes: source,
+      ...(this.#runtimeSourceIdentity === 'original' ? { sourceBytes: source } : {}),
       fetch: this.#fetch,
     });
   }
@@ -548,7 +559,11 @@ export class FontLoader {
     }
   }
 
-  async #fetchRequired(url: string, code: string, signal: AbortSignal): Promise<Uint8Array> {
+  async #fetchRequired(
+    url: string,
+    code: string,
+    signal: AbortSignal,
+  ): Promise<{ readonly bytes: Uint8Array; readonly expiresAt?: number }> {
     let response: Response;
     try {
       response = await this.#fetch(url, { signal });
@@ -561,7 +576,15 @@ export class FontLoader {
         url,
       });
     }
-    return readResponseBytes(response, this.registry._artifactByteLimit(), 'FONT_SOURCE_RESOURCE_LIMIT', url, signal);
+    const bytes = await readResponseBytes(
+      response,
+      this.registry._artifactByteLimit(),
+      'FONT_SOURCE_RESOURCE_LIMIT',
+      url,
+      signal,
+    );
+    const expiresAt = persistentResponseExpiration(response);
+    return { bytes, ...(expiresAt === undefined ? {} : { expiresAt }) };
   }
 
   #warnMissing(url: string): void {
@@ -1220,6 +1243,27 @@ function normalizeUrl(value: string | URL, baseUrl: URL | undefined): string {
   return url.href;
 }
 
+function persistentResponseExpiration(response: Response, now = Date.now()): number | undefined {
+  const cacheControl = response.headers.get('cache-control')?.toLowerCase();
+  if (cacheControl !== undefined) {
+    const directives = cacheControl.split(',').map((directive) => directive.trim());
+    if (directives.includes('no-store') || directives.includes('no-cache')) return undefined;
+    const maxAge = directives
+      .map((directive) => /^max-age=(?:"(\d+)"|(\d+))$/.exec(directive))
+      .find((match) => match !== null);
+    if (maxAge !== undefined) {
+      const seconds = Number(maxAge[1] ?? maxAge[2]);
+      if (!Number.isSafeInteger(seconds) || seconds <= 0) return undefined;
+      const responseDate = Date.parse(response.headers.get('date') ?? '');
+      const base = Number.isFinite(responseDate) ? responseDate : now;
+      const expiresAt = base + seconds * 1_000;
+      return Number.isSafeInteger(expiresAt) && expiresAt > now ? expiresAt : undefined;
+    }
+  }
+  const expiresAt = Date.parse(response.headers.get('expires') ?? '');
+  return Number.isFinite(expiresAt) && expiresAt > now ? expiresAt : undefined;
+}
+
 function resolveBaseUrl(value: string | URL | undefined): URL | undefined {
   if (value !== undefined) return new URL(value);
   const location = (globalThis as { location?: { href?: string } }).location?.href;
@@ -1271,8 +1315,8 @@ function consumeSharedLoad(shared: SharedFontLoad, signal: AbortSignal | undefin
   });
 }
 
-function loadValidator(): Promise<typeof import('@pmndrs/text-font-baker/validate')> {
-  return (validatorPromise ??= import('@pmndrs/text-font-baker/validate'));
+function loadValidator(): Promise<typeof import('./font-baker/validator.js')> {
+  return (validatorPromise ??= import('./font-baker/validator.js'));
 }
 
 async function readResponseBytes(

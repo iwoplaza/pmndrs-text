@@ -16,6 +16,8 @@ export interface ThreeBitmapInstanceNodes {
   readonly uvSize: Node<'vec2'>;
   /** Resolved paint colour with alpha, unpremultiplied. */
   readonly color: Node<'vec4'>;
+  /** Texture-array layer containing this glyph's coverage. */
+  readonly pageIndex: Node<'uint'>;
 }
 
 /** The GPU resources one Bitmap glyph batch binds: the single-channel coverage page its strike binding selected. */
@@ -24,13 +26,18 @@ export interface ThreeBitmapShaderResources {
   readonly page: Texture;
 }
 
+export interface ThreeBitmapShaderOptions {
+  /** Snap projected vertices to physical pixels. Disabled by default so animated transforms retain subpixel motion. */
+  readonly pixelSnapping?: boolean;
+}
+
 /** Everything the canonical Bitmap graph produces, so a program can consume a stage or compose over its final output. */
 export interface ThreeBitmapShaderOutput {
   readonly position: Node<'vec3'>;
   /**
-   * Clip-space vertex position with the projected quad edges snapped to the physical pixel grid. Bitmap coverage is
-   * authored as one atlas texel per device pixel, so a quad landing between pixel centres resamples the strike instead
-   * of reproducing it. A program must assign this to `material.vertexNode` to inherit that placement.
+   * Clip-space vertex position selected by the shader options. Pixel snapping is opt-in because it preserves strike
+   * sharpness at rest but quantizes animated motion. A program must assign this to `material.vertexNode` to inherit the
+   * selected placement.
    */
   readonly clipPosition: Node<'vec4'>;
   /** Atlas coordinate the page is sampled at, in the page's own top-down texel space. */
@@ -52,19 +59,20 @@ export interface ThreeBitmapShaderOutput {
 export function bitmapShader(
   instance: ThreeBitmapInstanceNodes,
   resources: ThreeBitmapShaderResources,
+  options: ThreeBitmapShaderOptions = {},
 ): ThreeBitmapShaderOutput {
   const atlasUv = TSL.vec2(
     instance.uvOrigin.x.add(TSL.uv().x.mul(instance.uvSize.x)),
     instance.uvOrigin.y.add(TSL.uv().y.mul(instance.uvSize.y)),
   );
-  const coverage = TSL.texture(resources.page, atlasUv).r;
+  const coverage = TSL.texture(resources.page, atlasUv).depth(instance.pageIndex).r;
   return {
     position: TSL.vec3(
       instance.origin.x.add(TSL.positionLocal.x.mul(instance.size.x)),
       instance.origin.y.add(TSL.positionLocal.y.mul(instance.size.y)).negate(),
       0,
     ),
-    clipPosition: pixelSnappedClipPosition(),
+    clipPosition: options.pixelSnapping === true ? pixelSnappedClipPosition() : TSL.modelViewProjection,
     atlasUv,
     coverage,
     color: instance.color.rgb,

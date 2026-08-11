@@ -1,1 +1,5 @@
-export * from '@pmndrs/text-font-baker';
+export {
+  createFontBaker,
+  createFontBakerFromInstance,
+  fontBakerAbi,
+} from '../../../packages/text/dist/font-baker/index.js';

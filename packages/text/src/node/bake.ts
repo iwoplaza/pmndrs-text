@@ -5,23 +5,42 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from 'node:zlib';
 
-import { createFontBaker, type FontBakeDescriptorV0 } from '@pmndrs/text-font-baker';
-import { fontBakerWasmUrl } from '@pmndrs/text-font-baker/wasm-url';
-import { validateFontArtifact } from '@pmndrs/text-font-baker/validate';
+import {
+  createFontBaker,
+  type FontBakeDescriptorV0,
+  type FontInspectionV0,
+  type PreparedFontReportV0,
+  type UnicodeRangeV0,
+} from '../font-baker/index.js';
+import { fontBakerWasmUrl } from '../font-baker/wasm-url.js';
+
+export {
+  FontBakeError,
+  createFontBaker,
+  createFontBakerFromInstance,
+  fontBakerAbi,
+  type FontBakeCore,
+  type FontBakeDescriptorV0,
+  type FontBakeRequestV0,
+  type FontBakeResultV0,
+  type FontBakerAbiV0,
+  type FontBakerWasmSource,
+  type SerializedBakeError,
+} from '../font-baker/index.js';
+export { fontBakerWasmUrl } from '../font-baker/wasm-url.js';
+export * from '../font-baker/validator.js';
 
 import type { AnyRasterBakerModule, BakeArtifactV0, BakeWarning, FontPayloadReport, RasterBakePlan } from '../bake.js';
-import {
-  discoverProjectFonts,
-  type DiscoveryDiagnostic,
-  type DiscoveredFontDefinition,
-  type DiscoveryOptions,
-  type ResolvedRasterBaker,
+import type {
+  DiscoveryDiagnostic,
+  DiscoveredFontDefinition,
+  DiscoveryOptions,
+  ResolvedRasterBaker,
 } from '../discovery.js';
-import { composeFontBake } from '../internal/compose-bake.js';
-import { fontBakeDescriptorV0, soleCoreFontArtifact } from '../internal/core-bake-policy.js';
+import { fontBakeDescriptorV0 } from '../internal/core-bake-policy.js';
+import { bakeFontPipeline } from '../internal/font-bake-pipeline.js';
 import { resolveRasterBakePlan, type ResolvedRasterBakePlan } from '../internal/raster-bake-plan.js';
 import { cacheSuccessfulPromise } from '../internal/successful-promise-cache.js';
-import type { Sha256Hex } from '../identity.js';
 
 export interface NodeBakeOptions<
   Rasters extends readonly RasterBakePlan<AnyRasterBakerModule>[] = readonly RasterBakePlan<AnyRasterBakerModule>[],
@@ -29,6 +48,7 @@ export interface NodeBakeOptions<
   readonly input: string | URL;
   readonly output: string | URL;
   readonly font: Omit<FontBakeDescriptorV0, 'formatVersion'>;
+  readonly unicodeRanges?: readonly UnicodeRangeV0[];
   readonly rasters?: Rasters;
   readonly signal?: AbortSignal;
 }
@@ -67,7 +87,13 @@ export interface NodeBakeExecutionReport {
 }
 
 export interface NodeFontBakeReport extends FontPayloadReport {
+  readonly preparation?: PreparedFontReportV0;
   readonly execution: NodeBakeExecutionReport;
+}
+
+export interface NodeFontInspectOptions {
+  readonly input: string | URL;
+  readonly fontFaceIndex?: number;
 }
 
 export interface ProjectBakeOptions extends DiscoveryOptions {
@@ -113,6 +139,15 @@ export async function bakeFont<const Rasters extends readonly RasterBakePlan<Any
   return bakeFontWithResolvedPlans(options);
 }
 
+export async function inspectFont(options: NodeFontInspectOptions): Promise<FontInspectionV0> {
+  const source = new Uint8Array(await readFile(filePath(options.input, 'input')));
+  const fontBaker = await defaultFontBaker();
+  return fontBaker.inspect({
+    source,
+    descriptor: fontBakeDescriptorV0(options.fontFaceIndex ?? 0),
+  });
+}
+
 async function bakeFontWithResolvedPlans(
   options: NodeBakeOptions,
   preparedRasters?: readonly ResolvedRasterBakePlan[],
@@ -134,51 +169,25 @@ async function bakeFontWithResolvedPlans(
   await assertDistinctInputOutput(input, output);
 
   let phase = performance.now();
-  const source = new Uint8Array(await readFile(input));
+  const originalSource = new Uint8Array(await readFile(input));
   timings.read = performance.now() - phase;
   options.signal?.throwIfAborted();
 
-  phase = performance.now();
   const fontBaker = await defaultFontBaker();
-  const core = fontBaker.bake({
-    source,
-    descriptor: fontBakeDescriptorV0(options.font.fontFaceIndex),
-  });
-  timings.coreBake = performance.now() - phase;
-  options.signal?.throwIfAborted();
-
-  phase = performance.now();
-  const coreValidation = await validateFontArtifact(soleCoreFontArtifact(core).bytes);
-  timings.validate += performance.now() - phase;
-  phase = performance.now();
-  const rasterInputs = [];
   const rasters = preparedRasters ?? (await Promise.all((options.rasters ?? []).map(resolveRasterBakePlan)));
-  for (const plan of rasters) {
-    options.signal?.throwIfAborted();
-    const raster = await plan.baker.bake({
-      font: {
-        source,
-        fontFaceIndex: options.font.fontFaceIndex,
-        glyphCount: coreValidation.glyphCount,
-        shapingHash: coreValidation.shapingHash as Sha256Hex,
-      },
-      rasterKey: plan.rasterKey,
-      packaging: plan.packaging,
-      descriptor: plan.descriptor,
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-    });
-    rasterInputs.push({ raster, packaging: plan.packaging });
-  }
-  timings.rasterBake = performance.now() - phase;
-
-  phase = performance.now();
-  const composed = await composeFontBake(core, rasterInputs);
-  timings.compose = performance.now() - phase;
-  options.signal?.throwIfAborted();
-
-  phase = performance.now();
-  await validateFontArtifact(composed.artifacts[0]!.bytes);
-  timings.validate += performance.now() - phase;
+  const pipeline = await bakeFontPipeline({
+    fontBaker,
+    source: originalSource,
+    fontFaceIndex: options.font.fontFaceIndex,
+    ...(options.unicodeRanges === undefined ? {} : { unicodeRanges: options.unicodeRanges }),
+    rasters,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
+  timings.coreBake = pipeline.timings.coreBake;
+  timings.rasterBake = pipeline.timings.rasterBake;
+  timings.compose = pipeline.timings.compose;
+  timings.validate = pipeline.timings.validate;
+  const { composed, preparation } = pipeline;
   phase = performance.now();
   const report = finalizeTransport(composed.report, composed.artifacts);
   timings.transport = performance.now() - phase;
@@ -190,6 +199,7 @@ async function bakeFontWithResolvedPlans(
   const rssAfterBytes = process.memoryUsage.rss();
   return {
     ...report,
+    ...(preparation === undefined ? {} : { preparation }),
     execution: {
       timingsMs: { ...timings, total: performance.now() - started },
       memory: {
@@ -209,6 +219,7 @@ async function bakeFontWithResolvedPlans(
 
 export async function bakeProject(options: ProjectBakeOptions = {}): Promise<ProjectBakeReport> {
   options.signal?.throwIfAborted();
+  const { discoverProjectFonts } = await import('../discovery.js');
   const discovery = await discoverProjectFonts(options);
   const projectRoot = await canonicalProjectRoot(options.projectRoot);
   const outputRoot =

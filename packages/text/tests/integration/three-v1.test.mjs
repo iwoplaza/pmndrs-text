@@ -5,6 +5,7 @@ import { gunzipSync } from 'node:zlib';
 
 import { createFontStack, createTextRuntime, FontRegistry } from '@pmndrs/text';
 import { bitmap } from '@pmndrs/text/three/bitmap';
+import { msdf } from '@pmndrs/text/three/msdf';
 import { slug } from '@pmndrs/text/three/slug';
 import { defineTextMaterial, Text, TextGroup } from '@pmndrs/text/three';
 import * as THREE from 'three/webgpu';
@@ -22,6 +23,23 @@ const iconSlugFontUrl = new URL(
   '../../../../apps/benchmarks/fixtures/rendering/font-awesome-free-6.7.2-slug.font.glb.gz',
   import.meta.url,
 );
+const multiTechniqueFontUrl = new URL('../../../../apps/r3f-hello-world/assets/inter-latin.font.glb', import.meta.url);
+
+test('one runtime request registers one font and returns typed resources for every declared technique', async () => {
+  const runtime = await createTextRuntime({
+    wasm: await readFile(new URL('../../dist/text_shaper.wasm', import.meta.url)),
+  });
+  const [bitmapFont, msdfFont, slugFont] = await runtime.loadFont({
+    input: { baked: dataUrl(await readFile(multiTechniqueFontUrl)) },
+    rasters: [{ technique: bitmap, options: { strikes: [32] } }, { technique: msdf }, { technique: slug }],
+  });
+  assert.equal(bitmapFont.font, msdfFont.font);
+  assert.equal(msdfFont.font, slugFont.font);
+  assert.equal(bitmapFont.technique, bitmap);
+  assert.equal(msdfFont.technique, msdf);
+  assert.equal(slugFont.technique, slug);
+  runtime.dispose();
+});
 
 test('Three Text and TextGroup late-bind, synchronize, reparent, and dispose through the scene graph', async () => {
   const registry = new FontRegistry();
@@ -33,6 +51,17 @@ test('Three Text and TextGroup late-bind, synchronize, reparent, and dispose thr
     input: { baked: dataUrl(await readFile(fontUrl)) },
     raster: { technique: bitmap, options: { strikes: [16] } },
   });
+  const emptyScene = new THREE.Scene();
+  const initiallyEmpty = new Text({ font, text: '' });
+  emptyScene.add(initiallyEmpty);
+  emptyScene.updateMatrixWorld(true);
+  assert.equal(initiallyEmpty.error, undefined, 'an empty paragraph must publish without a no-op text mutation');
+  initiallyEmpty.text = 'A';
+  emptyScene.updateMatrixWorld(true);
+  assert.equal(initiallyEmpty.error, undefined, 'an initially empty paragraph must accept its first text edit');
+  assert.equal(initiallyEmpty.measureLayout()?.glyphCount, 1);
+  initiallyEmpty.dispose();
+
   const editedSpans = new Text({
     font,
     text: 'ABCD',
@@ -460,11 +489,39 @@ test('TextGroup realizes two public Text objects as one indexed Rust draw', asyn
   assert.deepEqual(pboUploadOrigins.subarray(canonicalOrigins.length), new Float32Array(4));
 
   const version = transforms.version;
+  let forcedTextWorldUpdates = 0;
+  const updateRightWorldMatrix = right.updateWorldMatrix.bind(right);
+  right.updateWorldMatrix = (...arguments_) => {
+    forcedTextWorldUpdates += 1;
+    return updateRightWorldMatrix(...arguments_);
+  };
+  group.position.x = 11;
+  scene.updateMatrixWorld();
+  assert.equal(transforms.version, version, 'moving the shared root must not upload unchanged relative transforms');
+  assert.equal(forcedTextWorldUpdates, 0, 'moving the shared root must not force each Text world matrix a second time');
+
   right.position.x = 7;
   scene.updateMatrixWorld();
   assert.equal(group.children.filter((child) => child.isMesh)[0], draws[0]);
   assert.equal(transforms.version, version + 1);
   assert.equal(transforms.array[2 * 16 + 12], 7);
+  assert.equal(forcedTextWorldUpdates, 0, 'the normal Three traversal supplies current matrices to transform patches');
+
+  const nestedParent = new THREE.Group();
+  group.add(nestedParent);
+  nestedParent.add(right);
+  nestedParent.position.x = 3;
+  scene.updateMatrixWorld();
+  assert.equal(transforms.array[2 * 16 + 12], 10, 'nested parent motion patches only the affected transform path');
+  nestedParent.visible = false;
+  scene.updateMatrixWorld();
+  assert.deepEqual(
+    Array.from(transforms.array.subarray(2 * 16, 3 * 16)),
+    Array(16).fill(0),
+    'nested parent visibility suppresses instances whose draw proxy lives at the shared root',
+  );
+  nestedParent.visible = true;
+  scene.updateMatrixWorld();
   assert.equal(
     right.snapshotGlyphOrigins().displayedX[0],
     rightOrigins.shapedX[0] + 4,
@@ -592,6 +649,11 @@ test('Bitmap strike changes fully initialize a replacement indexed batch', async
   scene.add(group);
   scene.updateMatrixWorld();
   assert.equal(group.error, undefined);
+  const initialDraw = group.children.find((child) => child.isMesh);
+  assert.ok(initialDraw);
+  const initialStart = initialDraw.userData.pmndrsTextRunStart;
+  const initialOrigins = initialDraw.geometry.getAttribute('_pmndrsText_1').array;
+  const initialAdvance = initialOrigins[(initialStart + 1) * 2] - initialOrigins[initialStart * 2];
 
   label.style = { ...label.style, fontSize: 16 };
   scene.updateMatrixWorld();
@@ -601,10 +663,48 @@ test('Bitmap strike changes fully initialize a replacement indexed batch', async
   const start = draw.userData.pmndrsTextRunStart;
   const transforms = draw.geometry.getAttribute('_pmndrsText_15').array;
   assert.deepEqual(Array.from(transforms.subarray(start, start + draw.geometry.instanceCount)), [1, 1]);
+  const scaledOrigins = draw.geometry.getAttribute('_pmndrsText_1').array;
+  const scaledAdvance = scaledOrigins[(start + 1) * 2] - scaledOrigins[start * 2];
+  assert.ok(
+    Math.abs(scaledAdvance - initialAdvance * 2) < 1e-5,
+    'a metric-only font-size mutation must rebuild advances without reshaping',
+  );
 
   label.contentBox = { ...label.contentBox, width: { mode: 'exact', size: 40 } };
   scene.updateMatrixWorld();
   assert.equal(group.error, undefined, 'width-only reflow must retain the initialized transform stream');
+
+  group.dispose();
+  label.dispose();
+  font.dispose();
+  runtime.dispose();
+});
+
+test('multi-page Bitmap strikes remain one ordered texture-array draw', async () => {
+  const runtime = await createTextRuntime({
+    wasm: await readFile(new URL('../../dist/text_shaper.wasm', import.meta.url)),
+  });
+  const font = await runtime.loadFont({
+    input: { baked: dataUrl(await readFile(densityFontUrl)) },
+    raster: { technique: bitmap, options: { strikes: [16, 32] } },
+  });
+  assert.ok(font.data.strikes[1].pages.length > 1, 'the regression fixture must contain a multi-page 32 ppem strike');
+  const scene = new THREE.Scene();
+  const group = new TextGroup();
+  const label = new Text({
+    font,
+    rasterPixelRatio: 2,
+    text: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789 !?.,;:'.repeat(24),
+    style: { fontSize: 16 },
+    contentBox: { width: { mode: 'exact', size: 480 }, wrap: 'word' },
+  });
+  group.add(label);
+  scene.add(group);
+  scene.updateMatrixWorld();
+  assert.equal(group.error, undefined);
+  const draws = group.children.filter((child) => child.isMesh);
+  assert.equal(draws.length, 1, 'atlas page changes must select texture-array layers without fragmenting draws');
+  assert.ok(draws[0].geometry.getAttribute('_pmndrsText_6'), 'the Bitmap plan must publish a page-layer stream');
 
   group.dispose();
   label.dispose();
@@ -687,6 +787,42 @@ test('TextGroup atomically replaces child paragraphs without multiplying retaine
 
   group.dispose();
   for (const text of [...first, ...second, ...third]) text.dispose();
+  font.dispose();
+  runtime.dispose();
+});
+
+test('TextGroup grows aggregate glyph storage without reserving one aggregate-sized paragraph', async () => {
+  const registry = new FontRegistry();
+  const runtime = await createTextRuntime({
+    registry,
+    wasm: await readFile(new URL('../../dist/text_shaper.wasm', import.meta.url)),
+  });
+  const font = await runtime.loadFont({
+    input: { baked: dataUrl(await readFile(fontUrl)) },
+    raster: { technique: bitmap, options: { strikes: [16] } },
+  });
+  const scene = new THREE.Scene();
+  const group = new TextGroup({ capacity: { size: 4_096, policy: 'chunk' } });
+  const labels = Array.from({ length: 684 }, (_, index) => new Text({ font, text: `icon-${String(index)}` }));
+  group.add(...labels);
+  scene.add(group);
+  scene.updateMatrixWorld();
+
+  assert.equal(group.error, undefined);
+  assert.equal(group.textCount, labels.length);
+  assert.equal(group.children.filter((child) => child.isMesh).length, 1);
+
+  for (let cycle = 0; cycle < 200; cycle += 1) {
+    for (let offset = 0; offset < 48; offset += 1) {
+      const index = (cycle * 23 + offset) % labels.length;
+      labels[index].text = `recycled-${String(cycle)}-${String(index)}`;
+    }
+    scene.updateMatrixWorld();
+    assert.equal(group.error, undefined, `recycling cycle ${String(cycle)} must remain publishable`);
+  }
+
+  group.dispose();
+  for (const label of labels) label.dispose();
   font.dispose();
   runtime.dispose();
 });

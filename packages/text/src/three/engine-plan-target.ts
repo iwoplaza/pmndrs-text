@@ -5,7 +5,7 @@ import { textShaperAbi } from '../generated/text-shaper-abi.js';
 import type { TextEnginePublication } from '../internal/text-engine-host.js';
 import { FIRST_PARTY_STABLE_GLYPH_BUFFER_ID, FIRST_PARTY_TRANSFORM_BUFFER_ID } from '../internal/render-policy-wire.js';
 import { TextEngineRenderPlanView, type RenderPlanTable } from '../internal/render-plan-view.js';
-import { bitmap, type BitmapPageData } from '../raster/bitmap-technique.js';
+import { bitmap, type BitmapStrikeData } from '../raster/bitmap-technique.js';
 import { msdf, type MsdfData } from '../raster/msdf.js';
 import { slug, type SlugPageData } from '../raster/slug-technique.js';
 import { bitmapShader } from './bitmap-shader.js';
@@ -73,6 +73,7 @@ interface RecordAddressing {
 
 export interface ThreeTextEnginePlanOwner {
   readonly drawRoot: THREE.Object3D;
+  readonly pixelSnapping: boolean;
   objectForTransform(transformId: number): THREE.Object3D;
   transformIds(): Iterable<number>;
   readonly renderOrderBase: number;
@@ -85,12 +86,13 @@ export class ThreeTextRenderPlanExecutor {
   readonly #view = new TextEngineRenderPlanView();
   readonly #buffers = new Map<number, RetainedBuffer>();
   readonly #resources = new Map<number, RetainedResource>();
-  readonly #bitmapTextures = new Map<number, THREE.DataTexture>();
+  readonly #bitmapTextures = new Map<number, THREE.DataArrayTexture>();
   readonly #msdfAtlases = new Map<number, THREE.DataArrayTexture>();
   readonly #slugPages = new Map<number, RetainedSlugPage>();
   readonly #materials = new Map<string, MaterialRealization>();
   readonly #ownedMaterials = new WeakSet<THREE.NodeMaterial>();
   readonly #activeTransformIndices = new Set<number>();
+  readonly #directDrawsByTransform = new Map<number, THREE.Mesh[]>();
   readonly #originRecords = new Map<number, OriginRecord>();
   readonly #rootInverse = new THREE.Matrix4();
   readonly #relativeTransform = new THREE.Matrix4();
@@ -150,6 +152,7 @@ export class ThreeTextRenderPlanExecutor {
         this.#replaceDraws(plan, draws, primitives, buffers, resources);
       }
       this.syncTransforms();
+      for (const draw of this.#draws) draw.updateMatrixWorld(false);
       this.#applyRetirements(plan, retirements);
       this.#originRecords.clear();
     });
@@ -220,57 +223,68 @@ export class ThreeTextRenderPlanExecutor {
   }
 
   /** Upload changed scene transforms without crossing into Wasm or invalidating text layout. */
-  syncTransforms(): number {
+  syncTransforms(transformIds: Iterable<number> = this.#owner.transformIds(), worldMatricesCurrent = false): number {
     for (const [index, draw] of this.#draws.entries()) {
       draw.renderOrder = this.#owner.renderOrderBase + index;
     }
-    const hasDirectTransforms = this.#draws.some((draw) => directTransformId(draw) !== 0);
-    if (this.#activeTransformIndices.size === 0 && !hasDirectTransforms) return 0;
-    this.#owner.drawRoot.updateWorldMatrix(true, false);
-    this.#rootInverse.copy(this.#owner.drawRoot.matrixWorld).invert();
     const target = this.#transformAttribute.array as Float32Array;
-    const changedTransforms = new Set<number>();
+    let rootPrepared = false;
+    let changedTransforms = 0;
     let indexedChanged = 0;
-    for (const index of this.#activeTransformIndices) {
-      const object = this.#owner.objectForTransform(index);
-      object.updateWorldMatrix(true, false);
-      this.#relativeTransform.multiplyMatrices(this.#rootInverse, object.matrixWorld);
-      const offset = index * 16;
-      if (object.visible) {
-        if (matrixEquals(target, offset, this.#relativeTransform.elements)) continue;
-        target.set(this.#relativeTransform.elements, offset);
-      } else {
-        if (zeroMatrixEquals(target, offset)) continue;
-        target.fill(0, offset, offset + 16);
+    for (const transformId of transformIds) {
+      const indexed = this.#activeTransformIndices.has(transformId);
+      const directDraws = this.#directDrawsByTransform.get(transformId);
+      if (!indexed && directDraws === undefined) continue;
+      if (!rootPrepared) {
+        if (!worldMatricesCurrent) this.#owner.drawRoot.updateWorldMatrix(true, false);
+        this.#rootInverse.copy(this.#owner.drawRoot.matrixWorld).invert();
+        rootPrepared = true;
       }
-      this.#transformAttribute.addUpdateRange(index * 16, 16);
-      changedTransforms.add(index);
-      indexedChanged += 1;
-    }
-    for (const draw of this.#draws) {
-      const transformId = directTransformId(draw);
-      if (transformId === 0) continue;
       const object = this.#owner.objectForTransform(transformId);
-      let drawChanged = false;
-      if (draw.visible !== object.visible) {
-        draw.visible = object.visible;
-        drawChanged = true;
-      }
-      object.updateWorldMatrix(true, false);
+      if (!worldMatricesCurrent) object.updateWorldMatrix(true, false);
       this.#relativeTransform.multiplyMatrices(this.#rootInverse, object.matrixWorld);
-      if (!draw.matrix.equals(this.#relativeTransform)) {
-        draw.matrix.copy(this.#relativeTransform);
-        draw.matrixWorldNeedsUpdate = true;
-        drawChanged = true;
+      const visible = visibleBelowRoot(object, this.#owner.drawRoot);
+      let transformChanged = false;
+      if (indexed) {
+        const offset = transformId * 16;
+        if (visible) {
+          if (!matrixEquals(target, offset, this.#relativeTransform.elements)) {
+            target.set(this.#relativeTransform.elements, offset);
+            transformChanged = true;
+          }
+        } else if (!zeroMatrixEquals(target, offset)) {
+          target.fill(0, offset, offset + 16);
+          transformChanged = true;
+        }
+        if (transformChanged) {
+          this.#transformAttribute.addUpdateRange(offset, 16);
+          indexedChanged += 1;
+        }
       }
-      if (drawChanged) changedTransforms.add(transformId);
+      for (const draw of directDraws ?? []) {
+        let drawChanged = false;
+        if (draw.visible !== visible) {
+          draw.visible = visible;
+          drawChanged = true;
+        }
+        if (!draw.matrix.equals(this.#relativeTransform)) {
+          draw.matrix.copy(this.#relativeTransform);
+          draw.matrixWorldNeedsUpdate = true;
+          drawChanged = true;
+        }
+        if (drawChanged) {
+          draw.updateMatrixWorld(false);
+          transformChanged = true;
+        }
+      }
+      if (transformChanged) changedTransforms += 1;
     }
-    if (changedTransforms.size === 0) return 0;
+    if (changedTransforms === 0) return 0;
     if (indexedChanged !== 0) {
       this.#transformAttribute.needsUpdate = true;
       invalidatePboTexture(this.#transformAttribute);
     }
-    return changedTransforms.size;
+    return changedTransforms;
   }
 
   dispose(): void {
@@ -288,6 +302,7 @@ export class ThreeTextRenderPlanExecutor {
     this.#buffers.clear();
     this.#resources.clear();
     this.#activeTransformIndices.clear();
+    this.#directDrawsByTransform.clear();
     this.#originRecords.clear();
     this.#originSegments = [];
   }
@@ -506,6 +521,14 @@ export class ThreeTextRenderPlanExecutor {
     this.#originSegments = nextOriginSegments;
     this.#activeTransformIndices.clear();
     for (const transformIndex of transformIndices) this.#activeTransformIndices.add(transformIndex);
+    this.#directDrawsByTransform.clear();
+    for (const draw of this.#draws) {
+      const transformId = directTransformId(draw);
+      if (transformId === 0) continue;
+      const transformDraws = this.#directDrawsByTransform.get(transformId) ?? [];
+      transformDraws.push(draw);
+      this.#directDrawsByTransform.set(transformId, transformDraws);
+    }
   }
 
   #restoreOriginTargets(): void {
@@ -589,18 +612,18 @@ export class ThreeTextRenderPlanExecutor {
     if (resolved.technique !== bitmap.id) {
       throw new Error('this Three plan target checkpoint realizes Bitmap draws only');
     }
-    const page = bitmapPage(resolved);
-    const required = [1, 2, 3, 4, 5].map((id) => {
+    const strike = bitmapStrike(resolved);
+    const required = [1, 2, 3, 4, 5, 6].map((id) => {
       const buffer = buffers.get(id);
       if (buffer === undefined) throw new Error(`Bitmap draw is missing policy buffer ${id}`);
       return buffer;
     });
-    const key = `${resource.id}:${resource.generation}:${materialId}:${required
+    const key = `${resource.id}:${resource.generation}:${materialId}:snap=${String(this.#owner.pixelSnapping)}:${required
       .map((buffer) => `${buffer.id}:${buffer.generation}`)
       .join(',')}:${transformProgramKey(transform, this.#transformGeneration)}:${addressingProgramKey(addressing)}`;
     const cached = this.#materials.get(key);
     if (cached !== undefined) return cached.material;
-    const texture = this.#bitmapTexture(resource.referenceId, page);
+    const texture = this.#bitmapTexture(resource.referenceId, strike);
     const runStart = TSL.uniform(0, 'uint').onObjectUpdate(
       ({ object }) => (object?.userData.pmndrsTextRunStart as number | undefined) ?? 0,
     );
@@ -618,8 +641,12 @@ export class ThreeTextRenderPlanExecutor {
           .setPBO(true)
           .element(instance),
         color: TSL.storage(required[4]!.attribute, 'vec4', required[4]!.attribute.count).setPBO(true).element(instance),
+        pageIndex: TSL.storage(required[5]!.attribute, 'uint', required[5]!.attribute.count)
+          .setPBO(true)
+          .element(instance),
       },
       { page: texture },
+      { pixelSnapping: this.#owner.pixelSnapping },
     );
     const position =
       transform.kind === 'indexed'
@@ -759,10 +786,23 @@ export class ThreeTextRenderPlanExecutor {
     return material;
   }
 
-  #bitmapTexture(referenceId: number, page: BitmapPageData): THREE.DataTexture {
+  #bitmapTexture(referenceId: number, strike: BitmapStrikeData): THREE.DataArrayTexture {
     let texture = this.#bitmapTextures.get(referenceId);
     if (texture !== undefined) return texture;
-    texture = new THREE.DataTexture(page.bytes, page.width, page.height, THREE.RedFormat, THREE.UnsignedByteType);
+    const width = Math.max(...strike.pages.map((page) => page.width));
+    const height = Math.max(...strike.pages.map((page) => page.height));
+    const bytes = new Uint8Array(width * height * strike.pages.length);
+    for (let layer = 0; layer < strike.pages.length; layer += 1) {
+      const page = strike.pages[layer]!;
+      for (let row = 0; row < page.height; row += 1) {
+        const source = row * page.width;
+        const target = (layer * height + row) * width;
+        bytes.set(page.bytes.subarray(source, source + page.width), target);
+      }
+    }
+    texture = new THREE.DataArrayTexture(bytes, width, height, strike.pages.length);
+    texture.format = THREE.RedFormat;
+    texture.type = THREE.UnsignedByteType;
     texture.colorSpace = THREE.NoColorSpace;
     texture.magFilter = THREE.LinearFilter;
     texture.minFilter = THREE.LinearFilter;
@@ -1116,6 +1156,15 @@ function directTransformId(draw: THREE.Mesh): number {
   return (draw.userData.pmndrsTextTransformId as number | undefined) ?? 0;
 }
 
+function visibleBelowRoot(object: THREE.Object3D, root: THREE.Object3D): boolean {
+  let current: THREE.Object3D | null = object;
+  while (current !== null && current !== root) {
+    if (!current.visible) return false;
+    current = current.parent;
+  }
+  return current === root;
+}
+
 function bitmapMaterial(
   shader: Readonly<{
     clipPosition: THREE.Node<'vec4'>;
@@ -1153,11 +1202,11 @@ function baseTextMaterial(): THREE.MeshBasicNodeMaterial {
   });
 }
 
-function bitmapPage(resource: ThreeTextEngineResource): BitmapPageData {
-  if (resource.technique !== bitmap.id || !('page' in resource)) {
+function bitmapStrike(resource: ThreeTextEngineResource): BitmapStrikeData {
+  if (resource.technique !== bitmap.id || !('strike' in resource)) {
     throw new Error('this Three plan target checkpoint realizes Bitmap draws only');
   }
-  return resource.page as BitmapPageData;
+  return resource.strike as BitmapStrikeData;
 }
 
 function msdfData(resource: ThreeTextEngineResource): MsdfData {

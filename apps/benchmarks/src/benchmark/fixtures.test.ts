@@ -111,14 +111,14 @@ describe('advanced-shaping result', () => {
     expect(
       result.measurements.every(
         ({ hash, metrics }: { hash: string; metrics: Record<string, number> }) =>
-          hash === '51ba1d14' &&
+          hash === '75ecd481' &&
           metrics.caseCount === 5 &&
           metrics.frameCount === 68 &&
           metrics.layoutBytes === 17_362 &&
           metrics.glyphCount === 709 &&
           metrics.missingGlyphCount === 0 &&
           metrics.renderedGlyphCount === 625 &&
-          metrics.drawCount === 72,
+          metrics.drawCount === metrics.frameCount - metrics.caseCount,
       ),
     ).toBe(true);
   });
@@ -222,7 +222,7 @@ describe('canonical Noto Sans CJK fixtures', () => {
     const inspectorArguments = [
       'run',
       '--manifest-path',
-      fileURLToPath(new URL('../../../../packages/font-baker/rust/Cargo.toml', import.meta.url)),
+      fileURLToPath(new URL('../../../../packages/text/rust/font-baker/Cargo.toml', import.meta.url)),
       '--bin',
       'inspect-font-fixture',
       '--features',

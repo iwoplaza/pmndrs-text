@@ -1,56 +1,68 @@
 ---
 type: Workspace Package
 title: '@pmndrs/text-r3f-hello-world'
-description: Demonstrates the public React Three Fiber API with Bitmap, MSDF, Slug, and font-stack fallback.
+description: Demonstrates the public React Three Fiber API with Bitmap, MSDF, Slug, and nested font spans.
 resource: ../../apps/r3f-hello-world
 workspace_package: '@pmndrs/text-r3f-hello-world'
 documentation_type: reference
-source_digest: 'sha256:e13744eb1f7b218f5bf3bbc2efc3dd0bdb87eea3f3cc859a01bd97523234f897'
+source_digest: 'sha256:f6d00a2f8f68d99a5b3846c3a93950400924db180b4f8179ef250d09d2a6eba1'
 tags: [package, example, react, react-three-fiber, vite]
 sources:
   - id: manifest
     resource: ../../apps/r3f-hello-world/package.json
     title: Example application manifest
   - id: scene
-    resource: ../../apps/r3f-hello-world/src/technique-scene.tsx
-    title: Public R3F technique and fallback example
-  - id: asset-generator
-    resource: ../../apps/r3f-hello-world/scripts/generate-fonts.mts
-    title: Reproducible subset and multi-technique bake
-  - id: asset-manifest
-    resource: ../../apps/r3f-hello-world/assets/manifest.json
-    title: Authenticated checked-in example assets
+    resource: ../../apps/r3f-hello-world/src/app.tsx
+    title: Public R3F technique and nested font-span example
 generated:
   by: openai-codex/gpt-5.6
-  at: '2026-08-10T03:47:15Z'
+  at: '2026-08-11T03:15:33Z'
 ---
 
 # Package reference: `@pmndrs/text-r3f-hello-world`
 
 This private Vite application is the minimal product-shaped React Three Fiber example. One full-page canvas renders
-`Hello world` through the public `@pmndrs/text/r3f` `Text` component and resolves a Font Awesome globe through an ordered
-font stack. In-canvas MSDF controls replace the rendered text component between Bitmap, MSDF, and Slug; the example does
-not retain a second renderer path or manually pack glyph data.
+`Hello world` through the public `@pmndrs/text/react` `Text` component. The globe is a nested `Text` span bound directly
+to the matching subsetted Font Awesome raster rather than an automatically resolved font-stack fallback. Public
+`useFont.preload()` calls start both multi-raster asset requests before the scene suspends on the same cache entries.
+One `App` component owns the loaded fonts, technique state, three React `Activity` branches, and its in-canvas Slug
+controls. Each hidden branch pre-renders a standalone world `Text`; changing technique reveals the already committed
+Bitmap, MSDF, or Slug branch rather than initializing one after the click. The selected technique color appears on both
+the globe and its control label. The example does not retain a second renderer path or manually pack glyph data. The UI
+`TextGroup` batches its labels explicitly. The controls sit in one centered row at the top of the viewport, while the
+world copy remains centered in the available canvas. One local `Button` component owns each transform group, plane mesh,
+hover state, and text label. Its `pillNode()` graph rounds the plane without tessellated shape geometry. Labels use a
+44-unit shaped line box, centered font metrics, and tracked uppercase text. Neither text layer opts into independent
+compositing because authored order is the honest default for this small scene.
 
 The checked-in assets are deliberately bounded at source before baking:
 
 - Inter contains Basic Latin `U+0020–U+007E`.
 - Font Awesome contains six globe and earth PUA scalars, including the displayed `U+F0AC` glyph.
 
-Each GLB embeds Bitmap, MSDF, and Slug raster resources for its subset. The manifest authenticates the exact artifacts,
-and `assets:check` uses pinned HarfBuzz 14.2.0 to subset and rebake both fonts in temporary storage before requiring
-byte-identical output. Vite emits the public shaper Wasm URL and a combined Inter/Font Awesome notice file. Three, React,
-and React Three Fiber remain ordinary workspace peers rather than part of the core package-size graph.
+Each GLB embeds Bitmap, MSDF, and Slug raster resources for its subset. The package manifest invokes only the published
+CLI through `pnpm exec text bake`: direct input/output arguments select all three rasters, `--unicodes` delegates
+shaping-font subsetting to the package-owned baker Wasm, and `--check` rebakes into temporary storage before requiring
+byte-identical output.
+The example loads each GLB once with one typed raster tuple and receives exact Bitmap, MSDF, and Slug `LoadedFont` values;
+it does not repeat the input URL per technique. Vite emits the public shaper Wasm URL and a combined Inter/Font Awesome
+notice file. Three, React, and React Three Fiber remain ordinary workspace peers rather than part of the core package-size
+graph.
 
 ## Commands
 
 ```sh
-mise -C apps/benchmarks exec -- node ./scripts/provision-harfbuzz.mts --version=14.2.0
 mise exec -- pnpm --filter @pmndrs/text-r3f-hello-world dev
+mise exec -- pnpm --filter @pmndrs/text-r3f-hello-world bake
+mise exec -- pnpm --filter @pmndrs/text-r3f-hello-world bake:check
 mise exec -- pnpm --filter @pmndrs/text-r3f-hello-world check
 ```
 
-The check runs TypeScript 7 isolated typechecking, React Compiler-aware Oxlint with warnings denied, Oxfmt, deterministic
-asset rebaking, a production Vite build, and a GPU Chromium acceptance probe. The probe clicks all three in-canvas
-controls through pointer events and requires 13 laid-out glyphs—11 visible records plus two spaces—in two Rust-planned
-meshes: one for Latin and one for the icon fallback resource.
+`bake:inter` and `bake:icons` own the two output GLBs, and the root `bake` command composes them. The corresponding
+`bake:check:inter`, `bake:check:icons`, and root `bake:check` commands preserve the same per-asset boundary in byte-exact
+check mode. The complete check runs TypeScript 7 isolated typechecking, React Compiler-aware Oxlint with warnings denied,
+Oxfmt, deterministic asset rebaking, a production Vite build, and a GPU Chromium acceptance probe. The probe clicks all three in-canvas
+controls through pointer events, reads the named R3F world layer directly through Vitexec, and first requires all three
+hidden `Activity` branches to own their two Rust-planned meshes. Every revealed branch contains 13 laid-out glyphs—11
+visible records plus two spaces—with one mesh for Latin and one for the explicitly bound icon-span resource. The teaching component
+carries no probe-only effect, ref, frame callback, or canvas data attributes.

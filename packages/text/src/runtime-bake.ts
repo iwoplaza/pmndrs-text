@@ -1,8 +1,9 @@
-import { FontBakeError } from '@pmndrs/text-font-baker';
+import { FontBakeError } from './font-baker/index.js';
 
 import type { RuntimeFontBake, RuntimeFontBakeRequest } from './loader.js';
 import { fontBakeDescriptorV0 } from './internal/core-bake-policy.js';
 import { copyToOwnedArrayBuffer } from './internal/owned-array-buffer.js';
+import { normalizeUnicodeRanges } from './internal/font-selection.js';
 import {
   isRuntimeBakeResultV0,
   type RuntimeBakeRequestV0,
@@ -28,6 +29,11 @@ const host = new SerialWorkerHost<
         id,
         source,
         font: fontBakeDescriptorV0(0),
+        ...(request.cache === undefined ? {} : { cache: request.cache }),
+        ...(request.unicodeRanges === undefined
+          ? {}
+          : { unicodeRanges: normalizeUnicodeRanges(request.unicodeRanges) }),
+        ...(request.rasters === undefined ? {} : { rasters: request.rasters }),
       },
       transfer: [source],
     };

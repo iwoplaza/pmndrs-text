@@ -65,7 +65,7 @@ export type TextProperties<Technique extends AnyRasterTechnique> = TextBasePrope
   Readonly<{ material?: ThreeTextMaterial }>;
 
 export type StandaloneTextProperties<Technique extends AnyRasterTechnique> = TextProperties<Technique> &
-  Readonly<{ capacity?: GlyphBufferCapacity }>;
+  Readonly<{ capacity?: GlyphBufferCapacity; pixelSnapping?: boolean }>;
 
 export type TextUpdate<Technique extends AnyRasterTechnique> =
   | (Partial<TextBaseProperties<Technique>> &
@@ -79,6 +79,8 @@ export interface TextGroupOptions {
   readonly compositing?: 'ordered' | 'independent';
   readonly renderOrder?: number;
   readonly material?: ThreeTextMaterial;
+  /** Snap Bitmap vertices to physical pixels. Off by default because snapping quantizes animated transforms. */
+  readonly pixelSnapping?: boolean;
 }
 
 export interface TextGlyphOriginSnapshot {
@@ -117,6 +119,7 @@ export class Text<Technique extends AnyRasterTechnique> extends THREE.Object3D {
   #desired: DesiredTextState<Technique>;
   #leasedFonts: readonly LoadedFont<Technique>[];
   #standaloneCapacity: GlyphBufferCapacity;
+  readonly #pixelSnapping: boolean;
   #binding: ThreeTextBatchBinding | undefined;
   #textGroup: TextGroup | undefined;
   #desiredRevision = 0;
@@ -136,10 +139,14 @@ export class Text<Technique extends AnyRasterTechnique> extends THREE.Object3D {
     this.#leasedFonts = selectedFonts(normalized);
     acquireFonts(this.#leasedFonts, this.#runtime);
     this.#standaloneCapacity = normalizeCapacity(properties.capacity ?? { size: 256, policy: 'grow' });
+    this.#pixelSnapping = normalizePixelSnapping(properties.pixelSnapping);
   }
 
   get textGroup(): TextGroup | undefined {
     return this.#textGroup;
+  }
+  get pixelSnapping(): boolean {
+    return this.#pixelSnapping;
   }
   get bound(): boolean {
     return this.#binding !== undefined;
@@ -374,8 +381,11 @@ export class Text<Technique extends AnyRasterTechnique> extends THREE.Object3D {
 export class TextGroup extends THREE.Object3D {
   #capacity: GlyphBufferCapacity;
   readonly #compositing: 'ordered' | 'independent';
+  readonly #pixelSnapping: boolean;
   #material: ThreeTextMaterial | undefined;
   #binding: ThreeTextBatchBinding | undefined;
+  readonly #transformTracker = new TextTransformTracker();
+  readonly #texts: Text<AnyRasterTechnique>[] = [];
   #disposed = false;
   #error: unknown;
   onError: ((error: unknown) => void) | undefined;
@@ -384,6 +394,7 @@ export class TextGroup extends THREE.Object3D {
     super();
     this.#capacity = normalizeCapacity(options.capacity ?? { size: 4_096, policy: 'chunk' });
     this.#compositing = normalizeCompositing(options.compositing);
+    this.#pixelSnapping = normalizePixelSnapping(options.pixelSnapping);
     this.#material = options.material;
     if (options.renderOrder !== undefined) this.renderOrder = options.renderOrder;
   }
@@ -395,6 +406,9 @@ export class TextGroup extends THREE.Object3D {
   }
   get textCount(): number {
     return this.#binding?.textCount ?? 0;
+  }
+  get pixelSnapping(): boolean {
+    return this.#pixelSnapping;
   }
   get disposed(): boolean {
     return this.#disposed;
@@ -438,14 +452,19 @@ export class TextGroup extends THREE.Object3D {
   }
 
   override updateMatrixWorld(force?: boolean): void {
+    super.updateMatrixWorld(force);
     if (!this.#disposed) {
-      const texts = collectTextDescendants(this);
+      const texts = collectTextDescendants(this, this.#texts);
       if (texts.length !== 0) {
         try {
           const runtime = texts[0]!.runtime;
           for (const text of texts) validateBinding(runtime, text);
           this.#binding ??= new ThreeTextBatchBinding(runtime, this.#capacity, this);
           this.#binding.reconcile(texts);
+          this.#transformTracker.beginFrame();
+          for (const text of texts) {
+            if (this.#transformTracker.pathChanged(text, this)) this.#binding.markTransformDirty(text);
+          }
           this.#binding.synchronize();
           this.#error = undefined;
         } catch (error) {
@@ -463,7 +482,6 @@ export class TextGroup extends THREE.Object3D {
         }
       }
     }
-    super.updateMatrixWorld(force);
   }
 
   bindText(text: Text<AnyRasterTechnique>): void {
@@ -505,6 +523,8 @@ class ThreeTextBatchBinding {
   readonly #layoutInspections = new Map<Text<AnyRasterTechnique>, ParagraphLayoutInspection>();
   readonly #queryPlanView = new TextEngineRenderPlanView();
   readonly #freeParagraphIds: number[] = [];
+  readonly #dirtyTransformIds = new Set<number>();
+  readonly #desiredTexts = new Set<Text<AnyRasterTechnique>>();
   #nextParagraphId = 1;
   #engineRevision = 0;
   #planRevision = 0;
@@ -512,7 +532,8 @@ class ThreeTextBatchBinding {
   #lastPublication: TextEnginePublication | undefined;
   #requestCapacity: number;
   #resultCapacity: number;
-  #textCapacity: number;
+  #textCapacity = 0;
+  #capacity: GlyphBufferCapacity;
   #materialInvalidated = false;
   #disposed = false;
 
@@ -522,16 +543,18 @@ class ThreeTextBatchBinding {
     this.#coordinator = threeTextEngineCoordinator(runtime);
     this.#requestCapacity = Math.max(64 * 1024, capacity.size * 32);
     this.#resultCapacity = Math.max(256 * 1024, capacity.size * 160);
-    this.#textCapacity = capacity.size;
+    this.#capacity = capacity;
     this.#session = this.#coordinator.createSession({
       requestCapacity: this.#requestCapacity,
       resultCapacity: this.#resultCapacity,
-      textCapacity: this.#textCapacity,
     });
     const owner = this;
     this.#target = new ThreeTextRenderPlanExecutor(this.#coordinator, {
       get drawRoot() {
         return owner.#drawRoot();
+      },
+      get pixelSnapping() {
+        return owner.#pixelSnapping();
       },
       get renderOrderBase() {
         return owner.#renderOrderBase();
@@ -585,12 +608,17 @@ class ThreeTextBatchBinding {
     if (layout !== undefined) this.#target.clearGlyphOriginOverrides(layout.glyphStableIds);
   }
   reconcile(texts: readonly Text<AnyRasterTechnique>[]): void {
-    const desired = new Set(texts);
-    for (const text of [...this.#paragraphs.keys()]) if (!desired.has(text)) this.removeText(text);
+    this.#desiredTexts.clear();
+    for (const text of texts) this.#desiredTexts.add(text);
+    for (const text of this.#paragraphs.keys()) if (!this.#desiredTexts.has(text)) this.removeText(text);
     for (const text of texts) this.#ensureText(text, this.#group);
   }
   reconcileStandalone(text: Text<AnyRasterTechnique>): void {
     this.#ensureText(text, undefined);
+  }
+  markTransformDirty(text: Text<AnyRasterTechnique>): void {
+    const paragraph = this.#paragraphs.get(text);
+    if (paragraph !== undefined) this.#dirtyTransformIds.add(paragraph.id);
   }
   synchronize(semanticViewMask = 0): void {
     if (this.#disposed) return;
@@ -608,7 +636,8 @@ class ThreeTextBatchBinding {
         : [];
     });
     if (changed.length === 0 && this.#removed.length === 0) {
-      this.#target.syncTransforms();
+      this.#target.syncTransforms(this.#dirtyTransformIds, this.#group !== undefined);
+      this.#dirtyTransformIds.clear();
       if (semanticViewMask !== 0 && !this.#hasSemanticViews(semanticViewMask)) {
         this.#retainSemanticViews(this.#querySemanticViews(semanticViewMask), semanticViewMask);
       }
@@ -637,7 +666,10 @@ class ThreeTextBatchBinding {
         const content = properties.text as string;
         if (semanticChanges & TEXT_CHANGE) {
           const pending = paragraph.created ? [{ start: 0, deleteCount: 0, insert: content }] : text.textMutations();
-          for (const mutation of pending) textMutations.push({ paragraphId: paragraph.id, ...mutation });
+          for (const mutation of pending) {
+            if (mutation.deleteCount === 0 && mutation.insert.length === 0) continue;
+            textMutations.push({ paragraphId: paragraph.id, ...mutation });
+          }
         }
         if (semanticChanges & STYLE_CHANGE) {
           const leases: ThreeTextEngineStackLease[] = [];
@@ -663,10 +695,17 @@ class ThreeTextBatchBinding {
           regions.push(geometry.region);
         }
       }
-      const totalTextLength = [...this.#paragraphs.keys()].reduce((total, text) => total + text.text.length, 0);
+      let totalTextLength = 0;
+      let maximumParagraphTextLength = 0;
+      for (const text of this.#paragraphs.keys()) {
+        totalTextLength += text.text.length;
+        maximumParagraphTextLength = Math.max(maximumParagraphTextLength, text.text.length);
+      }
+      this.#ensureCapacity(totalTextLength, maximumParagraphTextLength);
       const limits = engineLimits(
         Math.max(this.#paragraphs.size, paragraphMutations.length),
         totalTextLength,
+        maximumParagraphTextLength,
         Math.max(regions.length, this.#paragraphs.size),
         MAX_TEXT_ENGINE_OUTPUT_BYTES,
         Math.max(textMutations.length, styleMutations.length),
@@ -728,6 +767,7 @@ class ThreeTextBatchBinding {
       committed = true;
       try {
         this.#target.apply(publication);
+        this.#dirtyTransformIds.clear();
         this.#planRevision = publication.planRevision;
         this.#lastPublication = undefined;
       } catch (error) {
@@ -745,9 +785,33 @@ class ThreeTextBatchBinding {
     }
   }
   setCapacity(value: GlyphBufferCapacity): void {
+    this.#capacity = value;
     this.#requestCapacity = Math.max(this.#requestCapacity, value.size * 32);
     this.#resultCapacity = Math.max(this.#resultCapacity, value.size * 160);
-    this.#textCapacity = Math.max(this.#textCapacity, value.size);
+    this.#session.reserve(this.#requestCapacity, this.#resultCapacity);
+  }
+  #ensureCapacity(required: number, requiredParagraphText: number): void {
+    if (required > this.#capacity.size && this.#capacity.policy === 'fixed') {
+      throw new RangeError(`text requires ${required} glyph slots but fixed capacity is ${this.#capacity.size}`);
+    }
+    const target =
+      this.#capacity.policy === 'chunk' ? Math.ceil(required / this.#capacity.size) * this.#capacity.size : required;
+    const requestCapacity = Math.max(this.#requestCapacity, target * 32);
+    const resultCapacity = Math.max(this.#resultCapacity, target * 160);
+    const textCapacity = Math.max(this.#textCapacity, requiredParagraphText);
+    if (
+      requestCapacity === this.#requestCapacity &&
+      resultCapacity === this.#resultCapacity &&
+      textCapacity === this.#textCapacity
+    ) {
+      return;
+    }
+    this.#requestCapacity = requestCapacity;
+    this.#resultCapacity = resultCapacity;
+    this.#textCapacity = textCapacity;
+    // Glyph capacity is aggregate batch storage, while Rust's text reservation sizes one paragraph scratch arena.
+    // Reserving the longest paragraph keeps sustained edits hot without multiplying the batch's total text by every
+    // scratch field.
     this.#session.reserve(this.#requestCapacity, this.#resultCapacity, this.#textCapacity);
   }
   invalidateMaterial(): void {
@@ -766,6 +830,7 @@ class ThreeTextBatchBinding {
     if (paragraph === undefined) return;
     this.#paragraphs.delete(text);
     this.#textsByParagraph.delete(paragraph.id);
+    this.#dirtyTransformIds.delete(paragraph.id);
     this.#removed.push(paragraph);
     text.unbindFrom(this);
   }
@@ -785,6 +850,8 @@ class ThreeTextBatchBinding {
     this.#layoutInspections.clear();
     this.#removed.length = 0;
     this.#freeParagraphIds.length = 0;
+    this.#dirtyTransformIds.clear();
+    this.#desiredTexts.clear();
   }
   #ensureText(text: Text<AnyRasterTechnique>, group: TextGroup | undefined): void {
     validateBinding(this.#runtime, text);
@@ -819,8 +886,18 @@ class ThreeTextBatchBinding {
     return this.#paragraphs.keys().next().value?.renderOrder ?? 0;
   }
 
+  #pixelSnapping(): boolean {
+    if (this.#group !== undefined) return this.#group.pixelSnapping;
+    return this.#paragraphs.keys().next().value?.pixelSnapping ?? false;
+  }
+
   #querySemanticViews(semanticViewMask: number): TextEnginePublication {
-    const totalTextLength = [...this.#paragraphs.keys()].reduce((total, entry) => total + entry.text.length, 0);
+    let totalTextLength = 0;
+    let maximumParagraphTextLength = 0;
+    for (const entry of this.#paragraphs.keys()) {
+      totalTextLength += entry.text.length;
+      maximumParagraphTextLength = Math.max(maximumParagraphTextLength, entry.text.length);
+    }
     const publication = this.#session.update(
       compileTextEngineFrameUpdate({
         sessionId: this.#session.handle,
@@ -834,6 +911,7 @@ class ThreeTextBatchBinding {
         limits: engineLimits(
           this.#paragraphs.size,
           totalTextLength,
+          maximumParagraphTextLength,
           this.#paragraphs.size,
           MAX_TEXT_ENGINE_OUTPUT_BYTES,
         ),
@@ -1050,6 +1128,7 @@ function axis(value: ParagraphContentBox['width'] | undefined): {
 function engineLimits(
   paragraphCount: number,
   textLength: number,
+  maximumParagraphTextLength: number,
   regionCount: number,
   maxOutputBytes: number,
   mutationRecordCount = 0,
@@ -1057,7 +1136,9 @@ function engineLimits(
   return {
     maxParagraphs: Math.max(1, paragraphCount),
     maxClusters: Math.max(1, textLength * 2, mutationRecordCount),
-    maxLines: Math.max(1, textLength),
+    // Rust applies this limit while composing each paragraph. Using aggregate batch text here makes every paragraph
+    // reserve enough line scratch for the whole TextGroup, multiplying retained memory by paragraph count.
+    maxLines: Math.max(1, maximumParagraphTextLength),
     maxRegions: Math.max(1, regionCount),
     maxExclusions: 1,
     maxInlineObjects: 1,
@@ -1264,6 +1345,11 @@ function normalizeCompositing(value: TextGroupOptions['compositing']): 'ordered'
   if (value === 'independent') return value;
   throw new TypeError('text group compositing mode is invalid');
 }
+function normalizePixelSnapping(value: boolean | undefined): boolean {
+  if (value === undefined || value === false) return false;
+  if (value === true) return true;
+  throw new TypeError('pixel snapping must be a boolean');
+}
 function nearestTextGroup(object: THREE.Object3D): TextGroup | undefined {
   let parent = object.parent;
   while (parent !== null) {
@@ -1275,14 +1361,69 @@ function nearestTextGroup(object: THREE.Object3D): TextGroup | undefined {
 function eraseTextTechnique<Technique extends AnyRasterTechnique>(text: Text<Technique>): Text<AnyRasterTechnique> {
   return text as unknown as Text<AnyRasterTechnique>;
 }
-function collectTextDescendants(group: TextGroup): Text<AnyRasterTechnique>[] {
-  const texts: Text<AnyRasterTechnique>[] = [];
+function collectTextDescendants(group: TextGroup, texts: Text<AnyRasterTechnique>[]): Text<AnyRasterTechnique>[] {
+  texts.length = 0;
   for (const child of group.children) collect(child, texts);
   return texts;
   function collect(object: THREE.Object3D, result: Text<AnyRasterTechnique>[]): void {
     if (object instanceof TextGroup) return;
     if (object instanceof Text && !object.disposed) result.push(object as Text<AnyRasterTechnique>);
     for (const child of object.children) collect(child, result);
+  }
+}
+
+interface ObservedTextTransform {
+  readonly matrix: Float64Array;
+  parent: THREE.Object3D | null;
+  visible: boolean;
+  frame: number;
+  changed: boolean;
+}
+
+class TextTransformTracker {
+  readonly #observed = new WeakMap<THREE.Object3D, ObservedTextTransform>();
+  #frame = 0;
+
+  beginFrame(): void {
+    this.#frame += 1;
+  }
+
+  pathChanged(text: Text<AnyRasterTechnique>, boundary: TextGroup): boolean {
+    let changed = false;
+    let object: THREE.Object3D | null = text;
+    while (object !== null && object !== boundary) {
+      if (this.#objectChanged(object)) changed = true;
+      object = object.parent;
+    }
+    return object !== boundary || changed;
+  }
+
+  #objectChanged(object: THREE.Object3D): boolean {
+    const existing = this.#observed.get(object);
+    if (existing?.frame === this.#frame) return existing.changed;
+    const elements = object.matrix.elements;
+    let changed = existing === undefined || existing.parent !== object.parent || existing.visible !== object.visible;
+    if (existing === undefined) {
+      const matrix = new Float64Array(elements);
+      this.#observed.set(object, {
+        matrix,
+        parent: object.parent,
+        visible: object.visible,
+        frame: this.#frame,
+        changed: true,
+      });
+      return true;
+    }
+    for (let index = 0; index < 16; index += 1) {
+      if (existing.matrix[index] === elements[index]) continue;
+      existing.matrix[index] = elements[index]!;
+      changed = true;
+    }
+    existing.parent = object.parent;
+    existing.visible = object.visible;
+    existing.frame = this.#frame;
+    existing.changed = changed;
+    return changed;
   }
 }
 function validateText(text: Text<AnyRasterTechnique>): void {

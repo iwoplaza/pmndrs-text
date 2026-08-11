@@ -5,7 +5,7 @@ description: Implements portable font loading, retained Rust shaping and layout,
 resource: ../../packages/text
 workspace_package: '@pmndrs/text'
 documentation_type: reference
-source_digest: 'sha256:61242870023c632bd2ce25324a2d961b249c6de523013d9935cc1ec1f543319c'
+source_digest: 'sha256:247699e3c0290cc64c13174b17570de1458ae3793c24654a1f7b84206c0ccc43'
 tags: [package, public-api, rust, wasm, threejs, typography]
 sources:
   - id: manifest
@@ -17,6 +17,15 @@ sources:
   - id: runtime
     resource: ../../packages/text/src/text-runtime.ts
     title: Font and Rust-runtime ownership
+  - id: node-cli
+    resource: ../../packages/text/src/node/cli.ts
+    title: Project-discovery and direct font-bake CLI
+  - id: font-baker
+    resource: ../../packages/text/rust/font-baker
+    title: Optional portable font-baker Wasm
+  - id: bake-api
+    resource: ../../packages/text/src/node/bake.ts
+    title: Programmatic bake subpath
   - id: text-properties
     resource: ../../packages/text/src/text-properties.ts
     title: Paragraph input contract
@@ -41,8 +50,8 @@ sources:
   - id: three-policy
     resource: ../../packages/text/src/three/plan-program-registry.ts
     title: Three.js policy-program registry
-  - id: r3f
-    resource: ../../packages/text/src/r3f.ts
+  - id: react
+    resource: ../../packages/text/src/react.ts
     title: React Three Fiber adapter
   - id: engine-design
     resource: ../planning/rust-layout-engine.md
@@ -55,7 +64,7 @@ sources:
     title: Three.js text API reference
 generated:
   by: openai-codex/gpt-5.6
-  at: '2026-08-10T03:47:15Z'
+  at: '2026-08-11T05:18:01Z'
 ---
 
 # Package reference: `@pmndrs/text`
@@ -72,9 +81,11 @@ The package owns five runtime layers:
 | Shaping and layout      | Rust/Wasm            | Unicode analysis, bidi, font fallback, shaping, line composition, positioning, ellipsis, and semantic query state.                     |
 | Policy and render plan  | Rust/Wasm            | Interpret a validated renderer policy, pack canonical technique records, coalesce dirty ranges, and emit a compact command buffer.     |
 | Three.js integration    | `@pmndrs/text/three` | Compile policy programs, resolve font/material resources, apply command-buffer deltas, upload dirty ranges, and maintain draw proxies. |
-| React integration       | `@pmndrs/text/r3f`   | Reconcile React values into the same imperative `Text` and `TextGroup` objects.                                                        |
+| React integration       | `@pmndrs/text/react` | Reconcile React values into the same imperative `Text` and `TextGroup` objects.                                                        |
 
-Rust remains `no_std + alloc` with the package allocator contract. It uses the existing compile-time direct-memory mapping
+Runtime Rust and all shared Rust code remain `no_std + alloc` compatible with the package allocator contract. The optional
+font-baker Wasm alone enables a feature-gated `std` adapter for Fontations subsetting; the same crate continues to
+pass its `wasm32-unknown-unknown --no-default-features` build. The text engine uses the existing compile-time direct-memory mapping
 for font registrations and the single `text_update(requestOffset, requestLength)` export for retained engine sessions.
 TypeScript does not independently shape, lay out, or pack paragraphs.
 
@@ -87,13 +98,59 @@ TypeScript does not independently shape, lay out, or pack paragraphs.
 | `@pmndrs/text/three/bitmap` | Bitmap technique, policy program, and canonical TSL shader.                                                                      |
 | `@pmndrs/text/three/msdf`   | MSDF technique, policy program, and canonical TSL shader.                                                                        |
 | `@pmndrs/text/three/slug`   | Slug technique, policy program, and canonical TSL shader.                                                                        |
-| `@pmndrs/text/r3f`          | React Three Fiber `<Text>`, `<TextGroup>`, and `useFont`.                                                                        |
+| `@pmndrs/text/react`        | React `<Text>`, `<TextGroup>`, and `useFont`, reconciled through React Three Fiber.                                              |
+| `@pmndrs/text/bake`         | Node programmatic font baking, glyph selection, and font inspection used by the `text` CLI.                                      |
+| `@pmndrs/text/runtime-bake` | Explicit browser Worker host for optional runtime baking.                                                                        |
 | `@pmndrs/text/raster/*`     | Renderer-neutral Bitmap, MSDF, and Slug decoding and raster-technique contracts.                                                 |
 | `@pmndrs/text/bakers/*`     | Optional portable raster bakers and validators.                                                                                  |
+
+The font-baker Rust source, direct-memory wrapper, schemas, tests, build pipeline, optimized Wasm, and generated ABI are
+owned by this package. There is no separately published font-baker package. The root entry has no static edge to the
+baker, its `std`-enabled dependencies, Ajv, glTF Validator, or the baker Wasm; only explicit bake/runtime-bake surfaces can
+load those bytes.
 
 `@pmndrs/text/typegpu`, the TypeScript paragraph engine, paragraph batches/attachments, direct shaping exports, and the
 text-preparation Worker are removed. TypeGPU is a later adapter stack built against the Rust render plan; it is not a
 compatibility wrapper over the removed batch model.
+
+The package-owned `text` executable is available through `pnpm exec`; its `bake` command supports both project discovery
+and a direct known-font mode. Its stable packaged shim delegates to the built Node CLI, so workspace installs can link the
+executable before `dist` exists. Direct mode accepts one input/output pair, a collection face, optional shaping-font
+Unicode subsetting through the package-owned Fontations/Skera baker Wasm, and independently selected embedded Bitmap,
+MSDF, and Slug rasters. The prepared source bytes feed the core shaping bake and every selected raster bake; neither the
+CLI nor the programmatic `@pmndrs/text/bake` path invokes a platform font tool. `--check`
+publishes only to temporary storage and compares the complete GLB byte-for-byte with the requested output. It calls the
+same `bakeFont` host as programmatic consumers rather than maintaining an example-only composition path.
+
+The `text glyphs` command uses the same package-owned baker Wasm and Skrifa to enumerate Unicode mappings, exact glyph
+IDs, and names retained in a font's `post` or CFF data. Exact repeatable `--name` filters can emit structured JSON or a
+compressed `--unicode-set` accepted by `text bake --unicodes`. Fonts without authored names still expose exact IDs rather
+than invented semantic labels. Rich vendor labels and aliases remain external catalog data.
+
+The R3F `Text` component infers the technique union from a required outer font selection, including a font stack chosen
+from runtime state. Callers do not widen dynamic selections to `AnyRasterTechnique`. A nested `Text` may omit `font`
+because it is flattened into an inline span and inherits from its outer text; a rendered outer `Text` without a font is
+invalid. `TextGroup` owns batching and compositing policy, never font inheritance. Both components register their Three
+objects with the R3F host and are constructed during its commit rather than in a layout effect. React `Activity` can
+therefore pre-render a hidden text or whole text group, while R3F retains visibility and eventual disposal ownership.
+
+One baked GLB may expose several raster techniques without repeating its input identity. `TextRuntime.loadFont()` and
+R3F `useFont()` accept a nonempty `rasters` tuple and return a position-preserving tuple of `LoadedFont` values. The
+artifact is fetched, validated, registered with the shaper, and retained once; each requested technique still derives
+its exact descriptor, resolves and decodes its own raster resource, and retains its associated data type. A mapped tuple
+keeps required Bitmap options and custom third-party technique types enforceable at every position.
+
+When runtime baking is required, one Worker request normalizes the Unicode ranges, prepares the selected source once,
+and feeds those exact prepared bytes to the shaping bake and every requested Bitmap, MSDF, or Slug bake. The Worker
+composes and validates one canonical GLB before transferring it. Its `asset.generator` is the publishing package identity
+`@pmndrs/text`, independent of whether the producer was the CLI, Node API, or runtime Worker.
+
+The Worker caches only that final validated GLB in `CacheStorage`; partial preparation and raster outputs never become
+cache entries. Identity covers source bytes, face, normalized ranges, ordered raster descriptors and keys, and all
+relevant format/baker versions. Persistence is inherited from the source response: `no-store`, `no-cache`, missing
+freshness metadata, and already-expired responses remain memory-only, while `max-age` or `Expires` supplies the exact
+derived-artifact expiration. Browser quota eviction owns storage pressure. Cache absence, quota rejection, privacy
+restrictions, and storage corruption are transparent misses followed by the same canonical bake.
 
 ## Retained frame transaction
 
@@ -105,6 +162,13 @@ One `TextGroup` owns one Rust engine session. A traversal sends only changed par
 - transform and visibility changes update Three's renderer-local sidecar without calling Wasm;
 - an empty or normalized-equal update sends nothing.
 
+Three's ordinary scene traversal owns world-matrix composition. `TextGroup` tracks local matrices, visibility, and
+parent identity only below its shared draw root, then gives the executor the paragraph IDs whose relative transform
+path changed. Camera and `TextGroup` motion therefore move the shared draw without forcing every `Text` world matrix a
+second time, multiplying every relative matrix, or scheduling transform-table uploads. Direct `Text` motion, nested
+ancestor motion, visibility, reparenting, and manual matrix changes still patch the affected renderer-local slots and do
+not enter Wasm.
+
 Rust publishes one revision containing:
 
 - engine and plan revision headers;
@@ -113,6 +177,12 @@ Rust publishes one revision containing:
 - resource bindings;
 - ordered draw commands with technique/program, resource, material, transform, and clip identity;
 - optional semantic measurement or inspection sections only when explicitly demanded.
+
+Metric-only style changes refresh retained shaping-run typography before cluster aggregation but reuse the HarfRust glyph
+result. Font size, letter spacing, word spacing, line height, and baseline changes therefore rebuild advances and
+positioning without treating glyph identities as newly shaped content. A public optimized-Wasm regression doubles a
+paragraph's font size and proves its retained inline advance doubles; the live Paragraph Stress scene additionally keeps
+correct spacing through intermediate animated sizes for Bitmap, MSDF, and Slug.
 
 The Three executor does not infer paragraph layout from GPU records and does not maintain a parallel candidate/current
 target state machine. It applies the Rust command buffer transactionally and retains only renderer resources required by
@@ -134,6 +204,13 @@ same tail-latency target.
 
 `materialId` is explicit through the frame ABI and render plan. Three maps it to a `defineTextMaterial()` factory. Material
 identity may split draws without forcing a second copy of the canonical glyph buffers.
+
+Bitmap atlas pages within one strike are renderer layers, not independent draw resources. The font binding exposes one
+strike resource, the Rust policy writes the selected page as one u32 instance lane, and Three uploads the strike as one
+R8 texture array. This preserves authored glyph order while preventing page transitions inside ordinary prose from
+splitting a paragraph into hundreds of draws. The multi-page integration fixture asserts one ordered draw and a live
+Chrome run reduced the sampled Paragraph Stress CPU frame from roughly 80 ms before the correction to 0.47–1.3 ms after
+it; the sampled GPU frame remained a separate 1–5 ms concern.
 
 ## Font fallback and techniques
 
@@ -168,6 +245,17 @@ The semantic values preserve information useful to callers:
 The host pins request/result staging views and re-pins after any `memory.grow()`, because growth detaches existing views.
 Growth is permitted only at the `text_update` boundary. Result capacity is negotiated and retried without publishing a
 partial revision.
+
+Batch and paragraph capacities are intentionally separate. Request/result arenas scale with aggregate `TextGroup`
+content, while Rust line and text scratch are bounded by the longest paragraph. Feeding aggregate text length into the
+per-paragraph line bound multiplied retained scratch by paragraph count: a 684-paragraph recycling regression grew Wasm
+memory from roughly 2.07 GB to the 4.29 GB address ceiling in 17 updates. The corrected bound completes 200 update cycles
+and settles near 105 MB for that deliberately larger 8,000-glyph fixture. This regression also guards against forwarding
+aggregate glyph capacity as one paragraph's text reservation.
+
+Bitmap vertex pixel snapping is an explicit immutable Three/R3F option and defaults off. The unsnapped graph uses the
+ordinary model-view-projection position so shared-root or camera animation preserves subpixel movement; callers targeting
+a pixel-art presentation can opt in without changing shaping, layout, or render-plan records.
 
 WebGPU may alias compatible Wasm-backed typed arrays. Three's WebGL2 PBO path owns a padded array and therefore requires
 one retained copy. The architecture does not add complexity to pretend WebGL2 can preserve a Wasm alias it replaces.
@@ -236,20 +324,20 @@ The latest checked package-size record after the baker ABI cleanup reports:
 
 | Graph                                   |         Raw |      gzip |    Brotli |
 | --------------------------------------- | ----------: | --------: | --------: |
-| Core JavaScript plus shaper Wasm        | 1,247,715 B | 460,130 B | 363,319 B |
-| Three adapter plus core and shaper Wasm | 1,488,669 B | 498,606 B | 395,276 B |
+| Core JavaScript plus shaper Wasm        | 1,251,867 B | 460,943 B | 364,027 B |
+| Three adapter plus core and shaper Wasm | 1,493,805 B | 499,537 B | 396,100 B |
 
 Three, React, and React Three Fiber are optional peers and excluded from these bundle totals. JavaScript and Wasm are
 measured independently and then summed because browsers transfer them as separate assets.
 
 The optimized shaper is 1,159,317 raw / 442,284 gzip / 347,850 Brotli bytes. The renderer-neutral JavaScript graph is
-88,398 raw / 17,846 gzip / 15,469 Brotli, and the complete Three JavaScript graph is 329,352 raw / 56,322 gzip /
-47,426 Brotli. Deleting the legacy TypeScript raster packing/lifecycle path reduced the measured core total from 461,917
+92,550 raw / 18,659 gzip / 16,177 Brotli, and the complete Three JavaScript graph is 334,488 raw / 57,253 gzip /
+48,250 Brotli. Deleting the legacy TypeScript raster packing/lifecycle path reduced the measured core total from 461,917
 to 460,901 gzip bytes and the complete Three total from 501,815 to 498,922 gzip bytes; the later shared-emitter and stable
 range-scan work reduces those totals to 460,416 and 498,437 gzip bytes. The homogeneous-policy dispatch and dirty-range
 alignment correction moved those totals to 460,458 and 498,479 gzip bytes; the focused planner deduplication and current
-Three graph now measure 460,130 and 498,606 gzip bytes. The final renderer-lifecycle fixes and exact WebGL2 PBO range
-copy leave core and Wasm byte-identical and add 1,351 raw / 230 gzip / 146 Brotli bytes to the complete Three graph.
+Three graph measured 460,130 and 498,606 gzip bytes. The current source-response cache policy and publishing changes
+measure 460,943 and 499,537 gzip bytes respectively.
 
 WebGPU continues to alias canonical plan arrays directly. Three's WebGL2 PBO builder replaces a storage attribute's
 array with power-of-two-padded retained texture storage, so later Rust patches copy only their dirty byte ranges into
