@@ -1,11 +1,14 @@
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
-    STATUS_INVALID_REQUEST, STATUS_RESULT_TOO_LARGE, ShaperRegistry, bidi,
-    wire::{
-        pack_bidi_result, pack_result, parse_bidi_request, parse_reshape_request,
-        parse_shape_request,
+    STATUS_FONT_IN_USE, STATUS_FONT_STACK_MISSING, STATUS_INVALID_HANDLE, STATUS_INVALID_REQUEST,
+    STATUS_OK, STATUS_POLICY_CONFLICT, STATUS_POLICY_MISSING, STATUS_RESULT_TOO_LARGE,
+    STATUS_REVISION_CONFLICT, STATUS_SESSION_CONFLICT, STATUS_SESSION_MISSING, ShaperRegistry,
+    engine::{
+        EngineError, TextEngine, font_binding_wire::parse_font_binding, frame::SessionRevision,
+        frame_wire::parse_update_request, render_plan_wire::publication_layout,
+        transport::FrameTransport, wire::parse_policy,
     },
 };
 
@@ -20,6 +23,19 @@ static STATE: AtomicUsize = AtomicUsize::new(0);
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
     core::arch::wasm32::unreachable()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pmndrs_text_shaper_initialize() -> u32 {
+    with_state(|state| {
+        if let Err(status) = state.registry.initialize() {
+            return status;
+        }
+        match state.engine.initialize() {
+            Ok(()) => STATUS_OK,
+            Err(error) => engine_status(error),
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -46,6 +62,7 @@ pub unsafe extern "C" fn pmndrs_text_shaper_register_font(
         let WasmState {
             registry,
             allocations,
+            ..
         } = state;
         let Some(sfnt) = owned_bytes(allocations, sfnt_pointer, sfnt_length) else {
             return 2;
@@ -64,7 +81,17 @@ pub unsafe extern "C" fn pmndrs_text_shaper_register_font(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn pmndrs_text_shaper_dispose_font(handle: u32) -> u32 {
-    with_state(|state| state.registry.dispose_font(handle))
+    with_state(|state| {
+        if state.engine.references_shaping_font(handle) {
+            STATUS_FONT_IN_USE
+        } else {
+            let status = state.registry.dispose_font(handle);
+            if status == STATUS_OK {
+                state.engine.dispose_bindings_for_shaping_font(handle);
+            }
+            status
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -83,85 +110,519 @@ pub extern "C" fn pmndrs_text_shaper_plan_count() -> u32 {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pmndrs_text_shaper_shape_batch(pointer: u32, length: u32) -> u32 {
+pub unsafe extern "C" fn pmndrs_text_engine_register_font_stack(
+    handle: u32,
+    pointer: u32,
+    count: u32,
+) -> u32 {
     with_state(|state| {
-        state.registry.clear_result();
+        let Some(length) = count.checked_mul(4) else {
+            return STATUS_INVALID_REQUEST;
+        };
         let Some(bytes) = owned_bytes(&state.allocations, pointer, length) else {
             return STATUS_INVALID_REQUEST;
         };
-        let request = match parse_shape_request(bytes) {
-            Ok(request) => request,
-            Err(status) => return status,
-        };
-        let output = match state.registry.shape_batch(&request) {
-            Ok(output) => output,
-            Err(status) => return status,
-        };
-        match pack_result(&output) {
-            Ok(result) => store_result(&mut state.registry, result),
-            Err(status) => status,
+        let mut fonts = Vec::new();
+        if fonts.try_reserve_exact(count as usize).is_err() {
+            return STATUS_RESULT_TOO_LARGE;
+        }
+        for bytes in bytes.chunks_exact(4) {
+            let font = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            let Some(shaping_handle) = state.engine.shaping_handle_for_binding(font) else {
+                return crate::STATUS_FONT_MISSING;
+            };
+            if !state.registry.contains_font(shaping_handle) {
+                return crate::STATUS_FONT_MISSING;
+            }
+            fonts.push(font);
+        }
+        match state.engine.register_font_stack(handle, &fonts) {
+            Ok(()) => STATUS_OK,
+            Err(error) => engine_status(error),
         }
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pmndrs_text_shaper_reshape_ranges(pointer: u32, length: u32) -> u32 {
+pub extern "C" fn pmndrs_text_engine_dispose_font_stack(handle: u32) -> u32 {
+    with_state(|state| match state.engine.dispose_font_stack(handle) {
+        Ok(()) => STATUS_OK,
+        Err(error) => engine_status(error),
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pmndrs_text_engine_font_stack_count() -> u32 {
+    with_state(|state| state.engine.font_stack_count())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pmndrs_text_engine_register_font_binding(
+    handle: u32,
+    shaping_handle: u32,
+    pointer: u32,
+    length: u32,
+) -> u32 {
     with_state(|state| {
-        state.registry.clear_result();
+        let Some(glyph_count) = state.registry.glyph_count(shaping_handle) else {
+            return crate::STATUS_FONT_MISSING;
+        };
         let Some(bytes) = owned_bytes(&state.allocations, pointer, length) else {
             return STATUS_INVALID_REQUEST;
         };
-        let (request, ranges) = match parse_reshape_request(bytes) {
-            Ok(request) => request,
+        let binding = match parse_font_binding(bytes) {
+            Ok(binding) => binding,
             Err(status) => return status,
         };
-        let output = match state.registry.reshape_ranges(&request, &ranges) {
-            Ok(output) => output,
-            Err(status) => return status,
-        };
-        match pack_result(&output) {
-            Ok(result) => store_result(&mut state.registry, result),
-            Err(status) => status,
+        match state
+            .engine
+            .register_font_binding(handle, shaping_handle, glyph_count, binding)
+        {
+            Ok(()) => STATUS_OK,
+            Err(error) => engine_status(error),
         }
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pmndrs_text_shaper_analyze_bidi(pointer: u32, length: u32) -> u32 {
+pub extern "C" fn pmndrs_text_engine_font_binding_count() -> u32 {
+    with_state(|state| state.engine.font_binding_count())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pmndrs_text_engine_register_policy(
+    handle: u32,
+    pointer: u32,
+    length: u32,
+) -> u32 {
     with_state(|state| {
-        state.registry.clear_result();
-        let Some(bytes) = owned_bytes(&state.allocations, pointer, length) else {
+        let WasmState {
+            engine,
+            allocations,
+            ..
+        } = state;
+        let Some(bytes) = owned_bytes(allocations, pointer, length) else {
             return STATUS_INVALID_REQUEST;
         };
-        let (text, direction) = match parse_bidi_request(bytes) {
-            Ok(request) => request,
+        let policy = match parse_policy(bytes) {
+            Ok(policy) => policy,
             Err(status) => return status,
         };
-        let output = match bidi::analyze(&text, direction) {
-            Ok(output) => output,
-            Err(bidi::BidiError::InvalidDirection) => return STATUS_INVALID_REQUEST,
-            Err(bidi::BidiError::ResultTooLarge) => return STATUS_RESULT_TOO_LARGE,
-        };
-        match pack_bidi_result(&output) {
-            Ok(result) => store_result(&mut state.registry, result),
-            Err(status) => status,
+        match engine.register_policy(handle, policy) {
+            Ok(()) => 0,
+            Err(error) => engine_status(error),
         }
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn pmndrs_text_shaper_result_ptr() -> u32 {
-    with_state(|state| u32::try_from(state.registry.result_pointer() as usize).unwrap_or(0))
+pub extern "C" fn pmndrs_text_engine_dispose_policy(handle: u32) -> u32 {
+    with_state(|state| match state.engine.dispose_policy(handle) {
+        Ok(()) => 0,
+        Err(error) => engine_status(error),
+    })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn pmndrs_text_shaper_result_len() -> u32 {
-    with_state(|state| state.registry.result_length())
+pub extern "C" fn pmndrs_text_engine_policy_count() -> u32 {
+    with_state(|state| state.engine.policy_count())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pmndrs_text_engine_create_session(
+    handle: u32,
+    request_capacity: u32,
+    result_capacity: u32,
+    text_capacity: u32,
+) -> u32 {
+    with_state(|state| {
+        if handle == 0 {
+            return STATUS_INVALID_HANDLE;
+        }
+        if state.frames.contains_key(&handle) {
+            return STATUS_SESSION_CONFLICT;
+        }
+        let transport = match FrameTransport::new(request_capacity, result_capacity) {
+            Ok(transport) => transport,
+            Err(status) => return status,
+        };
+        if let Err(error) = state.engine.create_session(handle) {
+            return engine_status(error);
+        }
+        let text_capacity = if text_capacity == 0 {
+            crate::engine::frame::DEFAULT_SESSION_TEXT_CAPACITY
+        } else {
+            text_capacity
+        };
+        if let Err(error) = state.engine.reserve_session_text(handle, text_capacity) {
+            let _ = state.engine.dispose_session(handle);
+            return engine_status(error);
+        }
+        state.frames.insert(handle, transport);
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pmndrs_text_engine_reserve_session(
+    handle: u32,
+    request_capacity: u32,
+    result_capacity: u32,
+    text_capacity: u32,
+) -> u32 {
+    with_state(|state| {
+        let Some(transport) = state.frames.get_mut(&handle) else {
+            return STATUS_SESSION_MISSING;
+        };
+        if let Err(status) = transport.reserve(request_capacity, result_capacity) {
+            return status;
+        }
+        if text_capacity != 0
+            && let Err(error) = state.engine.reserve_session_text(handle, text_capacity)
+        {
+            return engine_status(error);
+        }
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pmndrs_text_engine_dispose_session(handle: u32) -> u32 {
+    with_state(|state| {
+        if !state.frames.contains_key(&handle) {
+            return STATUS_SESSION_MISSING;
+        }
+        if let Err(error) = state.engine.dispose_session(handle) {
+            return engine_status(error);
+        }
+        state.frames.remove(&handle);
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pmndrs_text_engine_session_count() -> u32 {
+    with_state(|state| state.engine.session_count())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pmndrs_text_engine_request_ptr(handle: u32) -> u32 {
+    with_state(|state| {
+        state
+            .frames
+            .get(&handle)
+            .and_then(|transport| u32::try_from(transport.request_pointer()).ok())
+            .unwrap_or(0)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pmndrs_text_engine_request_capacity(handle: u32) -> u32 {
+    with_state(|state| {
+        state
+            .frames
+            .get(&handle)
+            .map_or(0, FrameTransport::request_capacity)
+    })
+}
+
+#[cfg(feature = "kernel-lab")]
+#[unsafe(no_mangle)]
+pub extern "C" fn pmndrs_text_kernel_lab_backend() -> u32 {
+    crate::engine::kernel_lab::BACKEND
+}
+
+#[cfg(feature = "kernel-lab")]
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn pmndrs_text_kernel_lab_pack(
+    count: u32,
+    x_pointer: u32,
+    y_pointer: u32,
+    font_size_pointer: u32,
+    plane_left_pointer: u32,
+    plane_bottom_pointer: u32,
+    plane_right_pointer: u32,
+    plane_top_pointer: u32,
+    inverse_units_per_em: f32,
+    origins_pointer: u32,
+    sizes_pointer: u32,
+) -> u32 {
+    // SAFETY: the test-only kernel validates every direct-memory region before creating slices.
+    unsafe {
+        crate::engine::kernel_lab::exported_pack(
+            count,
+            x_pointer,
+            y_pointer,
+            font_size_pointer,
+            plane_left_pointer,
+            plane_bottom_pointer,
+            plane_right_pointer,
+            plane_top_pointer,
+            inverse_units_per_em,
+            origins_pointer,
+            sizes_pointer,
+        )
+    }
+}
+
+#[cfg(feature = "kernel-lab")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pmndrs_text_kernel_lab_break_masks(
+    count: u32,
+    flags_pointer: u32,
+    output_pointer: u32,
+) -> u32 {
+    // SAFETY: the test-only kernel validates every direct-memory region before creating slices.
+    unsafe { crate::engine::kernel_lab::exported_break_masks(count, flags_pointer, output_pointer) }
+}
+
+#[cfg(feature = "kernel-lab")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pmndrs_text_kernel_lab_bidi_masks(
+    count: u32,
+    levels_pointer: u32,
+    output_pointer: u32,
+) -> u32 {
+    // SAFETY: the test-only kernel validates every direct-memory region before creating slices.
+    unsafe { crate::engine::kernel_lab::exported_bidi_masks(count, levels_pointer, output_pointer) }
+}
+
+#[cfg(feature = "kernel-lab")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pmndrs_text_kernel_lab_chunk_summaries(
+    count: u32,
+    chunk_size: u32,
+    advances_pointer: u32,
+    flags_pointer: u32,
+    advance_sums_pointer: u32,
+    break_counts_pointer: u32,
+) -> u32 {
+    // SAFETY: the test-only kernel validates every direct-memory region before creating slices.
+    unsafe {
+        crate::engine::kernel_lab::exported_chunk_summaries(
+            count,
+            chunk_size,
+            advances_pointer,
+            flags_pointer,
+            advance_sums_pointer,
+            break_counts_pointer,
+        )
+    }
+}
+
+#[cfg(feature = "kernel-lab")]
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn pmndrs_text_kernel_lab_policy(
+    policy_handle: u32,
+    technique: u32,
+    variant: u32,
+    count: u32,
+    f32_input0_pointer: u32,
+    f32_input1_pointer: u32,
+    f32_input2_pointer: u32,
+    f32_input3_pointer: u32,
+    u32_input0_pointer: u32,
+    f32_output_pointer: u32,
+    u32_output_pointer: u32,
+    u16_output_pointer: u32,
+) -> u32 {
+    let Some(f32_bytes) = count.checked_mul(core::mem::size_of::<f32>() as u32) else {
+        return STATUS_INVALID_REQUEST;
+    };
+    let Some(f32_output_bytes) = f32_bytes.checked_mul(4) else {
+        return STATUS_INVALID_REQUEST;
+    };
+    let Some(u16_bytes) = count.checked_mul(core::mem::size_of::<u16>() as u32) else {
+        return STATUS_INVALID_REQUEST;
+    };
+    with_state(|state| {
+        let regions = [
+            (f32_input0_pointer, f32_bytes),
+            (f32_input1_pointer, f32_bytes),
+            (f32_input2_pointer, f32_bytes),
+            (f32_input3_pointer, f32_bytes),
+            (u32_input0_pointer, f32_bytes),
+            (f32_output_pointer, f32_output_bytes),
+            (u32_output_pointer, f32_bytes),
+            (u16_output_pointer, u16_bytes),
+        ];
+        if !regions
+            .iter()
+            .all(|&(pointer, length)| owns_region(&state.allocations, pointer, length))
+        {
+            return STATUS_INVALID_REQUEST;
+        }
+        let policy = match state.engine.policy(policy_handle) {
+            Ok(policy) => policy,
+            Err(_) => return STATUS_POLICY_MISSING,
+        };
+        // SAFETY: every direct-memory region belongs to a live caller allocation, so it cannot
+        // alias engine-owned state. The kernel validates alignment, bounds, and pairwise
+        // disjointness before creating slices, and this state borrow remains synchronous.
+        unsafe {
+            crate::engine::kernel_lab::exported_policy(
+                policy,
+                technique,
+                variant,
+                count,
+                f32_input0_pointer,
+                f32_input1_pointer,
+                f32_input2_pointer,
+                f32_input3_pointer,
+                u32_input0_pointer,
+                f32_output_pointer,
+                u32_output_pointer,
+                u16_output_pointer,
+            )
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pmndrs_text_engine_update(
+    session_id: u32,
+    request_offset: u32,
+    request_len: u32,
+) -> u32 {
+    with_state(|state| {
+        let revision = match state.engine.session_revision(session_id) {
+            Ok(revision) => revision,
+            Err(_) => return 0,
+        };
+        let request = {
+            let Some(transport) = state.frames.get(&session_id) else {
+                return 0;
+            };
+            let bytes = match transport.request_at(request_offset as usize, request_len) {
+                Ok(bytes) => bytes,
+                Err(status) => {
+                    return publish_failure(state, session_id, revision, status, request_len, 0);
+                }
+            };
+            match parse_update_request(bytes, session_id) {
+                Ok(request) => request,
+                Err(status) => {
+                    return publish_failure(state, session_id, revision, status, 0, 0);
+                }
+            }
+        };
+        let publication_generation = match state
+            .frames
+            .get(&session_id)
+            .and_then(|transport| transport.next_publication_generation().ok())
+        {
+            Some(generation) => generation,
+            None => {
+                return publish_failure(state, session_id, revision, STATUS_RESULT_TOO_LARGE, 0, 0);
+            }
+        };
+        let prepared = match state.engine.prepare_update_with_shaper(
+            &mut state.registry,
+            request,
+            publication_generation,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return publish_failure(state, session_id, revision, engine_status(error), 0, 0);
+            }
+        };
+        let plan = match state.engine.prepared_plan(prepared) {
+            Ok(plan) => plan,
+            Err(error) => {
+                return publish_prepared_failure(
+                    state,
+                    prepared,
+                    revision,
+                    engine_status(error),
+                    0,
+                    0,
+                );
+            }
+        };
+        let semantic_views = match state.engine.prepared_semantic_views(prepared) {
+            Ok(views) => views,
+            Err(error) => {
+                return publish_prepared_failure(
+                    state,
+                    prepared,
+                    revision,
+                    engine_status(error),
+                    0,
+                    0,
+                );
+            }
+        };
+        let required_output = match publication_layout(plan, semantic_views) {
+            Ok(layout) => layout.byte_length,
+            Err(status) => {
+                return publish_prepared_failure(state, prepared, revision, status, 0, 0);
+            }
+        };
+        if required_output > request.limits.max_output_bytes {
+            return publish_prepared_failure(
+                state,
+                prepared,
+                revision,
+                STATUS_RESULT_TOO_LARGE,
+                0,
+                required_output,
+            );
+        }
+        let Some(transport) = state.frames.get(&session_id) else {
+            let _ = state.engine.abort_update(prepared);
+            return 0;
+        };
+        if let Err(status) = transport.ensure_publish_capacity(required_output) {
+            return publish_prepared_failure(state, prepared, revision, status, 0, required_output);
+        }
+        let staged = match state
+            .frames
+            .get_mut(&session_id)
+            .and_then(|transport| transport.stage_publication(plan, semantic_views).ok())
+        {
+            Some(staged) => staged,
+            None => {
+                return publish_prepared_failure(
+                    state,
+                    prepared,
+                    revision,
+                    STATUS_RESULT_TOO_LARGE,
+                    0,
+                    required_output,
+                );
+            }
+        };
+        let commit = match state.engine.commit_update(prepared) {
+            Ok(commit) => commit,
+            Err(error) => {
+                return publish_prepared_failure(
+                    state,
+                    prepared,
+                    revision,
+                    engine_status(error),
+                    0,
+                    0,
+                );
+            }
+        };
+        let Some(transport) = state.frames.get_mut(&session_id) else {
+            return 0;
+        };
+        debug_assert_eq!(
+            transport.next_publication_generation().ok(),
+            Some(publication_generation)
+        );
+        u32::try_from(transport.publish_success(commit, staged)).unwrap_or(0)
+    })
 }
 
 #[derive(Default)]
 struct WasmState {
     registry: ShaperRegistry,
+    engine: TextEngine,
+    frames: BTreeMap<u32, FrameTransport>,
     allocations: Vec<Allocation>,
 }
 
@@ -227,11 +688,77 @@ fn owned_bytes(allocations: &[Allocation], pointer: u32, length: u32) -> Option<
         .map(|entry| entry.bytes.as_slice())
 }
 
-fn store_result(registry: &mut ShaperRegistry, result: Vec<u8>) -> u32 {
-    match registry.set_result(result) {
-        Ok(()) => 0,
-        Err(status) => status,
+#[cfg(feature = "kernel-lab")]
+fn owns_region(allocations: &[Allocation], pointer: u32, length: u32) -> bool {
+    let Some(end) = pointer.checked_add(length) else {
+        return false;
+    };
+    length != 0
+        && allocations.iter().any(|entry| {
+            entry
+                .pointer
+                .checked_add(entry.requested_length)
+                .is_some_and(|allocation_end| pointer >= entry.pointer && end <= allocation_end)
+        })
+}
+
+fn engine_status(error: EngineError) -> u32 {
+    match error {
+        EngineError::InvalidHandle => STATUS_INVALID_HANDLE,
+        EngineError::HandleConflict => STATUS_POLICY_CONFLICT,
+        EngineError::PolicyMissing => STATUS_POLICY_MISSING,
+        EngineError::FontStackMissing => STATUS_FONT_STACK_MISSING,
+        EngineError::SessionConflict => STATUS_SESSION_CONFLICT,
+        EngineError::SessionMissing => STATUS_SESSION_MISSING,
+        EngineError::RevisionConflict => STATUS_REVISION_CONFLICT,
+        EngineError::RevisionExhausted => STATUS_RESULT_TOO_LARGE,
+        EngineError::InvalidRequest => STATUS_INVALID_REQUEST,
+        EngineError::ResultTooLarge => STATUS_RESULT_TOO_LARGE,
     }
+}
+
+fn publish_prepared_failure(
+    state: &mut WasmState,
+    prepared: crate::engine::frame::PreparedUpdate,
+    revision: SessionRevision,
+    status: u32,
+    required_request_capacity: u32,
+    required_result_capacity: u32,
+) -> u32 {
+    let session_id = prepared.session_id();
+    let _ = state.engine.abort_update(prepared);
+    publish_failure(
+        state,
+        session_id,
+        revision,
+        status,
+        required_request_capacity,
+        required_result_capacity,
+    )
+}
+
+fn publish_failure(
+    state: &mut WasmState,
+    session_id: u32,
+    revision: SessionRevision,
+    status: u32,
+    required_request_capacity: u32,
+    required_result_capacity: u32,
+) -> u32 {
+    state
+        .frames
+        .get_mut(&session_id)
+        .and_then(|transport| {
+            u32::try_from(transport.publish_failure(
+                session_id,
+                revision,
+                status,
+                required_request_capacity,
+                required_result_capacity,
+            ))
+            .ok()
+        })
+        .unwrap_or(0)
 }
 
 fn with_state<Result>(operation: impl FnOnce(&mut WasmState) -> Result) -> Result {

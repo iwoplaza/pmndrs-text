@@ -9,9 +9,7 @@ export type {
   UnboundSpanTag,
 } from './formatted-text.js';
 export type { FontSelection, FontStack, LoadedFont } from './loaded-font.js';
-export type { GlyphBufferCapacity, GlyphOriginUpdate, GlyphSnapshot, ParagraphContentBox } from './paragraph-batch.js';
-export type { ParagraphLayout } from './layout.js';
-export type { ParagraphStyle } from './paragraph.js';
+export type { GlyphBufferCapacity, ParagraphContentBox, ParagraphStyle } from './text-properties.js';
 export { bitmapShader } from './three/bitmap-shader.js';
 export type {
   ThreeBitmapInstanceNodes,
@@ -19,14 +17,17 @@ export type {
   ThreeBitmapShaderResources,
 } from './three/bitmap-shader.js';
 export { FontLoader } from './three/font-loader.js';
+export { defineTextMaterial } from './three/material.js';
+export type { ThreeTextMaterial, ThreeTextMaterialContext } from './three/material.js';
+export { registerThreeRasterPlanProgram, threePolicyAbi } from './three/plan-program-registry.js';
+export type {
+  ThreePlanProgramBuffer,
+  ThreePlanProgramFontCompiler,
+  ThreePlanProgramMaterialContext,
+  ThreeRasterPlanProgram,
+} from './three/plan-program-registry.js';
 export { msdfShader } from './three/msdf-shader.js';
 export type { ThreeMsdfInstanceNodes, ThreeMsdfShaderOutput, ThreeMsdfShaderResources } from './three/msdf-shader.js';
-export { registerThreeRasterProgram } from './three/program-registry.js';
-export type {
-  ThreeRasterProgram,
-  ThreeRasterTargetAccounting,
-  ThreeRasterTargetOwner,
-} from './three/program-registry.js';
 export type {
   ThreeFontLoaderOptions as FontLoaderOptions,
   ThreeLoadedFontRequest as LoadedFontRequest,
@@ -42,9 +43,10 @@ export type {
 export { Text, TextGroup } from './three/text.js';
 export type {
   StandaloneTextProperties,
+  TextGlyphOriginSnapshot,
+  TextGlyphOriginUpdate,
   TextGroupOptions,
   TextProperties,
   TextSpan,
   TextUpdate,
-  ThreeRenderVariant,
 } from './three/text.js';

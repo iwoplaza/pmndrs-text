@@ -25,9 +25,8 @@ export type {
   BakedFontSource,
   FontInput,
   FontInputOf,
-  LoadedFontV0,
   FontMetrics,
-  FontRasterModuleOf,
+  FontRasterTechniqueOf,
   FontSourceOverride,
   FontToken,
   RegisteredFont,
@@ -36,7 +35,13 @@ export { defineFont } from './font.js';
 
 export type { FontHandle, FontKey, FontSlot, LocalGlyphId, RasterHandle, RasterKey, Sha256Hex } from './identity.js';
 
-export type { FontSlotRecord, ParagraphLayout, ParagraphMeasurement } from './layout.js';
+export type {
+  FontSlotRecord,
+  ParagraphLayout,
+  ParagraphLayoutInspection,
+  ParagraphLayoutSummary,
+  ParagraphMeasurement,
+} from './layout.js';
 
 export type {
   FontLoadDiagnostic,
@@ -53,38 +58,14 @@ export type { FontSelection, FontStack, LoadedFont } from './loaded-font.js';
 export { createFontStack, FontLeaseError } from './loaded-font.js';
 
 export type {
-  GlyphBatchKey,
   GlyphBufferCapacity,
-  GlyphCapacityOverflow,
-  GlyphOriginUpdate,
-  GlyphSnapshot,
-  GlyphTopology,
-  Paragraph,
   ParagraphAxisConstraint,
   ParagraphBaseProperties,
-  ParagraphBatch,
-  ParagraphBatchObserver,
-  ParagraphBatchOptions,
   ParagraphContentBox,
   ParagraphContentProperties,
-  ParagraphId,
   ParagraphProperties,
-  ParagraphSnapshot,
-  ParagraphUpdate,
-  PreparedGlyphBatch,
-  PreparedGlyphRun,
-  PreparedParagraph,
-  PreparedParagraphBatchRevision,
-  TextPreparationError,
-} from './paragraph-batch.js';
-export type {
-  ParagraphBatchAttachment,
-  ParagraphBatchTarget,
-  ParagraphBatchTargetError,
-  ParagraphBatchTargetRevision,
-  ParagraphBatchTargetStage,
-  ParagraphBatchTargetUpdate,
-} from './paragraph-batch-attachment.js';
+  ParagraphStyle,
+} from './text-properties.js';
 
 export type {
   ColorInput,
@@ -107,37 +88,16 @@ export { SpanNestingError } from './internal/span-cascade.js';
 export type { GlyphPaint, LinearRgba, ResolvedPaint } from './paint.js';
 
 export type {
-  ParagraphConstraints,
-  ParagraphEngine,
-  ParagraphEngineOptions,
-  ParagraphInput,
-  ParagraphStyle,
-} from './paragraph.js';
-export type { Paragraph as LayoutParagraph } from './paragraph.js';
-export type { ParagraphAxisConstraint as LayoutParagraphAxisConstraint } from './paragraph.js';
-export { createParagraphEngine } from './paragraph.js';
-
-export type {
-  AnyRasterModule,
-  AnyRasterInput,
   JsonValue,
-  LoadedRaster,
-  RasterBatchOf,
-  RasterBatchStage,
   RasterKind,
   RasterKindOf,
   RasterLoadOptions,
-  RasterModule,
-  RasterInput,
   RasterReference,
-  RasterRequest,
   RasterResolver,
   RasterResolverContext,
   RasterResourceResolver,
   RasterResourceResolverContext,
   RasterResourceSource,
-  RasterResourceOf,
-  RasterModuleOptionsOf,
   RasterOptionsArgument,
   RasterSelection,
   RasterSource,
@@ -147,27 +107,18 @@ export type {
   RuntimeRasterBakerLoader,
   RuntimeRasterBakerModule,
 } from './raster.js';
-export { defineRaster, defineRasterBatchStage } from './raster.js';
-export { RasterRuntime } from './raster-runtime.js';
-export type { RasterDrawBatch, RasterObjectDrawBatch } from './raster.js';
 
 export type {
   AnyRasterTechnique,
-  GlyphBatchStorage,
-  GlyphBatchStorageOf,
-  GlyphBatchStorageShape,
-  GlyphRange,
-  RasterBindingOf,
   RasterDataOf,
-  RasterGlyphInput,
-  RasterGlyphSelection,
-  RasterGlyphWriteInput,
   RasterResourceId,
   RasterTechnique,
   RasterTechniqueDescriptorOf,
   RasterTechniqueId,
   RasterOptionsOf,
   RasterTechniqueOptionsOf,
+  RasterTechniqueInput,
+  RasterTechniqueRequest,
   RasterTechniqueTypesOf,
 } from './raster-technique.js';
 export { defineRasterResourceId, defineRasterTechnique } from './raster-technique.js';
@@ -182,33 +133,7 @@ export {
   normalizeRasterCoverage,
 } from './raster-coverage.js';
 
-export type {
-  BidiAnalysisViews,
-  BidiDirection,
-  RuntimeShaper,
-  RuntimeShaperMemoryReport,
-  RuntimeShaperOptions,
-  ReshapeBatchRequest,
-  ReshapeRange,
-  ShapeBatchRequest,
-  ShapeRunRequest,
-  ShapedBatchViews,
-  TextShaperWasmSource,
-} from './shaper.js';
-export { createRuntimeShaper } from './shaper.js';
 export type { FontFeature, ResolvedFontFeature } from './font-feature.js';
 
-export type {
-  AsyncTextUpdateOptions,
-  LoadedFontInput,
-  LoadedFontRequest,
-  TextPreparationWorker,
-  TextRuntime,
-  TextRuntimeOptions,
-  TextRuntimeRevision,
-  TextUpdateCallback,
-  TextUpdateOutcome,
-  TextUpdateProgress,
-  TextUpdateResult,
-} from './text-runtime.js';
-export { createTextPreparationWorker, createTextRuntime } from './text-runtime.js';
+export type { LoadedFontInput, LoadedFontRequest, TextRuntime, TextRuntimeOptions } from './text-runtime.js';
+export { createTextRuntime } from './text-runtime.js';

@@ -1,4 +1,4 @@
-import type { AnyRasterTechnique, LoadedFont, LoadedFontRequest, ParagraphLayout } from '@pmndrs/text';
+import type { LoadedFont, LoadedFontRequest, ParagraphLayout } from '@pmndrs/text';
 import { bitmap } from '@pmndrs/text/three/bitmap';
 import { FontLoader, Text, TextGroup } from '@pmndrs/text/three';
 import * as THREE from 'three/webgpu';
@@ -128,7 +128,7 @@ export function createRichTextSpansConformanceTarget(): BenchmarkTarget {
       const scene = new THREE.Scene();
       // One group so every case packs through the same batch the live workload uses, rather than through a
       // standalone-Text path the workload never takes.
-      const group = new TextGroup<AnyRasterTechnique>({ technique: bitmap, capacity: { size: 4_096, policy: 'grow' } });
+      const group = new TextGroup({ capacity: { size: 4_096, policy: 'grow' } });
       scene.add(group);
       const evidence = new Map<RichTextCaseId, CaseEvidence>();
       try {
@@ -192,16 +192,19 @@ export function createRichTextSpansConformanceTarget(): BenchmarkTarget {
 
       const hashes = CASE_IDS.map((caseId) => {
         const value = required(evidence, caseId);
+        // Glyph selection and topology remain exact. Positions are public f32 values, so the semantic digest quantizes
+        // below a visible hundredth of a pixel; paint is explicitly a multiset because resource batching may reorder
+        // draws without changing the paragraph's resolved colors.
         return [
           caseId,
           value.glyphIds.join(','),
           value.clusters.join(','),
           value.glyphFontSlots.join(','),
           value.fontSizes.map((size) => size.toFixed(4)).join(','),
-          value.x.map((origin) => origin.toFixed(4)).join(','),
+          value.x.map((origin) => origin.toFixed(2)).join(','),
           value.lineTextEnds.join(','),
-          value.contentWidth.toFixed(4),
-          value.colors.join(','),
+          value.contentWidth.toFixed(2),
+          [...value.colors].sort().join(','),
         ].join('|');
       });
 
@@ -259,7 +262,7 @@ export function createRichTextSpansConformanceTarget(): BenchmarkTarget {
 }
 
 function measureCase(
-  group: TextGroup<AnyRasterTechnique>,
+  group: TextGroup,
   body: LoadedFont<BitmapTechnique>,
   companions: RichTextCompanionFonts,
   caseId: RichTextCaseId,
@@ -296,9 +299,9 @@ function measureCase(
     if (failure !== undefined) {
       throw new Error(`${caseId} failed to publish: ${String(failure)}`, { cause: failure });
     }
-    const layout = text.layout;
+    const layout = text.inspectLayout();
     if (layout === undefined) throw new Error(`${caseId} has no layout`);
-    return readEvidence(text, layout);
+    return readEvidence(group, layout);
   } finally {
     text.removeFromParent();
     text.dispose();
@@ -320,7 +323,8 @@ function readEvidence(text: THREE.Object3D, layout: ParagraphLayout): CaseEviden
   text.traverse((child) => {
     if (!(child instanceof THREE.Mesh) || !(child.geometry instanceof THREE.InstancedBufferGeometry)) return;
     drawCount += 1;
-    const attribute = child.geometry.getAttribute('_pmndrsTextColors');
+    const attribute = child.geometry.getAttribute('_pmndrsText_5');
+    if (attribute === undefined) throw new Error('Bitmap draw is missing command-buffer color lane 5');
     const start = (child.userData.pmndrsTextRunStart as number | undefined) ?? 0;
     const count = child.geometry.instanceCount;
     renderedGlyphCount += count;

@@ -1,4 +1,4 @@
-import { FontRegistry, type AnyRasterTechnique, type ParagraphLayout, type RegisteredFont } from '@pmndrs/text';
+import { FontRegistry, type ParagraphLayoutSummary, type RegisteredFont } from '@pmndrs/text';
 import { TextGroup } from '@pmndrs/text/three';
 import * as THREE from 'three/webgpu';
 import { selectBitmapStrikePpem } from '@pmndrs/text/three/bitmap';
@@ -33,7 +33,7 @@ import type {
   ComparisonWorkloadId,
 } from '../../../workloads/comparison/contracts';
 import {
-  committedTextLayout,
+  committedTextMetrics,
   exactWidth,
   publishWorkloadTexts,
   type ComparisonWorkloadEntry,
@@ -66,6 +66,17 @@ import {
 } from '../../../renderer/retained-font-fixture';
 
 type WorkloadEntry = ComparisonWorkloadEntry;
+
+const textTimingsEnabled =
+  typeof location !== 'undefined' && new URLSearchParams(location.search).get('textTimings') === '1';
+
+function timingBegin(): number {
+  return textTimingsEnabled ? performance.now() : 0;
+}
+
+function timingEnd(name: string, startedMs: number): void {
+  if (textTimingsEnabled) performance.measure(`@pmndrs/benchmark ${name}`, { start: startedMs });
+}
 
 export type {
   ComparisonWorkloadConfiguration,
@@ -593,6 +604,12 @@ async function createComparisonWorkloadRuntime(
         next.workload === 'icon-grid' && nextIconGridInstance !== undefined
           ? nextIconGridInstance.activate(next, { height, width })
           : undefined;
+      const previous = entries;
+      const previousRoot = batchRoot;
+      const reuseBatchRoot =
+        previousRoot instanceof TextGroup &&
+        comparisonWorkloadDefinition(next.workload).batching !== 'standalone' &&
+        previousRoot.compositing === workloadCompositing(next.workload);
       const nextEntries = createEntries(
         activeFont().loaded,
         technique,
@@ -606,23 +623,28 @@ async function createComparisonWorkloadRuntime(
         initialIconWindow?.scrollX ?? (workloadChanged ? 0 : -scene.position.x),
         initialIconWindow?.scrollY ?? (workloadChanged ? 0 : scene.position.y),
       );
-      const nextRoot = createBatchRoot(next.workload, activeFont().loaded);
+      const nextRoot = reuseBatchRoot ? previousRoot : createBatchRoot(next.workload);
       const scheduledAt = performance.now();
       try {
-        // The staged root is published off-scene: a TextGroup shapes, lays out, and packs its whole workload inside
-        // one `updateMatrixWorld`, so the committed layouts are readable before anything reaches the live scene.
+        // Compatible grouped workloads replace their children through one retained Rust session. Creating a second
+        // TextGroup would duplicate every reserved engine arena while the outgoing command buffer is still live.
+        if (reuseBatchRoot) for (const { node } of previous) previousRoot.remove(node);
         for (const { node } of nextEntries) nextRoot.add(node);
         publishWorkloadTexts(nextRoot, nextEntries);
         const readyAt = performance.now();
         if (disposed || commitRevision !== revision) {
-          disposeEntries(nextEntries);
-          disposeBatchRoot(nextRoot);
+          entries = nextEntries;
+          batchRoot = nextRoot;
+          disposeEntries(previous);
+          if (!reuseBatchRoot) disposeBatchRoot(previousRoot);
+          if (iconGridInstanceChanged) {
+            iconGridInstance?.dispose();
+            iconGridInstance = next.workload === 'icon-grid' ? nextIconGridInstance : undefined;
+          }
           return;
         }
         const sceneStartedAt = performance.now();
         layoutEntries(nextEntries, next, width, height);
-        const previous = entries;
-        const previousRoot = batchRoot;
         entries = nextEntries;
         batchRoot = nextRoot;
         configuration = next;
@@ -640,7 +662,7 @@ async function createComparisonWorkloadRuntime(
         scene.clear();
         scene.add(nextRoot);
         disposeEntries(previous);
-        disposeBatchRoot(previousRoot);
+        if (!reuseBatchRoot) disposeBatchRoot(previousRoot);
         if (iconGridInstanceChanged) {
           iconGridInstance?.dispose();
           iconGridInstance = next.workload === 'icon-grid' ? nextIconGridInstance : undefined;
@@ -657,8 +679,25 @@ async function createComparisonWorkloadRuntime(
           iconGridInstance?.settle(next, { height, width }, scene);
         }
       } catch (error) {
+        if (reuseBatchRoot) {
+          for (const { node } of nextEntries) nextRoot.remove(node);
+          disposeBatchRoot(nextRoot);
+          const restoredRoot = createBatchRoot(configuration.workload);
+          try {
+            for (const { node } of previous) restoredRoot.add(node);
+            publishWorkloadTexts(restoredRoot, previous);
+            batchRoot = restoredRoot;
+            scene.clear();
+            scene.add(restoredRoot);
+          } catch (recoveryError) {
+            disposeBatchRoot(restoredRoot);
+            disposeEntries(nextEntries);
+            if (iconGridInstanceChanged) nextIconGridInstance?.dispose();
+            throw new Error(`comparison workload update also failed: ${String(error)}`, { cause: recoveryError });
+          }
+        }
         disposeEntries(nextEntries);
-        disposeBatchRoot(nextRoot);
+        if (!reuseBatchRoot) disposeBatchRoot(nextRoot);
         if (iconGridInstanceChanged) nextIconGridInstance?.dispose();
         throw error;
       }
@@ -708,6 +747,7 @@ async function createComparisonWorkloadRuntime(
         return;
       }
       if (contentWidthChanged || fontSizeChanged) {
+        const retainedUpdateStarted = timingBegin();
         const readyStarted = performance.now();
         const retainedWidths = contentWidthChanged
           ? next.workload === 'dynamic-layout'
@@ -720,15 +760,23 @@ async function createComparisonWorkloadRuntime(
           for (const [index, entry] of entries.entries()) entry.lastWidth = retainedWidths[index]!;
         }
         const scheduledAt = performance.now();
+        const stagingStarted = timingBegin();
         applyRetainedTextLayout(
           entries.map(({ text }) => text),
           retainedWidths,
           fontSizeChanged ? next.fontSize : undefined,
         );
-        publishWorkloadTexts(batchRoot, entries);
-        const readyAt = performance.now();
+        timingEnd('text.stage', stagingStarted);
         const sceneStartedAt = performance.now();
+        // Layout metrics are demanded before explicit publication so the query mask rides on the pending semantic
+        // update. The following scene publication sees clean Rust state and only synchronizes renderer transforms.
+        const layoutStarted = timingBegin();
         layoutEntries(entries, next, width, height);
+        timingEnd('text.update-and-measure', layoutStarted);
+        const readyAt = performance.now();
+        const publishStarted = timingBegin();
+        publishWorkloadTexts(batchRoot, entries);
+        timingEnd('text.publish-clean', publishStarted);
         const finishedAt = performance.now();
         textReadyMs = finishedAt - readyStarted;
         textUpdateTelemetry.record({
@@ -738,6 +786,7 @@ async function createComparisonWorkloadRuntime(
           totalMs: finishedAt - readyStarted,
         });
         recordReflow(finishedAt - readyStarted);
+        timingEnd('text.retained-update', retainedUpdateStarted);
       } else if (viewportChanged) {
         layoutEntries(entries, next, width, height);
       }
@@ -848,6 +897,7 @@ async function createComparisonWorkloadRuntime(
           const started = performance.now();
           canvasSurface.render(scene, camera);
           const submitMs = performance.now() - started;
+          timingEnd('renderer.submit', started);
           if (firstDrawMs === 0) {
             firstDrawMs = submitMs;
             uploadFrameCompleteMs = submitMs;
@@ -860,7 +910,7 @@ async function createComparisonWorkloadRuntime(
         const activeZoomEntry =
           configuration.workload === 'zoom-text' ? entries[zoomAnimationState.phraseIndex] : undefined;
         const zoomScale = activeZoomEntry?.node.scale.x ?? 1;
-        measureVisibleEntries(entries, zoomScale, visibleEntryMetrics, visibleGeometryScratch);
+        measureVisibleEntries(entries, batchRoot, zoomScale, visibleEntryMetrics, visibleGeometryScratch);
         const effectiveCssFontSize =
           configuration.workload === 'zoom-text' ? ZOOM_TEXT_BASE_CSS_PX * zoomScale : configuration.fontSize;
         const framebufferGpuBytes = rendererViewport.drawingBufferWidth * rendererViewport.drawingBufferHeight * 4;
@@ -1085,14 +1135,18 @@ async function createComparisonWorkloadRuntime(
  * batch that owns one set of GPU resources. A single-paragraph workload gets a plain Group and keeps its own implicit
  * batch of one, which is what it already was.
  */
-function createBatchRoot(workload: ComparisonWorkloadId, font: WorkloadFont): THREE.Object3D {
+function createBatchRoot(workload: ComparisonWorkloadId): THREE.Object3D {
   if (comparisonWorkloadDefinition(workload).batching === 'standalone') return new THREE.Group();
   // `grow` keeps one buffer per physical resource. A chunked batch would split a paragraph's glyph run at every chunk
   // boundary and turn one draw into several, which would make the batched lanes look worse than the standalone one.
-  return new TextGroup<AnyRasterTechnique>({
-    technique: font.technique,
+  return new TextGroup({
     capacity: { size: 4_096, policy: 'grow' },
+    compositing: workloadCompositing(workload),
   });
+}
+
+function workloadCompositing(workload: ComparisonWorkloadId): 'ordered' | 'independent' {
+  return workload === 'icon-grid' ? 'independent' : 'ordered';
 }
 
 function disposeBatchRoot(root: THREE.Object3D): void {
@@ -1538,6 +1592,7 @@ function disposeEntries(entries: readonly WorkloadEntry[]): void {
 
 function measureVisibleEntries(
   entries: readonly WorkloadEntry[],
+  batchRoot: THREE.Object3D,
   zoomScale: number,
   metrics: MutableVisibleEntryMetrics,
   geometries: Set<THREE.InstancedBufferGeometry>,
@@ -1549,12 +1604,14 @@ function measureVisibleEntries(
   metrics.lineCount = 0;
   metrics.missingGlyphCount = 0;
   metrics.sourceTextLength = 0;
+  geometries.clear();
+  // Rust-planned TextGroup draws are siblings of the authored entry nodes. Traversing each entry therefore reports
+  // zero even though the shared command buffer submits one draw; traverse the realized batch root exactly once.
+  measureVisibleObject(batchRoot, metrics, geometries);
   for (const entry of entries) {
     if (!entry.node.visible) continue;
-    geometries.clear();
-    measureVisibleObject(entry.node, metrics, geometries);
-    measureVisibleLayout(committedTextLayout(entry.text), zoomScale, metrics);
-    if (entry.labelText !== undefined) measureVisibleLayout(committedTextLayout(entry.labelText), zoomScale, metrics);
+    measureVisibleLayout(committedTextMetrics(entry.text), zoomScale, metrics);
+    if (entry.labelText !== undefined) measureVisibleLayout(committedTextMetrics(entry.labelText), zoomScale, metrics);
     metrics.sourceTextLength += entry.sourceText.length;
   }
 }
@@ -1575,11 +1632,15 @@ function measureVisibleObject(
   for (const child of object.children) measureVisibleObject(child, metrics, geometries);
 }
 
-function measureVisibleLayout(layout: ParagraphLayout, scale: number, metrics: MutableVisibleEntryMetrics): void {
+function measureVisibleLayout(
+  layout: ParagraphLayoutSummary,
+  scale: number,
+  metrics: MutableVisibleEntryMetrics,
+): void {
   metrics.layoutWidth = Math.max(metrics.layoutWidth, layout.width * scale);
   metrics.layoutHeight += layout.height * scale;
-  metrics.lineCount += layout.lineGlyphCounts.length;
-  for (const glyphId of layout.glyphIds) if (glyphId === 0) metrics.missingGlyphCount += 1;
+  metrics.lineCount += layout.lineCount;
+  metrics.missingGlyphCount += layout.missingGlyphCount;
 }
 
 function positive(value: number, label: string): number {

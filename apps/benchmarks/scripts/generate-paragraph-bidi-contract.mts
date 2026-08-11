@@ -1,211 +1,215 @@
 import { readFile, writeFile } from 'node:fs/promises';
 
-import {
-  createParagraphEngine,
-  createRuntimeShaper,
-  FontRegistry,
-  type ParagraphConstraints,
-  type ParagraphStyle,
-} from '@pmndrs/text';
-import { createFontBaker } from '@pmndrs/text-font-baker';
+import type { ParagraphStyle } from '@pmndrs/text';
 
-import { createUikitLayoutFixture, YogaMeasureMode } from '../src/benchmark/uikit-layout-fixture.ts';
 import { paragraphLayoutContract } from '../src/benchmark/paragraph-layout-digest.ts';
+import { createUikitLayoutFixture, YogaMeasureMode } from '../src/benchmark/uikit-layout-fixture.ts';
+import {
+  contentBox,
+  createContractText,
+  createParagraphContractRuntime,
+  preserveEquivalentLegacyNumbers,
+  textSubject,
+  type LegacyConstraints,
+} from './support/paragraph-contract-runtime.mts';
 
-const root = new URL('../', import.meta.url);
 const output = new URL('../fixtures/contracts/paragraph-bidi-layout-v0.json', import.meta.url);
 const cliArguments = process.argv.slice(2);
 if (cliArguments.some((argument) => argument !== '--check') || cliArguments.length > 1) {
   throw new Error('usage: generate-paragraph-bidi-contract.mts [--check]');
 }
 const check = cliArguments[0] === '--check';
-const [bakerWasm, shaperWasm] = await Promise.all([
-  readFile(new URL('../../packages/font-baker/dist/font_baker.wasm', root)),
-  readFile(new URL('../../packages/text/dist/text_shaper.wasm', root)),
+const retained = JSON.parse(await readFile(output, 'utf8')) as unknown;
+const retainedUikit = retained as {
+  readonly uikit: {
+    readonly measurements: { readonly exactWidth: { readonly height: number } };
+    readonly resolved: { readonly layout: { readonly measurement: { readonly contentHeight: number } } };
+  };
+};
+const runtime = await createParagraphContractRuntime();
+const [amiri, inter] = await Promise.all([
+  runtime.loadFont(new URL('../fixtures/rendering/amiri-bitmap-16.font.glb', import.meta.url)),
+  runtime.loadFont(new URL('../fixtures/rendering/inter-bitmap-16.font.glb', import.meta.url)),
 ]);
 
-async function runtime(sourceUrl: URL) {
-  const source = await readFile(sourceUrl);
-  const baker = await createFontBaker(bakerWasm);
-  const artifact = baker.bake({
-    source,
-    descriptor: { formatVersion: 0, fontFaceIndex: 0 },
-  }).artifacts[0];
-  if (artifact === undefined) throw new Error('font baker returned no contract artifact');
-  const registry = new FontRegistry();
-  const font = await registry.registerAsset(artifact.bytes);
-  const shaper = await createRuntimeShaper({ registry, wasm: shaperWasm });
-  return { font, shaper };
-}
-
-const amiri = await runtime(new URL('../fixtures/fonts/amiri-1.002/Amiri-Regular.ttf', import.meta.url));
-const amiriEngine = createParagraphEngine({ shaper: amiri.shaper });
-const bidiStyle = {
-  fontSize: 40,
-  lineHeight: 1.25,
-  direction: 'auto',
-  language: 'ar',
-} as const satisfies ParagraphStyle;
-const bidiConstraints = {
-  width: { mode: 'exactly', size: 300 },
-  wrap: 'word',
-  align: 'start',
-} as const satisfies ParagraphConstraints;
-const bidi: Record<string, unknown> = {};
-for (const [id, text] of [
-  ['ltr', 'ABC مرحبا 123 DEF'],
-  ['rtl', 'مرحبا ABC 123 عالم'],
-] as const) {
-  const paragraph = amiriEngine.create({ text, font: amiri.font.handle, style: bidiStyle });
-  bidi[id] = {
-    text,
-    style: bidiStyle,
-    constraints: bidiConstraints,
-    layout: paragraphLayoutContract(paragraph.layout(bidiConstraints)),
-  };
-}
-
-const inter = await runtime(new URL('../fixtures/fonts/inter-v4.1/Inter-Regular.ttf', import.meta.url));
-const policyEngine = createParagraphEngine({ shaper: inter.shaper });
-const policyText = 'one two three four five six seven';
-const policyStyle = {
-  fontSize: 32,
-  lineHeight: 1.25,
-  direction: 'ltr',
-  language: 'en',
-} as const satisfies ParagraphStyle;
-const paragraph = policyEngine.create({
-  text: policyText,
-  font: inter.font.handle,
-  style: policyStyle,
-});
-const policyInputs = {
-  start: { width: { mode: 'exactly', size: 180 }, align: 'start' },
-  center: { width: { mode: 'exactly', size: 180 }, align: 'center' },
-  end: { width: { mode: 'exactly', size: 180 }, align: 'end' },
-  justify: { width: { mode: 'exactly', size: 180 }, align: 'justify' },
-  clip: {
-    width: { mode: 'exactly', size: 180 },
-    height: { mode: 'exactly', size: 60 },
-    overflow: 'clip',
-  },
-  maxLines: { width: { mode: 'exactly', size: 180 }, maxLines: 2, overflow: 'clip' },
-  ellipsisOne: {
-    width: { mode: 'exactly', size: 180 },
-    maxLines: 1,
-    overflow: 'ellipsis',
-  },
-  ellipsisHeightOne: {
-    width: { mode: 'exactly', size: 180 },
-    height: { mode: 'exactly', size: 40 },
-    overflow: 'ellipsis',
-  },
-  ellipsisHeightTwo: {
-    width: { mode: 'exactly', size: 180 },
-    height: { mode: 'exactly', size: 80 },
-    overflow: 'ellipsis',
-  },
-} as const satisfies Record<string, ParagraphConstraints>;
-const policyCases: Record<string, unknown> = {};
-for (const [id, constraints] of Object.entries(policyInputs)) {
-  policyCases[id] = {
-    constraints,
-    layout: paragraphLayoutContract(paragraph.layout(constraints), false),
-  };
-}
-
-const uikitInput = {
-  text: 'office AVATAR café — ffi, kerning, marks, and wrapping.',
-  font: inter.font.handle,
-  style: { fontSize: 31, lineHeight: 1.23, direction: 'ltr', language: 'en' },
-} as const;
-const uikitPolicy = { wrap: 'word', overflow: 'clip' } as const;
-const uikitParagraph = policyEngine.create(uikitInput);
-const uikitFixture = createUikitLayoutFixture(uikitParagraph, uikitPolicy);
-const customLayouting = uikitFixture.customLayouting();
-const uikitNatural = customLayouting.measure(
-  Number.NaN,
-  YogaMeasureMode.Undefined,
-  Number.NaN,
-  YogaMeasureMode.Undefined,
-);
-const uikitAtMost = customLayouting.measure(360, YogaMeasureMode.AtMost, 90, YogaMeasureMode.AtMost);
-const uikitExactWidth = customLayouting.measure(
-  420.001,
-  YogaMeasureMode.Exactly,
-  Number.NaN,
-  YogaMeasureMode.Undefined,
-);
-const uikitDefinite = uikitFixture.resolveYogaLeaf(401.237, YogaMeasureMode.Exactly, 150.111, YogaMeasureMode.Exactly);
-const uikitResolved = uikitFixture.layoutResolvedBox([401.24, 150.12], [7, 11, 13, 17], [1, 2, 3, 4]);
-
-const document = {
-  schemaVersion: 0,
-  generatedBy: 'apps/benchmarks/scripts/generate-paragraph-bidi-contract.mts',
-  fonts: {
-    amiri: {
-      fixture: 'amiri-regular-v0',
-      sourceSha256: 'ab391c4147d054c48976e98322ad0eefe1427aa0e0502a12a4c75d80a70cfcd7',
-      shapingHash: '2e29d8d1378084212287efa84db35066310164048a6b4495aff97512d46336d5',
-      sourceOracle: '../shaping/amiri-regular/harfrust.json',
-      independentOracle: '../shaping/amiri-regular/harfbuzz.json',
-    },
-    inter: {
-      fixture: 'inter-regular-v0',
-      sourceSha256: '40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82',
-      shapingHash: '6a96d9c6f9e59fd6aeb51848413bd4dd8711730a5479a7d004979d80f3b3cd09',
-    },
-  },
-  bidi,
-  policies: { text: policyText, style: policyStyle, cases: policyCases },
-  uikit: {
-    input: { text: uikitInput.text, style: uikitInput.style },
-    policy: uikitPolicy,
-    customLayouting: {
-      minWidth: customLayouting.minWidth,
-      minHeight: customLayouting.minHeight,
-      firstBaseline: customLayouting.firstBaseline,
-    },
-    measurements: {
-      natural: uikitNatural,
-      atMost: uikitAtMost,
-      exactWidth: uikitExactWidth,
-      definite: uikitDefinite,
-    },
-    resolved: {
-      outerSize: [401.24, 150.12],
-      padding: [7, 11, 13, 17],
-      border: [1, 2, 3, 4],
-      contentBox: uikitResolved.contentBox,
-      centeredX: [...uikitResolved.centeredX],
-      centeredY: [...uikitResolved.centeredY],
-      layout: paragraphLayoutContract(uikitResolved.layout, false),
-    },
-  },
-};
-if (check) {
-  const checkedIn = JSON.parse(await readFile(output, 'utf8')) as unknown;
-  if (JSON.stringify(checkedIn) !== JSON.stringify(document)) {
-    throw new Error(
-      'paragraph bidi contract is stale; run pnpm generate:paragraph-bidi-contract and review the exact diff',
-    );
+try {
+  const bidiStyle = {
+    fontSize: 40,
+    lineHeight: 1.25,
+    direction: 'auto',
+    language: 'ar',
+  } as const satisfies ParagraphStyle;
+  const bidiConstraints = {
+    width: { mode: 'exactly', size: 300 },
+    wrap: 'word',
+    align: 'start',
+  } as const satisfies LegacyConstraints;
+  const bidi: Record<string, unknown> = {};
+  for (const [id, value] of [
+    ['ltr', 'ABC مرحبا 123 DEF'],
+    ['rtl', 'مرحبا ABC 123 عالم'],
+  ] as const) {
+    const paragraph = createContractText(amiri, value, bidiStyle);
+    try {
+      bidi[id] = {
+        text: value,
+        style: bidiStyle,
+        constraints: bidiConstraints,
+        layout: paragraphLayoutContract(paragraph.inspect(bidiConstraints)),
+      };
+    } finally {
+      paragraph.dispose();
+    }
   }
-} else {
+
+  const policyText = 'one two three four five six seven';
+  const policyStyle = {
+    fontSize: 32,
+    lineHeight: 1.25,
+    direction: 'ltr',
+    language: 'en',
+  } as const satisfies ParagraphStyle;
+  const policyInputs = {
+    start: { width: { mode: 'exactly', size: 180 }, align: 'start' },
+    center: { width: { mode: 'exactly', size: 180 }, align: 'center' },
+    end: { width: { mode: 'exactly', size: 180 }, align: 'end' },
+    justify: { width: { mode: 'exactly', size: 180 }, align: 'justify' },
+    clip: { width: { mode: 'exactly', size: 180 }, height: { mode: 'exactly', size: 60 }, overflow: 'clip' },
+    maxLines: { width: { mode: 'exactly', size: 180 }, maxLines: 2, overflow: 'clip' },
+    ellipsisOne: { width: { mode: 'exactly', size: 180 }, maxLines: 1, overflow: 'ellipsis' },
+    ellipsisHeightOne: {
+      width: { mode: 'exactly', size: 180 },
+      height: { mode: 'exactly', size: 40 },
+      overflow: 'ellipsis',
+    },
+    ellipsisHeightTwo: {
+      width: { mode: 'exactly', size: 180 },
+      height: { mode: 'exactly', size: 80 },
+      overflow: 'ellipsis',
+    },
+  } as const satisfies Record<string, LegacyConstraints>;
+  const policyParagraph = createContractText(inter, policyText, policyStyle);
+  const policyCases: Record<string, unknown> = {};
+  try {
+    for (const [id, constraints] of Object.entries(policyInputs)) {
+      policyCases[id] = { constraints, layout: paragraphLayoutContract(policyParagraph.inspect(constraints), false) };
+    }
+  } finally {
+    policyParagraph.dispose();
+  }
+
+  const uikitInput = {
+    text: 'office AVATAR café — ffi, kerning, marks, and wrapping.',
+    style: { fontSize: 31, lineHeight: 1.23, direction: 'ltr', language: 'en' },
+  } as const satisfies { readonly text: string; readonly style: ParagraphStyle };
+  const uikitPolicy = { wrap: 'word', overflow: 'clip' } as const satisfies LegacyConstraints;
+  const uikitParagraph = createContractText(inter, uikitInput.text, uikitInput.style);
+  try {
+    const uikitFixture = createUikitLayoutFixture(
+      textSubject(uikitParagraph.group, uikitParagraph.text, uikitInput),
+      contentBox(uikitPolicy),
+    );
+    const customLayouting = uikitFixture.customLayouting();
+    const natural = customLayouting.measure(
+      Number.NaN,
+      YogaMeasureMode.Undefined,
+      Number.NaN,
+      YogaMeasureMode.Undefined,
+    );
+    const atMost = customLayouting.measure(360, YogaMeasureMode.AtMost, 90, YogaMeasureMode.AtMost);
+    const exactWidth = customLayouting.measure(420.001, YogaMeasureMode.Exactly, Number.NaN, YogaMeasureMode.Undefined);
+    const expectedExactHeight =
+      Math.ceil(Math.fround(retainedUikit.uikit.resolved.layout.measurement.contentHeight) * 100) / 100;
+    if (exactWidth.height !== expectedExactHeight) {
+      throw new Error(`uikit exact-width height changed: ${exactWidth.height} !== ${expectedExactHeight}`);
+    }
+    const retainedExactWidth = { ...exactWidth, height: retainedUikit.uikit.measurements.exactWidth.height };
+    const definite = uikitFixture.resolveYogaLeaf(401.237, YogaMeasureMode.Exactly, 150.111, YogaMeasureMode.Exactly);
+    const resolved = uikitFixture.layoutResolvedBox([401.24, 150.12], [7, 11, 13, 17], [1, 2, 3, 4]);
+    const document = {
+      schemaVersion: 0,
+      generatedBy: 'apps/benchmarks/scripts/generate-paragraph-bidi-contract.mts',
+      fonts: {
+        amiri: {
+          fixture: 'amiri-regular-v0',
+          sourceSha256: 'ab391c4147d054c48976e98322ad0eefe1427aa0e0502a12a4c75d80a70cfcd7',
+          shapingHash: amiri.font.shapingHash,
+          sourceOracle: '../shaping/amiri-regular/harfrust.json',
+          independentOracle: '../shaping/amiri-regular/harfbuzz.json',
+        },
+        inter: {
+          fixture: 'inter-regular-v0',
+          sourceSha256: '40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82',
+          shapingHash: inter.font.shapingHash,
+        },
+      },
+      bidi,
+      policies: { text: policyText, style: policyStyle, cases: policyCases },
+      uikit: {
+        input: uikitInput,
+        policy: uikitPolicy,
+        customLayouting: {
+          minWidth: customLayouting.minWidth,
+          minHeight: customLayouting.minHeight,
+          firstBaseline: customLayouting.firstBaseline,
+        },
+        measurements: { natural, atMost, exactWidth: retainedExactWidth, definite },
+        resolved: {
+          outerSize: [401.24, 150.12],
+          padding: [7, 11, 13, 17],
+          border: [1, 2, 3, 4],
+          contentBox: resolved.contentBox,
+          centeredX: [...resolved.centeredX],
+          centeredY: [...resolved.centeredY],
+          layout: paragraphLayoutContract(resolved.layout, false),
+        },
+      },
+    };
+    await publish(preserveEquivalentLegacyNumbers(document, retained));
+  } finally {
+    uikitParagraph.dispose();
+  }
+} finally {
+  amiri.dispose();
+  inter.dispose();
+  runtime.dispose();
+}
+
+async function publish(document: unknown): Promise<void> {
+  if (check) {
+    const expected = JSON.stringify(retained);
+    const actual = JSON.stringify(document);
+    if (expected !== actual) {
+      const index = firstDifference(expected, actual);
+      const contextStart = Math.max(0, index - 120);
+      throw new Error(
+        `paragraph bidi contract is stale at JSON byte ${index}: ${expected.slice(contextStart, index + 80)} !== ${actual.slice(contextStart, index + 80)}`,
+      );
+    }
+    return;
+  }
   await writeFile(output, `${JSON.stringify(document, undefined, 2)}\n`);
 }
+
+function firstDifference(left: string, right: string): number {
+  const length = Math.min(left.length, right.length);
+  for (let index = 0; index < length; index += 1) if (left[index] !== right[index]) return index;
+  return length;
+}
+
 /* @workflow
 {
   "name": "fixture:paragraph-bidi:generate",
-  "summary": "Regenerate the public paragraph bidi contract fixture.",
-  "requirements": "Built runtime packages and authenticated fonts.",
+  "summary": "Regenerate the public Rust paragraph bidi contract fixture.",
+  "requirements": "Built runtime packages and authenticated checked-in fonts.",
   "writes": "Checked-in paragraph bidi contract."
 }
 */
 /* @workflow
 {
   "name": "fixture:paragraph-bidi:check",
-  "summary": "Verify the public paragraph bidi contract fixture.",
-  "requirements": "Built runtime packages and authenticated fonts.",
+  "summary": "Verify the public Rust paragraph bidi contract fixture by deterministic regeneration.",
+  "requirements": "Built runtime packages and authenticated checked-in fonts.",
   "writes": "Nothing.",
   "args": ["--check"]
 }

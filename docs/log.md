@@ -1,6 +1,870 @@
 # pmndrs/text documentation update log
 
+## 2026-08-10
+
+- **Provisioned the R3F asset subsetter on clean CI hosts** — The example's byte-exact asset check requires HarfBuzz
+  14.2.0, but CI had provisioned only the separate 13.0.0 shaping oracle and CJK fixture tool. The authenticated utility
+  provisioner now accepts either recorded release, verifies the 14.2.0 source archive as
+  `94017020…eaff`, and keeps each build in its versioned ignored cache. CI publishes only the 14.2.0 utility directory to
+  later steps. A fresh source build self-identifies as 14.2.0, and the complete R3F type/lint/format, byte-exact asset,
+  production build, and live GPU interaction gate passes without changing either checked font artifact.
+
+- **Fixed stacked-PR size reporting at the action boundary** — The pinned Size Limit action executes its configured
+  command directly rather than through a shell, so the compatibility pipe had been passed to the measurement script as
+  inert arguments and the action received the full report object. The workflow now supplies the same base-compatible
+  adapter through an explicit `sh -c` boundary. Executing the exact parsed workflow command locally emits 39 validated
+  `{name, size}` rows.
+
+- **Closed detached WebGL2 PBO updates** — The complete Presentation matrix exposed a deterministic transparent Zoom Text
+  frame on forced WebGL2 Bitmap. Three's PBO setup had replaced each storage attribute array with a padded retained copy,
+  while later Rust command-buffer patches still changed only canonical storage. Dirty patches now copy their exact byte
+  ranges into the detached upload view before texture invalidation; WebGPU retains direct aliasing. A focused integration
+  fixture proves canonical/upload equality and untouched padding. All 48 Bitmap/MTSDF/Slug × WebGPU/WebGL2 workload
+  cells remain visible with one renderer. The matrix also closed a benchmark-only transition seam where Off-axis's 120%
+  default could be observed for one render under the preceding workload's 100% contract. The PBO fix adds 587 raw / 112
+  gzip / 64 Brotli bytes to Three; core JavaScript and Wasm remain byte-identical.
+
+- **Final renderer lifecycle size evidence** — Regenerated the canonical package-size record after the final Three retry,
+  dirty-range, disposal, and transform-identity fixes. Renderer-neutral JavaScript and the optimized shaper Wasm remain
+  byte-identical. The complete Three adapter adds 764 raw / 355 minified / 118 gzip / 82 Brotli bytes, putting the
+  Three-plus-core total at 1,488,082 raw / 498,494 gzip / 395,212 Brotli bytes with Three, React, and R3F external.
+  Every reviewed absolute and cumulative size ceiling still passes.
+
+- **Reproducible TypeScript-to-Rust migration evidence** — Rebuilt exact base commit `90964be0` in an isolated worktree
+  with its own lockfile and original public layout benchmark, then ran the unchanged 22,000-glyph target at eight warmups
+  and 31 measured repetitions on the same Darwin arm64 host as the current optimized artifact. The base
+  cold/font-size/width/suffix-edit medians are 58.32/12.09/9.15/39.61 ms. Current Bitmap, MTSDF, and Slug complete
+  `text_update` plus render-plan medians are respectively 15.90/6.04/2.78/13.48, 16.50/6.41/2.73/13.52, and
+  16.73/6.64/2.96/14.37 ms. Checked JSON records retain the exact summaries, one shared Wasm identity, technique,
+  allocation strategy, cadence, and glyph target; a fixture contract requires every comparable Rust median to remain
+  below the recorded TypeScript median. This establishes the migration direction on this machine without turning timing
+  observations into cross-host CI thresholds or declaring the p95-under-4-ms target complete.
+
+- **Restored executable contract generation and compiled-ABI fuzzing** — Bidi/policy/UIKit and full CJK paragraph
+  contracts now regenerate through the public Rust-plan `Text` query path and run in `--check` mode from ordinary
+  benchmark gates. The checked fixtures stay byte-identical: a pre-f32-ABI numeric literal survives only when the current
+  value is exactly f32-equivalent, and the known UIKit rounding seam is recomputed independently. A new fixed-seed Wasm
+  smoke corpus mutates 64 policy and frame requests twice, requires identical bounded statuses with both valid and invalid
+  paths, and proves a fresh valid transaction succeeds after every mutation. This replaces the deleted legacy-export
+  fuzzing at the actual `text_update` and policy-registration boundaries; the package now passes 165 integration and
+  three fuzz-smoke tests in addition to 158 Rust tests.
+
+- **Closed the final adversarial Three lifecycle findings** — Consecutive render plans now accumulate and coalesce
+  attribute upload ranges until Three consumes them, preserving presentation restoration and retry writes across
+  multiple updates before one render. Disposed descendants leave the active batch without requiring synchronous host
+  detachment; complete batch validation stays inside the group error boundary; committed paragraph removals recycle
+  transform identities instead of growing the indexed table forever; and an unexpected semantic-query plan remains
+  recoverable through the owned-publication retry path. Focused regressions cover pending-range unions, attached disposal,
+  survivor rendering, and twelve create/remove cycles at constant transform capacity. All 158 Rust and 165 Node
+  integration tests pass. The direct benchmark's default changes from 5/11 to 8/31 warmup/measured samples so p95 is no
+  longer the maximum observation by construction.
+
+- **Passed the complete foundation gate and refreshed release evidence** — The exact pushed foundation commit passes
+  158 Rust library tests, 165 Node integration tests, unchanged Unicode 17 vectors, 112 benchmark-app tests, all 16
+  isolated Chromium targets,
+  production builds, the R3F live GPU interaction, formatting, lint, types, packaging, and OKF validation. Sequential
+  eight-warmup/31-sample 25,515-positioned-glyph runs put Bitmap/MTSDF/Slug cold medians at 16.02/16.60/16.83 ms,
+  font-size at 6.01/6.42/6.67 ms, column width at 2.77/2.77/2.87 ms, and suffix edits at 13.73/13.75/13.59 ms. Every
+  comparable median beats the retained TypeScript checkpoint; the p95-under-4-ms optimization target remains open.
+  The live 11,510-glyph Paragraph Stress probe holds one draw and 121 RAF FPS while attributing 5.725/7.405 ms
+  median/p95 to public text update-and-measure versus 0.405/0.905 ms for renderer submission.
+
+## 2026-08-09
+
+- **Deduplicated exact ordered/stable planner machinery with measured delivery savings** — A focused Mori 0.19.1 audit
+  identified shared identity membership, error conversion and capacity classification, cold buffer allocation, and
+  draw-span invariants. Rust now owns each once while keeping the distinct ordered-direct and stable-indirect address
+  loops local and allocation-free. The optimized shaper moves from 1,160,505 / 442,612 / 348,594 raw/gzip/Brotli bytes
+  to 1,159,317 / 442,284 / 347,850, saving 1,188 / 328 / 744 bytes. All 158 Rust tests pass; the 22k complete benchmark
+  shows no material warm-path change, and a 51-sample cold check measures 15.452 ms median / 15.670 ms p95 at 1.0% RSD.
+
+- **Proved mixed fallback techniques and the R3F example in a live browser** — A public compiled-Wasm integration loads
+  Bitmap Inter with Slug Font Awesome fallback and proves Rust partitions one paragraph into exact Bitmap `vec2` and
+  Slug `vec4` program draws without a user-facing technique selector. The bounded R3F Vite example now has a durable GPU
+  Chromium probe in its ordinary package check: it waits for authenticated fonts, verifies 13 laid-out glyphs as 11
+  visible records across two Rust-planned resource meshes, then clicks the real in-canvas Bitmap, MSDF, and Slug controls
+  through pointer events. TypeScript, React Compiler-aware lint, and the live interaction pass.
+
+- **Closed the Three command-buffer retry and ownership gaps** — Three now advances `consumedPlanRevision` only after
+  successful plan application and automatically retries retained owned bytes before another engine update. Upload ranges
+  clear once per plan then accumulate across origin restoration, presentation edits, and Rust patches. Exact retired
+  buffer generations dispose dependent materials even after a replacement occupies the ID, indexed table growth retains
+  direct materials, and loaded-font disposal removes owner-scoped decoded resources. Material realization rejects
+  synchronous text reentrancy before another Wasm call can invalidate borrowed views; semantic-only queries assert that
+  Rust emitted no render work. Public compiled-Wasm regressions cover every failure. The 25,515-glyph public Three lane
+  measures 17.84/6.32/3.04/13.84 ms median for cold/font-size/width/text versus the adjacent recorded
+  19.42/6.59/3.10/14.24 ms, establishing no regression without assigning a cross-process speedup.
+
+- **Removed the redundant homogeneous-policy glyph scan and preserved promoted-range alignment** — The first-party
+  renderer policy uses one allocation strategy across Bitmap, MTSDF, Slug, and external programs, so Rust now selects
+  that strategy once before delegating to the planner; mixed policies retain exact per-glyph discovery. Planner
+  compilation remains the authority that validates program existence and input shape. Dirty-range whole-buffer
+  promotion now rounds its record end so `end * stride` still satisfies the renderer's byte alignment. All 157 Rust
+  library tests pass. A short 22k-target run shows no material regression and the optimized shaper is 1,160,505 raw /
+  442,612 gzip / 348,594 Brotli bytes, +182 / +42 / +233 bytes from the preceding artifact.
+
+- **Made application gates respect their shared build artifact dependency** — Root package checks already complete before
+  application checks, but the benchmark app rebuilds those runtime packages as part of its standalone contract. Running
+  application checks concurrently let that rebuild remove `packages/text/dist` while the R3F example authenticated its
+  freshly baked assets, intermittently hiding `bitmap_baker.wasm`. Root application checks now run serially; each app's
+  standalone check remains unchanged, and the ordering removes the filesystem race rather than adding a retry.
+
+- **Ported the external raster proof off the deleted host packer** — The private glyph-example consumer now uses the
+  same public boundary required of third parties: its portable technique owns only identity, decode, retained resource,
+  and disposal, while its Three registration supplies the declarative policy program and material realization. Removed
+  its stale selector, binding object, canonical storage allocator, TypeScript glyph writer, paint hook, and exported
+  legacy types. The focused compiled-Wasm lifecycle verifies Rust-produced sizes and colors before checking retained
+  draw and geometry identity; no test-only core API or compatibility contract was added. All six package tests and its
+  TypeScript, lint, and formatting gates pass.
+
+- **Shared the compiled draw emitter and removed a quadratic stable-plan scan** — A symbol-bearing `-Oz` build attributes
+  33.3 KiB of optimized function bodies to ordered planning and 50.1 KiB to stable planning, while confirming that the
+  planners retain different storage, order-buffer, and retirement work. Their identical final primitive/draw record
+  construction now calls one non-generic out-of-line kernel once per draw span. The strict stable benchmark then exposed
+  that every changed range rescanned every sorted slot write; exact range partitioning reduces 22k-target font-size from
+  350.136 to 7.982 ms median and column resize from 49.636 to 3.767 ms. Stable splice is 9.372/9.583 ms median/p95 with
+  452 B written. The combined final artifact is 1,160,323 raw / 442,570 gzip / 348,361 Brotli bytes, 220 / 485 / 423 bytes
+  smaller than the pre-extraction Wasm. Compile-time `lite`, `cjk`, and `full` runtime profiles remain a later measured
+  delivery experiment with one ABI; separate Wasm assets, not one bundle containing every variant, provide transfer wins.
+
+- **Deleted the duplicate TypeScript raster packing and lifecycle path** — Raster techniques now stop at identity,
+  artifact decoding, retained CPU resource ownership, and disposal; Rust policy programs remain the only production
+  instance packers and dirty-range publishers. Removed `RasterRuntime`, candidate/commit staging, glyph selection,
+  storage allocation, record writers, their obsolete public types, and tests that reconstructed the deleted packers.
+  A Mori 0.19.1 production scan corroborated the parallel path and separated it from the live ordered-direct and
+  stable-indirect planners, whose shared draw-emission shape has distinct allocation and retirement semantics. All 154
+  Rust engine tests, all 161 package integration tests, Unicode 17 conformance, TypeScript, lint, formatting, and OKF
+  validation pass. The cleanup leaves Wasm unchanged and reduces core JS + Wasm from 461,917 to 460,901 gzip bytes and
+  complete Three + Wasm from 501,815 to 498,922 gzip bytes, with renderer peers external.
+
+- **Made raster policy origins exact without widening retained glyph storage** — The first-party policy had treated
+  positioned ink-box starts as baseline origins, then subtracted the baked raster plane a second time. The mapping was
+  dormant while the legacy TypeScript renderer remained authoritative and became visible only after the single-path
+  Rust cutover. The independent Bitmap CPU oracle exposed a 12 px vertical displacement and 33,492 differing channel
+  bytes; no tolerance or fixture changed. Rust now exposes explicit origin policy fields and maps each renderable glyph
+  to its existing semantic-glyph record with one `u32` index. The already-retained cluster-ID lane supplies plan semantic
+  identity, so the hot render glyph record does not grow. The public WebGL2 Bitmap target passes 32/32 exact frames with
+  zero differing bytes and pinned SHA-256 `a47930d3…15e893`; the complete paragraph matrix passes 32/32. The 22k direct
+  benchmark returns to the pre-fix 107.56 MiB retained high-water mark. Optimized Wasm is 1,159,121 raw / 441,811 gzip /
+  347,554 Brotli bytes, 818 / 451 / 415 bytes above the prior checkpoint.
+
+- **Regenerated package-size and edit-latency truth from the final stable-addressing artifact** — The renderer-neutral
+  core is 1,257,322 raw / 460,673 gzip / 364,097 Brotli bytes, including the 1,159,121 raw / 441,811 gzip /
+  347,554 Brotli shaper Wasm. The complete Three adapter plus engine is 1,505,897 / 500,509 / 396,903 bytes; Three,
+  React, and React Three Fiber remain external peers. A sequential eight-warmup/31-sample 22k Bitmap run measures the
+  ordered-direct equal-length edit at 1.330/6.328 ms and middle splice at 8.369/8.473 ms median/p95. Stable-indirect
+  middle splice measures 10.683/11.149 ms and writes only 452 B. The earlier 51.067 ms stable figure was the maximum of
+  an 11-sample run (the benchmark's percentile index selects the maximum at that sample count), did not reproduce, and
+  is not retained as ordinary latency evidence. A stricter stable equal-length run detected late Wasm growth before it
+  could publish a report, so stable-indirect remains a correctness capability rather than the first-party default.
+
+- **Completed stable-indirect Three record addressing without changing the default** — The Three executor now resolves
+  one validated logical-to-physical record address for Bitmap, MSDF, Slug, custom programs, indexed transforms, and
+  origin augmentation. A product integration regression proves a paragraph reorder patches only the Rust order buffer,
+  retains physical glyph storage, and reuses the existing draw objects. The shared nested-storage oracle renders the
+  red record behind a green decoy exactly on forced WebGL2 and hardware WebGPU (16/16 pixels, identical SHA-256), while
+  the complete ordered Bitmap/MSDF/Slug/custom-material matrix remains green on both backends. Stable slot lookup reuses
+  the committed identity index for revision-only/reorder updates, improving two short 22k localized-edit medians from
+  2.903 to 2.446 and 2.376 ms. Those runs are implementation checkpoints, not final tail evidence; the stricter current
+  measurement and growth result are recorded above. Optimized Wasm grows 992 bytes from 1,157,311 to 1,158,303 raw bytes.
+
+- **Added the missing middle-splice workload before choosing edit storage** — The unchanged replacement case remains the
+  canonical comparison, while a new `localized-splice` case alternates one UTF-16 insertion and deletion in the middle
+  of the same 22,000-glyph fixture. Ordered-direct measures 9.119 ms median / 10.016 ms p95 and writes 511.3 KiB because
+  physical records after the insertion move. Stable-indirect proves the intended bandwidth result at 452 B but currently
+  regresses to 10.776/51.067 ms; equal-length stable replacement is also 2.903/19.312 ms versus ordered-direct's roughly
+  1.15/5.74 ms. No default changes: stable planning and Three indirection must become correct and fast before chunk-local
+  UTF-16 storage can be credited with the smaller remaining edit cost.
+
+- **Retained ordered-plan topology when physical storage membership stayed invariant** — The ordered-direct compiler now
+  reuses committed glyph-to-batch and glyph-to-slot mappings under the exact policy fingerprint and capability set. It
+  still validates every glyph and stable identity, and any physical storage-key mismatch returns to complete batch
+  discovery; a material-partition regression proves both paths. Three consecutive optimized 101-update runs measure
+  1.164/5.761, 1.153/5.740, and 1.155/5.738 ms median/p95 with five roughly 1.2 KiB patches. The preceding checkpoint
+  measured 1.314/5.863 ms. Optimized Wasm grows 4,189 bytes to 1,157,311, and retained high-water memory falls from
+  80.19 to 79.81 MiB. The fast class is now near 1 ms, while 81.4–81.6% RSD and the roughly 5.74 ms p95 keep the
+  break-sensitive tail open.
+
+- **Retained policy inputs and rebuilt only from the first storage mismatch** — Gathered field-major policy inputs now
+  commit under the exact session revision, policy fingerprint, and capability set. A one-byte selection lane skips
+  binding/resource/policy work for zero-change glyphs; changed records update only reachable fields. Identity replacement
+  stays in the same physical topology, while technique, program, resource, transform, material, clip, or depth changes
+  retain the verified prefix and fully gather the suffix. Commit/abort and disposal tests cover cache lifecycle, and an
+  oracle proves identity/field updates plus a material-triggered suffix rebuild. The unchanged optimized 101-update lane
+  improves from 2.607/6.184 to 1.314/5.863 ms median/p95 with five roughly 1.2 KiB patches. RSD remains 76.2%, so the
+  break-sensitive tail is open. Optimized Wasm grows 5,856 bytes to 1,153,122; retained high-water memory is 80.19 MiB.
+
+- **Continued recomposition until the edited line cursor actually converges** — The first retained-line proof required
+  a whole recomposed line to equal its predecessor, which made convergence after a shifted line boundary impossible.
+  Rust now recomposes consecutive old bands until cursor, height, and baseline return to the retained ending state, then
+  reuses the suffix. A three-line regression transfers advance across one boundary and converges at the next. Exact
+  equal-length ASCII-letter edits also retain structurally invariant Unicode and bidi results; punctuation, spacing,
+  non-ASCII, and structural edits remain on the complete analysis path. On the unchanged 101-update optimized workload,
+  median/p95 improve from 5.881/8.406 to 2.607/6.184 ms and RSD falls to 42.4%, with five roughly 1.2 KiB patches.
+  Optimized Wasm grows 66 raw bytes to 1,147,266. The break-sensitive p95 remains above the 4 ms contract.
+
+- **Rebuilt clusters only for the incrementally shaped source run** — Exact grapheme/glyph topology now permits the
+  cluster builder to retain all other SoA lanes and rebuild the changed run's advances, bindings, glyph adjacency,
+  safe/break flags, and identities. The affected window includes its predecessor break because that decision depends on
+  the changed run's first safe-concatenation flag; any mismatch falls back cold. A field-for-field cold oracle covers
+  every retained lane. On 101 optimized updates, median/p95 improve from 6.894/9.314 to 5.881/8.406 ms with the same
+  five roughly 1.2 KiB patches. Optimized Wasm grows 7,633 raw bytes to 1,147,200; the p95 contract remains unmet.
+
+- **Narrowed content-revision work to the recomposed line** — The line-convergence proof now carries exact old/new
+  glyph spans into positioning. Retained prefix and suffix records preserve their revisions and publish zero semantic
+  change masks; only the changed span compares fields or looks up stable identities. A focused test proves revisions
+  `[10,20,30]` become `[10,40,30]` for a middle-span change. The 101-update optimized benchmark improves from 7.633
+  to 6.894 ms median (9.7%); p95 is effectively flat at 9.358→9.314 ms, so no tail improvement is claimed. Optimized
+  Wasm grows 1,693 raw bytes to 1,139,567.
+
+- **Kept transactional text buffers synchronized across equal-length edits** — The retired UTF-16 and stable-identity
+  buffers now copy only the proven changed range after commit or restore on abort, so the next replacement does not
+  begin by cloning the paragraph. A 101-update rerun measured 7.633 ms median / 9.358 ms p95 against the preceding
+  7.668 / 9.620 ms, while optimized Wasm shrank 520 raw bytes to 1,137,874. This removes redundant work but is not a
+  latency claim; inserts and deletes still await the bounded semantic chunk gaps.
+
+- **Stopped layout and positioning after a proven line-state convergence** — A same-length localized edit now
+  recomposes only its affected line when geometry, metrics, safety limits, and overflow behavior are compatible, then
+  retains the exact prefix/suffix lines and positioned glyphs only after cluster cursor, metrics, fragment slots, text
+  boundaries, stable identities, and hard-break state match. Nonconvergence discards the partial result and exercises
+  the full path. A 101-update production optimized SIMD Wasm run on the unchanged 22,000-glyph Bitmap case improved
+  from the preceding 9.372 ms checkpoint to 7.668 ms median (18.2%), with 9.620 ms p95 and five roughly 1.2 KiB
+  patches. Optimized Wasm grows 6,937 raw bytes to 1,138,394. The 80.38 MiB high-water mark and remaining broad
+  cluster/revision/plan scans keep this outside the target; the planned semantic 64-cluster edit slack is still not
+  implemented by the current flat A/B arenas.
+
+- **Made warm HarfRust plan lookup allocation-free without claiming a latency win** — Cached shaping plans now compare
+  borrowed language and feature fields; owned cache keys are created only on a genuine miss. The optimized SIMD Wasm
+  shrank from 1,131,513 to 1,131,457 raw bytes. The 22,000-glyph localized-edit median remained effectively unchanged
+  at 9.375 ms versus 9.372 ms, and the strict lane still observed the same later 1,114,112-byte memory claim, so neither
+  issue is attributed to this lookup.
+
+- **Bounded localized reshaping to one stable shaping run** — A retained UTF-16 edit whose style, script, bidi level,
+  direction, and fallback topology remain stable now copies unchanged shaped runs and reshapes only the affected run;
+  hard breaks, style boundaries, script changes, and bidi changes are therefore explicit correctness boundaries rather
+  than heuristic byte windows. On the production optimized SIMD Wasm and the unchanged 22,000-glyph Bitmap fixture,
+  complete Rust `text_update` plus render-plan publication fell from 16.223 ms to 9.372 ms median over 31 measured edits.
+  This checkpoint is not a budget claim: cluster construction, composition, positioning, and plan gathering still scan
+  globally, p95 remains 9.723 ms, and the strict eight-warmup lane still detects later Wasm memory growth.
+
+- **Added narrow paragraph editing without exposing engine complexity** — Three `Text` now provides `insertText`,
+  `deleteText`, and `replaceText` over DOM-compatible UTF-16 offsets; direct `text` assignment derives the smallest
+  scalar-aligned replacement. Multiple edits queue into the same next-frame Rust transaction, surrogate-pair splits fail
+  synchronously, and rich-text spans shift with explicit boundary semantics. A wire-level integration regression inspects
+  the serialized request rather than inferring narrowness from final pixels.
+
+- **Regenerated package-size truth after isolating baker build variants** — The renderer-neutral browser core plus the
+  sole published SIMD shaper measures 1,224,539 raw / 447,121 gzip / 353,986 Brotli bytes; the Three adapter plus that
+  core measures 1,466,450 / 485,864 / 385,930 bytes. Optional Three, React, and React Three Fiber peers remain excluded.
+  Browser-core JavaScript stays effectively flat against the preceding record and the Three adapter shrinks, while the
+  shaper accounts for the net compressed growth. The complete MTSDF baker is again 552,025 raw / 215,030 gzip / 168,758
+  Brotli bytes after separating its 60,993-byte kernel-only Cargo target, and build-time ABI guards now prevent a partial
+  test module from being published as a baker.
+
+- **Prevented test-only Wasm variants from entering published baker artifacts** — Distributable MTSDF and Slug
+  artifact-baker builds and the optional SIMD compatibility switch now use feature-specific Cargo target directories;
+  the MTSDF kernel test uses a separate target. The package build rejects any optimized baker missing an export declared
+  by its Rust-generated TypeScript ABI. The full MTSDF artifact remains 552,025 bytes with SHA-256 `ec6eb164…7de8` before
+  and after the 60,993-byte kernel-only test. Generated ABI constants replace instance-ignoring or duplicate reader
+  functions across the font, Bitmap, MTSDF, and Slug baker hosts.
+
+- **Removed timing instrumentation and stale-output risk from the published Three graph** — The package no longer exports
+  or calls its temporary phase profiler. One-crossing integration evidence now wraps the Wasm export solely in the test
+  harness, while benchmark workload markers and outside frame timing remain application-owned. Package builds recreate
+  `dist` before TypeScript emission so deleted profiler and legacy modules cannot survive in a published tarball.
+
+- **Closed the retained paragraph browser matrix under the f32 frame contract** — The sole UIKit mismatch was a stale
+  JavaScript-double style-input expectation, not a Rust or Yoga precision defect. Independent f32 line-box arithmetic
+  reproduces the retained engine's final baseline, content height, centered final row, and exact layout hash. The public
+  browser target now passes two bidi, nine policy, twelve CJK, and one UIKit-shaped contract without runtime widening or
+  comparison tolerances.
+
+- **Separated final customer timing from temporary phase instrumentation** — The public Three workload can now retain a
+  single outside timer while disabling its internal phase collector. A 25,515-glyph, 31-sample release-artifact run
+  measures complete frame preparation, Rust update/render-plan publication, and Three application without internal clock
+  calls. The packaged shaper is Cargo release + LTO + SIMD followed by Binaryen `-Oz`; adjacent `-O3`/`-O4` artifacts cost
+  more bytes without a demonstrated speed gain. Production profiling hooks remain an explicit removal gate.
+
+- **Specified paragraph-scoped synchronous preparation without triple buffering** — Current `measureLayout()` either
+  returns committed cache or drives a complete session update and plan. The reviewed follow-up design retains one
+  speculative session transaction with paragraph-keyed pending states, linear identity reservation, explicit
+  prepare/adopt/leave-committed modes, inactive-slot copied query results, host lease retention, and new-paragraph
+  candidate ownership. Sequential paragraph queries extend the same transaction and the next frame adopts that exact
+  work before global plan compilation. Roadmap items 11.17 and 11.18 queue the query layer and promised realtime
+  publishing set as independent `feat/*` follow-up stacks after the Rust/Three cutover merges; neither is a hidden
+  prerequisite for consuming the cutover. Factoring preparation from plan commit is cohesive but not a safe flag-only
+  change.
+
+- **Completed adaptive Rust planning for physical and stable-order buffers without accepting repeated packing** — The
+  first per-buffer execution prototype regressed cold Bitmap/MTSDF/Slug by roughly 1.2/2.2/2.4 ms. Grouping identical
+  selected ranges back into one active-buffer job closes that regression while preserving independent costing and
+  committed gap bytes. Canonical before/after results are mixed and standard resize remains one unchanged-size patch, so
+  sparse browser upload evidence is still required before claiming a win.
+
+- **Started per-physical-buffer dirty-range costing without changing publication** — Added a stride-specific Rust
+  coalescer with exact tests for divergent narrow/wide gap decisions, fragmentation and 75% full-live promotion, zero
+  stride, and overflow. Existing ordered/stable callers remain on the compatibility wrapper until the next atomic
+  checkpoint, so no upload or frame-time gain is claimed.
+
+- **Moved ordered and stable physical writes onto per-buffer range plans** — Each compiler retains fixed reusable scratch
+  for the policy buffer ceiling, applies semantic dependency liveness before range selection, aligns by the concrete
+  stream stride, and packs the independently chosen spans. The order buffer and end-to-end timing remain open, so this
+  checkpoint claims correct ownership and bounded allocation rather than a speedup.
+
+- **Moved ellipsis and its real boundary reshape into the Rust frame transaction** — Only truncated flow threads build a
+  retained boundary arena; ordinary reflow retains zero boundary reshapes. Font-stack ellipsis selection, complete
+  no-wrap overflow, narrowed final-tail context, spacing, stable glyph identity, positioning, semantic inspection, and
+  render-plan publication now share the one Rust update. A public Amiri/Three regression proves the result differs from
+  incorrect whole-run reuse and matches the narrowed shaping oracle. All 136 Rust library tests and 204 package tests
+  pass. Same-machine detached-baseline comparison finds column-resize medians within 0.15 ms and mixed cold results, so
+  the checkpoint is recorded as performance-adjacent rather than assigned a speedup. Its aggregate optimized Wasm delta,
+  including adjacent renderer-integration fixes, is +13,639 raw / +5,797 gzip / +5,579 Brotli bytes.
+
+- **Recorded the Paragraph Stress integration defects without changing shaping invalidation** — Origin lookup indexing is
+  now lazy and Bitmap strike replacement initializes every required input stream. The observed 11,510-glyph MTSDF probe
+  moved `plan.apply` from about 1.02 ms to 0.14 ms and total retained update from about 6.89 ms to 4.63 ms, with differing
+  sample histories explicitly preventing a universal speedup claim. Focused public Three fixtures cover both defects.
+
+- **Queued adaptive dirty-range upload refinement from three-flatland evidence** — The research finds that Rust already
+  generalizes Flatland's dirty buckets through exact spans, gap costs, fragmentation limits, and a full-live cutover.
+  Follow-on work will calibrate per-physical-buffer costing and stable-order coalescing; TypeScript will not duplicate the
+  planner. Renderer-local transform/origin edits remain the only candidate for a Flatland-style retained tracker.
+
+- **Made semantic queries share the retained update that invalidated them** — Three now sends only changed text, style,
+  or geometry sections; an empty update and cached query make no Rust call, while pending measurement or inspection rides
+  on the same `text_update`. A two-paragraph compiled-Wasm regression proves all-paragraph semantic retention and exact
+  command-buffer output. Controlled old-Rust Paragraph Stress runs isolate 14.295 ms baseline, 13.615 ms
+  measurement-only, and 7.450 ms semantic-tier medians; the complete candidate measures 6.885 ms at 11,510 glyphs and
+  one draw. Optional User Timing markers preserve phase evidence without claiming finer inlined Rust attribution.
+
+- **Made compositing freedom an explicit Rust planning input** — `TextGroup` and R3F now expose the same `ordered` or
+  `independent` construction policy. Ordered remains the prose-safe default; independent permits the Rust ordered-direct
+  and stable-indirect planners to coalesce compatible interleaved resources. Icon Grid selects independent mode. The
+  optimized shaper is 1,101,079 raw / 417,984 gzip / 328,164 Brotli bytes.
+
+- **Made Presentation workflow failures and command-buffer work observable** — The workflow runner now rejects Vitexec
+  browser/page errors even when its process exits zero. Stale stats cannot erase a retained-scene update failure, grouped
+  draw/glyph telemetry reads the realized batch root, and the 27-cell sweep requires positive counts. Every
+  Bitmap/MTSDF/Slug transition passes. The truthful result identifies Icon Grid's remaining policy gap: 2,926–3,021
+  glyphs are split into 476 draws and run at 30.8–47.0 FPS despite only 0.27–0.76 ms median submit and 0.57–2.02 ms GPU
+  time; this is open batching work, not an accepted performance result.
+
+- **Made multi-workload Rust sessions recycle storage without recycling semantics** — Frame admission now covers removal
+  plus insertion records rather than only final paragraph count. A recycled paragraph clears every semantic arena and
+  identity marker while retaining its allocations, and one session prewarms one reusable paragraph instead of applying a
+  4,096-glyph batch capacity to every child. This removes the invalid-request and allocation failures across the
+  text-ladder, zoom, and 476-paragraph icon-grid transitions. Rust capacity identity, public Three double replacement,
+  all 201 package tests, all 131 Rust tests, and a complete 27-cell Bitmap/MTSDF/Slug WebGPU transition sweep pass. The
+  optimized shaper is 1,090,859 raw / 411,106 gzip / 325,149 Brotli bytes.
+
+- **Made cold command-buffer growth recover instead of failing the benchmark scene** — Decoupled the 64 MiB output
+  safety limit from the smaller retained A/B arenas. Rust's exact required-result watermark now drives one bounded cold
+  reserve/retry; the host re-resolves the request pointer and recopies after possible Wasm-memory detachment. A
+  compiled-Wasm test forces growth from a header-sized arena. The live MTSDF paragraph-stress scene consequently publishes
+  11,510 glyphs in one draw instead of status 7 at 1,382,592 bytes. Three settled WebGPU A/B runs rejected an eighth,
+  split origin/size storage binding: CPU submit was unchanged and median GPU time trended worse, so MTSDF stays packed.
+
+- **Made the 25,515-glyph Rust benchmark self-validating** — The result header's `primitiveCount` counts primitive-table
+  rows, so the benchmark's former “1 renderable instance” label did not prove the workload even though its 1–2.4 MiB
+  writes showed full packing. It now sums glyph primitive `recordCount` values and rejects an undersized plan. On the
+  unchanged `--glyphs 22000` fixture, Rust publishes 21,805 renderable records from 25,515 positioned TypeScript glyphs.
+  Five-warmup/11-sample Bitmap/MTSDF/Slug resize medians are 3.779/4.345/5.082 ms with p95
+  4.156/4.951/5.679 ms, versus TypeScript's 8.33 ms median. Rust wins, but all policies still fail the sub-4 ms p95 gate;
+  isolated warm-session Wasm high-water marks of 64.75/77.75/78.56 MiB also remain open rather than accepted costs.
+
+- **Deleted the redundant Three paragraph-target transaction** — The Rust command buffer is now the sole render-state
+  transition authority. Removed the candidate/current `ThreeBitmapTarget`, `ThreeMtsdfTarget`, `ThreeSlugTarget`, retained
+  revision, and old renderer-program registry; the executor keeps only GPU resource/draw/material tables, synchronization,
+  and reversible presentation overrides. First-party technique imports no longer register targets as side effects. Migrated
+  the composition proof to ordinary Bitmap policy packing plus `defineTextMaterial`, so customization changes canonical
+  shader output without owning layout, attributes, geometry, or another transaction. This deletes 1,496 source lines. The
+  measured technique runtime graphs shrink only 45 raw bytes each (19–20 gzip bytes for Bitmap/MTSDF and 20 for Slug),
+  proving the deleted targets were already outside those consumer graphs rather than attributing an invented payload win.
+
+- **Kept layout inspection and presentation outside rendering authority** — Added an explicit Rust semantic-glyph
+  inspection mask alongside measurement; ordinary rendering still publishes no layout arrays. First-party policy
+  programs now carry one stable glyph ID per renderable instance so Three can direct optional Bitmap/MTSDF/Slug origin
+  presentation without reconstructing glyph topology. The executor restores authoritative origins before every later
+  command-buffer update and retains only resource tables plus reversible overrides, eliminating any need to revive the
+  candidate/current target state machine. Compiled-Wasm fixtures cover semantic spaces, shared two-paragraph batching,
+  isolated overrides, transform-only retention, and semantic-update retirement. The refreshed canonical checkpoint is
+  1,089,889 raw / 414,204 gzip / 325,805 Brotli shaper bytes; legacy-path deletion and a Rust size pass remain open.
+
+- **Separated semantic measurement from the render plan** — Activated the existing `semanticViewMask` for an explicit
+  retained-Rust measurement query while ordinary rendering continues to request zero semantic records. The first view
+  publishes one paragraph summary plus its line records in the immutable A/B sidecar; Three's command-buffer executor
+  ignores it. Public `Text.measureLayout()` caches the frozen result until a committed semantic update. Rust exact and
+  at-most/overflow tests plus a compiled-Wasm Three lifecycle prove the query retains the existing mesh and does not
+  restore the removed `Text.layout` arrays.
+
+- **Proved external Rust plan programs on both Three backends** — Replaced the glyph-example package's renderer-side
+  `ParagraphBatchTarget`, revision transfer, packing, dirty upload, and mesh transaction with a static policy program,
+  cold font-binding compiler, and plan-buffer material factory. A compiled-Wasm lifecycle proves Rust-packed buffers
+  and retained draw/geometry identity. The live product proof now passes twice on hardware WebGPU and forced WebGL2
+  with the same `817495c4…ba9d46` frame. Its cover baseline exposed individual visibility as a batching concern; indexed
+  draws now suppress only the hidden text's matrix slot without a Wasm call or draw split, while direct draws mirror
+  object visibility.
+
+- **Completed material naming through Three and R3F** — Removed the obsolete `ThreeRenderVariant` generic and every
+  `renderVariant` property, setter, span field, comparison, and no-op binding hook from the command-buffer-backed public
+  adapters. `material` is now the sole authored name through numeric Rust `materialId` and renderer factory realization;
+  legacy core/TypeGPU variants remain scoped to the path awaiting deletion.
+
+- **Removed authored technique from Three grouping and font stacks** — `createFontStack` now accepts heterogeneous
+  Bitmap/MSDF/Slug fonts from one runtime and preserves their technique union, while the legacy single-technique
+  `ParagraphBatch` rejects that union at its own boundary. `TextGroup` and its R3F wrapper no longer accept or expose a
+  technique. A compiled-Wasm public lifecycle fixture proves one Bitmap-root paragraph with an MSDF span is partitioned
+  by the Rust policy/plan into two draws and resolves one custom material factory under both technique contexts.
+
+- **Cut imperative Three rendering over to the Rust command buffer** — Replaced the public binding's private
+  `ParagraphBatch` plus attachment `prepare`/`commit` state machine with one retained Rust session and renderer
+  executor. A `TextGroup` now submits every descendant paragraph in one update and owns shared draws; standalone text
+  uses the same path with its own root. Public `material` definitions resolve through Rust `materialId`, while scene
+  transforms and render-order bases remain renderer-local. Focused compiled-Wasm tests prove mixed-font spans, one
+  indexed draw across two public text transforms, retained custom material realization, reparenting, and disposal.
+  Rendering deliberately does not publish layout arrays, and the old Three layout/snapshot/origin surface is removed;
+  a future interaction or measurement query remains separate.
+
+- **Executed both policy-selected transform modes in Three** — Generalized the command-buffer target across indexed
+  and direct transform realizations for Bitmap, MSDF, and Slug. The same compiled-Wasm fixture now registers a direct
+  first-party policy: Rust emits draw transforms `[1,2]`, omits transform buffers, and Three updates retained draw
+  matrices from their scene objects. The existing indexed policy still emits draw transforms `[0,0]`, buffer 15, and
+  the shared matrix sidecar. A hybrid policy additionally publishes indexed Bitmap and direct MSDF draws together;
+  scene-only synchronization updates both realizations without Wasm. The engine policy chooses each program contract;
+  Three does not rebatch the plan.
+
+- **Bounded Three residency and retained draw identity** — Applied exact Rust buffer/resource retirements to dependent
+  material and texture realizations, retaining shared renderer resources until their final plan reference leaves. The
+  compiled-Wasm fixture now checks exact live storage-plus-resource bytes after Bitmap → MSDF → Slug transitions.
+  Lifecycle-only reorder retains the same meshes/geometries/materials and changes range/order metadata; coalescing
+  retains one compatible draw and retires only the other. Live backend submission still owns native-fence proof.
+
+- **Carried Three material factories through Rust material IDs** — Added the public factory definition and a runtime-
+  scoped identity registry while keeping Rust callback-free. The executor resolves each nonzero `materialId` only when
+  a compatible realization is absent and supplies the canonical technique shader, final indexed-transform position,
+  and a DRY default-material constructor. A compiled-Wasm fixture proves two material draws over shared storage, zero
+  new factory calls on reorder/coalescing, and one new selected-factory call when the retained glyphs switch to MSDF and
+  Slug. The public `Text` property route and fence-bounded retirement remain cutover work.
+
 ## 2026-08-08
+
+- **Executed Slug from the Rust command buffer** — Bound Rust's five float `vec4`, two integer `uvec4`, and indexed-
+  transform streams directly to the canonical Slug graph. The renderer retains validated curve/header/reference
+  textures and keeps the WebGL-compatible packed-reference representation. A new full-MVP dilation input applies the
+  exact per-instance transform to both placement and analytic half-pixel expansion while retaining the legacy row
+  interface. The compiled-Wasm fixture republishes the same six retained glyphs as one program-3 draw after Bitmap and
+  MSDF, without resending text or geometry. Wasm bytes are unchanged. Live shader compilation/pixels, bounded
+  retirement, material factories, and public cutover remain open.
+
+- **Executed MSDF from the Rust command buffer** — Extended the shared Three plan executor rather than adding another
+  target path. Rust policy buffers 1–7 bind directly as MSDF `vec4` storage, buffer 15 indexes the shared transform
+  sidecar, the renderer resolves and builds the validated layered atlas once, and the canonical `msdfShader` remains the
+  coverage authority. A compiled-Wasm fixture changes two retained paragraphs from Bitmap-first to MSDF-first fallback
+  without text or geometry resend and receives one six-instance program-2 draw. Wasm bytes are unchanged. Live pixels,
+  Slug, bounded retirement, material factories, and public cutover remain open.
+
+- **Made transform batching policy-selectable and executed indexed Bitmap draws** — Corrected the temporary global
+  transform draw boundary. Programs may now split on transform and consume nonzero draw-level IDs, or omit that key and
+  pack stable region transform slots into first-party policy buffer 15. The Bitmap Three executor applies Rust buffer
+  patches, binds direct resources, keeps matrices in a renderer-owned sidecar, and updates scene transforms without a
+  Wasm call. Visible overflow no longer invents a clip boundary. Rust tests prove split and indexed modes; compiled Wasm
+  retains two material draws and collapses the same two paragraphs to one six-instance draw after their material IDs
+  converge, with exact slots `[2,2,2,1,1,1]`. All 129 Rust tests and the focused Three integration pass. Optimized Wasm
+  is 1,083,255 raw / 411,409 gzip / 324,539 Brotli bytes. Browser pixels, MSDF/Slug, and public Three cutover remain open.
+
+- **Resolved Rust resource references directly in Three** — The Three coordinator now registers each validated Bitmap
+  page, MTSDF atlas, and Slug analytic page under the same collision-checked numeric identity compiled into the Rust
+  font binding. A command-buffer `referenceId` resolves in one map lookup; Three does not scan fonts or repeat resource
+  partitioning. Incompatible technique reuse is rejected. Focused type-check, build, and compiled-Wasm coordinator tests
+  pass; physical buffer, patch, and draw realization remain open.
+
+- **Made transform ownership explicit and removed per-cluster draws** — The first real multi-paragraph publication
+  exposed that paragraph-local positions had no renderer transform owner and cluster `semantic_id` prevented primitive
+  coalescing. The policy now requires a paragraph-derived transform draw key, forbids transform from physical storage
+  identity, and publishes `transformId` in the expanded 64-byte draw record. Compatible clusters coalesce; a span that
+  crosses semantic IDs publishes zero rather than lying about one cluster. The compiled-Wasm fixture falls from six
+  draws to exactly two and reverses `(materialId, transformId)` from `[(7,1),(8,2)]` to `[(8,2),(7,1)]` without semantic
+  resend. Optimized Wasm changes by only +222/+83/+52 raw/gzip/Brotli bytes to
+  1,082,773 / 407,870 / 324,551.
+
+- **Published multiple retained paragraphs as one Rust command buffer** — Engine sessions now own an ordered stable-ID
+  paragraph set rather than one paragraph. Lifecycle upsert/reorder/remove, every child semantic transaction, shared
+  policy gather, plan serialization, and commit/abort form one atomic publication. Missing semantic spans retain a
+  child, and per-child geometry retains only referenced regions/exclusions instead of inheriting invalidation from a
+  sibling's global table prefix. A compiled-Wasm Three-coordinator fixture publishes material groups `[7, 8]`, then
+  sends only reorder records and publishes `[8, 7]`; all 128 Rust unit tests pass. Optimized Wasm changes from
+  1,073,248 / 404,463 / 321,189 to 1,082,551 / 407,787 / 324,499 raw/gzip/Brotli bytes. This proves the retained,
+  renderer-neutral command-buffer delta; public Three GPU realization and end-to-end latency remain open.
+
+- **Preserved multi-paragraph Three batching in the Rust session design** — Existing `TextGroup` batches independent
+  paragraphs, while the current Rust session's multiple constraints all flow the same prose. The cutover therefore uses
+  one group/session containing stable-ID paragraph states and one shared planner/publication, rather than one Wasm call
+  and buffer set per `Text`. The policy gather workspace now appends independent positioned SoA inputs after one total
+  reservation, with an exact two-layout proof and no allocation inside append. Paragraph-keyed frame mutation and
+  transactional session state remain the next Rust slice. Adjacent rebuilt-Wasm Bitmap runs measured 4.083 ms before
+  and 4.078 ms after for full-column resize; that does not establish a speed change and does rule out a visible
+  regression in this run. Wasm changes by +105/+40/+252 raw/gzip/Brotli bytes.
+
+- **Bound Three plan consumption directly to Wasm publication memory** — A reusable package-internal reader validates
+  every Rust-emitted render-plan table and reads its fixed records in place. It retains one `DataView` across ordinary
+  A/B publications and replaces it only after `memory.grow()`, so it does not materialize per-glyph JavaScript objects.
+  A real compiled-Wasm Three fixture now shapes and lays out Inter in one update and observes nonempty resource, buffer,
+  patch, primitive, and draw tables through that reader. GPU resource realization remains the next cutover slice.
+
+- **Added a lazy Three-owned engine coordinator** — The renderer-neutral runtime does not statically import first-party
+  raster programs. On first Three use, a runtime-scoped coordinator registers the all-technique policy, compiles loaded
+  font bindings, allocates session handles, and reference-counts exact ordered font-stack handles. A real Inter fixture
+  binds Bitmap and MTSDF to the same retained shaping font, proves identical stack acquisition shares one handle,
+  reversed fallback order does not, last release retires the stack, and retired handles are not immediately reused. The
+  coordinator remains outside the public Three graph until batch/session render-plan consumption lands.
+
+- **Separated shaping-font identity from render-binding identity** — Rust font stacks now contain loaded-font binding
+  handles, and each binding names its shared shaping-font handle. Shaping, metrics, and extents continue through the
+  retained font once; policy gather follows the selected binding, so the same face may carry multiple raster techniques
+  and fallback preserves its technique into the emitted plan. A compiled-Wasm Inter → Devanagari fallback emits the
+  second technique, and another fixture registers two techniques against one shaping font. The unchanged
+  25,515-positioned/21,805-renderable resize medians are 4.217/4.791/5.633 ms for Bitmap/MTSDF/Slug; 6–7% run RSD does
+  not establish a regression from 4.120/4.646/5.622 ms. Wasm is 1,070,580 / 402,114 / 319,662 raw/gzip/Brotli bytes.
+
+- **Promoted complete frame-request serialization into production** — A package-internal compiler now lowers text
+  mutations; full style records; constraints; sequential rectangle or polygon regions; polygon exclusions; inline
+  objects; policy parameters; and revision/fence state into one compiler-mapped allocation. It performs no shaping,
+  layout, batching, or packing. The current benchmark request is byte-identical to its established helper, including a
+  surrogate pair, while a broad structural fixture covers language, OpenType features, material, word/letter spacing,
+  baseline shift, decoration, vertical mode, holes, and inline objects. Public-state normalization and a real rich-frame
+  Rust acceptance test remain part of the Three cutover.
+
+- **Compiled the first production Three policy and raster bindings** — One deterministic policy now registers Bitmap,
+  MTSDF, and Slug together against the retained Rust planner. Draw identity includes numeric `material_id`; storage
+  identity excludes it, so a renderer may share physical buffers while splitting draws by material. Production binding
+  compilers lower every validated first-party raster record directly into one field-major request allocation, including
+  every bitmap strike, and exact tests compare every emitted lane with the established renderer-parity fixtures. Public
+  string technique and resource identities use deterministic UTF-8 FNV-1a `u32` wire IDs with one runtime-scoped
+  collision registry; collisions fail registration instead of silently aliasing. This checkpoint does not yet switch
+  the public Three adapter from its legacy paragraph batches.
+
+- **Promoted the retained frame ABI into a production host** — `RuntimeShaper` now exposes one package-internal,
+  ownership-checked view of its existing Wasm instance to a typed text-engine host. The host owns cold policy,
+  font-binding, font-stack, and session registration; reserves before pinning; writes requests into the retained arena;
+  and returns the published A/B slot as borrowed bytes without copying. An integration test publishes slots A and B
+  through the compiled module and proves B does not mutate A. Three still consumes the legacy paragraph batch in this
+  checkpoint; request/policy compilation and render-plan lowering are the next cutover slices.
+
+- **Made policy work dependency-directed from gather through execution** — Policy registration now compiles both
+  input-to-buffer and operation-to-buffer reachability. A positioned update gathers only source lanes reaching a
+  semantically changed output and the scalar/SIMD executors skip operations reaching no active output; checkpoints,
+  new glyphs, and non-positioning changes remain conservative full evaluations. Consecutive glyphs reuse their resolved
+  font binding and policy program. The mechanisms compound: selective gather alone regressed and operation liveness
+  alone was neutral, while together moved canonical Bitmap/MTSDF/Slug resize medians from 4.878/5.355/6.001 ms to
+  4.207/4.833/5.615 ms. Adding the lookup cache measured 3.981 then 4.120 ms for Bitmap, 4.646 ms for MTSDF, and
+  5.622 ms for Slug. An isolated Bitmap resize measured 4.799 ms, so JIT-sensitive evidence does not yet close the
+  sub-4 ms gate. Optimized Wasm is 1,069,973 / 405,888 / 319,558 raw/gzip/Brotli bytes.
+
+- **Removed visual-order scratch from proven LTR positioning** — A positioning pass now checks once that all retained
+  bidi levels are even and no run is direction-overridden, then walks logical clusters directly. Odd levels and
+  overrides retain the complete UAX #9 L1/L2 path. On the unchanged 25,515-positioned/21,805-renderable stress case,
+  two adjacent eight-warmup/31-sample Bitmap baselines measured 5.197/5.162 ms and two optimized runs measured
+  4.849/4.878 ms with the same single 170.4 KiB patch. Post-change MTSDF/Slug medians are 5.355/6.001 ms; the sub-4 ms
+  gate remains open. Optimized Wasm is 1,065,857 / 403,525 / 318,137 raw/gzip/Brotli bytes.
+
+- **Avoided identity hashing for order-preserving reflow** — Positioned glyph reconciliation now checks the common
+  equal-length/equal-stable-ID order first and compares exact content by slot; reordered output retains the exact
+  identity-index fallback. A symbolized, non-shipping Wasm CPU profile identifies positioning as the largest sampled
+  column-resize function and policy gather as the next largest. The benchmark can now isolate one case and accept an
+  explicit profiling Wasm without changing the canonical default sequence. On the unchanged five-warmup/11-sample
+  workload, Bitmap/MTSDF/Slug resize medians are 4.414/4.984/5.196 ms; variance prevents attributing a precise speedup,
+  and the sub-4 ms gate remains open. The optimized module is 1,065,543 / 399,248 / 318,131 raw/gzip/Brotli bytes.
+
+- **Made physical render-plan patches dependency-directed** — Positioning now records exact six-F32/four-U32 change
+  bits in a compact side lane while preserving the 60-byte `PlanGlyph`. Policy validation propagates those bits through
+  the straight-line program once and records each output buffer's semantic dependencies. Ordered-direct and
+  stable-indirect compilers execute and publish only intersecting buffers; new, rebound, and conservatively described
+  records still rewrite every output. On 21,805 real raster instances, a full-column resize now writes 170.4 KiB for
+  Bitmap and 340.7 KiB for MTSDF or Slug instead of 1,022.1/2,384.9/2,384.9 KiB cold-plan payloads. Font-size writes
+  340.7/340.7/681.4 KiB respectively. Five-warmup/11-sample latency remains above the gate at
+  4.599/4.916/6.057 ms for Bitmap/MTSDF/Slug resize; the reduction does not support a packing-dominance claim and makes
+  layout the next measured optimization target. The optimized module is 1,065,394 / 399,111 / 317,830 raw/gzip/Brotli
+  bytes.
+
+- **Proved all three canonical render-policy shapes** — The retained Rust frame now consumes validated real Inter
+  Bitmap, MTSDF, and Slug records, derives linear color channels and inverse font size during policy gather without
+  retained per-glyph arrays, omits the same absent raster records as the portable techniques, and emits the exact
+  first-party buffer schemas: 48 bytes per Bitmap instance and 112 bytes per MTSDF or Slug instance. SIMD output now
+  transposes SoA arithmetic lanes into tightly packed vec2/vec4 records before contiguous 128-bit stores. On the
+  unchanged 25,515-positioned-glyph stress text (21,805 renderable instances), five warmups and 11 samples measure
+  Bitmap/MTSDF/Slug font-size medians of 5.506/6.396/7.237 ms and full-column-resize medians of
+  4.477/5.276/6.259 ms. These exceed the sub-4 ms gate and identify the next required invariant: policy validation must
+  derive physical-buffer dependencies so resize and font-size updates do not execute or publish static UV, color,
+  band, address, and count buffers. The optimized module is 1,060,971 / 400,835 / 317,139 raw/gzip/Brotli bytes.
+
+- **Measured exact retained Rust frame invalidation** — Style changes now invalidate bidi, shaping, metrics, and
+  positioning independently; exact rectangle geometry skips flow when safe; unchanged ordered-direct frames publish an
+  empty reuse transaction without scanning glyphs. A hard-break regression now skips the deliberately unshaped cluster
+  before visual-run lookup. Over 25,515 glyphs, eight warmups, and 31 samples, Rust cold/no-op/font-size/full-column
+  resize/suffix edit/localized edit measure 13.693/0.001/4.090/3.374/13.927/13.986 ms median and
+  14.111/0.001/4.236/3.706/14.511/14.381 ms p95. The unchanged TypeScript cold/font-size/width/suffix-edit medians are
+  55.25/11.90/8.36/38.55 ms. The comparison remains provisional because the Rust lane writes one F32 policy lane rather
+  than Bitmap's complete five-buffer record. The optimized module is 1,060,175 / 400,500 / 316,984
+  raw/gzip/Brotli bytes; the sequential 76.25 MiB process high-water mark is unresolved memory evidence, not a
+  per-session budget. All 192 package tests, six fuzz tests, 115 Rust unit tests, and Unicode 17 conformance pass.
+
+- **Primary HarfRust shaping now runs inside `text_update`** — A borrowed run view lets legacy batching and the retained
+  engine share the prewarmed UnicodeBuffer, UTF-16 context, and reusable feature scratch. Retained style payloads feed
+  HarfRust without an owned request, and glyph SoA appends directly into a pre-reserved A/B session arena. A real-Inter
+  compiled-Wasm proof observes shape-plan count 0→1 after the frame and no increase after abort. Rust tests and
+  host/SIMD Clippy pass. Optimized Wasm is 973,367 / 364,517 / 287,942 raw/gzip/Brotli bytes (+5,281 / +1,853 /
+  +1,504). Ordered fallback, layout, nonempty plan output, and complete timing remain open.
+
+- **Retained bidi and shaping-run itemization moved inside `text_update`** — UAX #9 output now fills reusable
+  active/pending level, class, paragraph, and equal-level-run arrays. Root direction changes paragraph base level;
+  nested direction carries a distinct override bit and forces parity during one style×script×level interval sweep.
+  The sweep skips mandatory hard-break controls and commits/aborts with the session. Rust tests and host/SIMD Clippy
+  pass. Optimized Wasm is 968,086 / 362,664 / 286,438 raw/gzip/Brotli bytes (+4,067 / +1,899 / -2,304). Fallback
+  shaping, layout, nonempty plan output, and complete-path timing remain open.
+
+- **Retained Unicode 17 analysis moved inside `text_update`** — The shared Unicode generator now emits compact Rust
+  Script/Script_Extensions partitions beside the TypeScript tables. A no-std Unicode 17 grapheme iterator validates
+  UTF-16, preserves UTF-16 boundaries, resolves contextual scripts, and reuses pre-reserved active/pending session
+  arrays. Analysis commits and aborts with text/styles and is skipped for unchanged text. Rust tests, host/SIMD Clippy,
+  and focused compiled-Wasm tests pass. Optimized Wasm is 964,019 / 360,765 / 288,742 raw/gzip/Brotli bytes. Bidi/run
+  intersection, fallback shaping, layout, nonempty plan output, and complete-path timing remain open.
+
+- **Resolved the retained style cascade in Rust** — A derived A/B segment arena now sweeps validated containment order
+  once, carries resolved parents in pre-reserved scope scratch, applies stated fields at scope entry, restores parents at
+  exit, and coalesces equal neighbors without copying retained language/features. A nested/equal-range proof emits five
+  exact segments and covers shaping, spacing, paint, material, and authored tie precedence. Absent root line height
+  remains natural-metrics state. Host/SIMD Clippy and real compiled-Wasm lifecycle tests pass. The module is 895,593 /
+  335,396 / 264,355 raw/gzip/Brotli bytes (+7,170 / +2,656 / +1,607). Unicode/run intersection and shaping remain open.
+
+- **Admitted transactional retained styles in Rust** — `text_update` now decodes canonical style snapshots and
+  removals without allocation, merge-compacts them by stable ID into pre-reserved flat A/B session arenas, and validates
+  authored cascade order, nesting, UTF-16 ranges, language/features, registered stacks, root completeness, numeric
+  domains, and request aliasing before commit. A real-font compiled-Wasm transaction commits text plus its root style,
+  rejects root removal without revision advance, and preserves `memory.buffer` after session creation. The module is
+  888,423 / 332,740 / 262,748 raw/gzip/Brotli bytes (+31,592 / +13,737 / +10,512). Payload admission is linear and
+  retained validation uses one reusable-scratch O(n log n) sort. Layout does not consume styles yet,
+  so no frame-latency claim is attached.
+
+- **Fixed the retained style wire semantics before admission** — The compiler-mapped style record is now 88 bytes and
+  separates stable `styleId` from authored `cascadeOrder`. A stated-property field mask preserves inheritance and
+  explicit zero values, target raster density is available for Rust-owned bitmap strike selection, and generated
+  vocabularies pin style, decoration-style, and decoration-line flags. Rust unit tests and the compiled-Wasm frame ABI
+  test pass. Nonempty styles remain rejected until the transactional retained arena consumes this contract, so no
+  shaping/layout or frame-latency claim is attached.
+
+- **Admitted one-call editorial geometry into the Rust frame transaction** — Constraints, regions, exclusions, bounded
+  rectangle/polygon vertices, and inline objects now decode as borrowed records from one pinned request. Validation
+  covers limits, finite ordered bounds, enum/reserved data, identities, region ownership/ranges, pending-text anchors,
+  and cross-section payload aliasing before mutation. Sessions stage a semantic fingerprint that excludes pointer-only
+  vertex offsets. Compiled Wasm commits a complete rectangle/exclusion/object update and rejects a forged region link
+  without advancing A/B publication. Optimized Wasm measures 856,832 / 318,999 / 252,620 raw/gzip/Brotli bytes. The
+  still-TypeScript 25,515-glyph baseline records 54.02/12.29/8.50/39.12 ms cold/font-size/width/text medians; geometry
+  does not run there yet. Styles and actual layout consumption remain open, so plans are still empty.
+
+- **Reusable HarfRust initialization workspace** — Module initialization now reserves HarfRust's real 32,768-codepoint
+  info/position allocation and a reusable UTF-16 context array beside the existing plan/gather arena. Segment shaping
+  returns that allocation through `GlyphBuffer::clear` on success and restores it on fallible setup without boxing.
+  Optimized Wasm initialization grows 57 pages in total (25 new pages for shaping/context), repeated initialization
+  preserves `memory.buffer`, focused compiled-Wasm shaping/frame tests pass 11/11, and the module measures 847,814 raw /
+  315,809 gzip / 249,629 Brotli bytes. Legacy batch-result vectors and the not-yet-landed bidi/layout arrays remain
+  explicit allocation gaps rather than being included in the claim.
+
+- **Connected policy-directed gather to the Rust plan pipeline** — One reusable workspace now resolves every program's
+  semantic/glyph/strike/resource recipe into 16-byte-aligned four-record F32/U32 lanes and feeds the plan compiler. A
+  Rust proof emits a nonempty ordered plan with exact packed bytes across all source scopes and unchanged warm capacity.
+  Compiled Wasm reserves its policy-independent 32,768-entry plan-glyph arena at initialization (1,245,184→3,342,336
+  bytes) and one declared F32 lane at policy registration (→3,538,944); both repeated operations are growth-free. The
+  production frame reaches the gather with empty layout input, so nonempty timing remains open. Optimized size changes
+  838,060 / 312,606 / 246,732→845,580 / 315,285 / 249,221 raw/gzip/Brotli bytes.
+
+- **Registered normalized per-font render bindings in Rust** — Added a cold compiler-mapped ABI for one font-owned
+  technique/program variant, field-major glyph/strike/resource lanes, scalable or ordered physical strikes, dense
+  strike×glyph resource selection, and exact shaping-coverage validation. Rust hostile-wire and strike-selection tests
+  pass; compiled Wasm registers a binding against real baked Inter, proves owned/idempotent state and conflict, retains
+  it through the stack lifecycle, and removes it with final font disposal. The optimized module changes from 829,906 /
+  309,646 / 244,790 to 838,060 / 312,606 / 246,732 raw/gzip/Brotli bytes. Policy gather and frame timing remain open.
+
+- **Made render-policy input shaping explicit data** — Policy programs now retain compiler-mapped source records for
+  every typed input lane, selecting numeric semantic, glyph, resource, or strike data without callbacks. Source order
+  is validated and fingerprinted; Rust and compiled-Wasm tests cover exact decoding, conflict, unknown/reserved data,
+  count mismatch, and overlap. The optimized ABI grows from 828,401 / 309,252 / 244,402 to 829,906 / 309,646 / 244,790
+  raw/gzip/Brotli bytes. Per-font binding tables and gather execution remain open, so there is no frame timing claim.
+
+- **Registered ordered font-stack ownership in Rust** — Added cold, direct-memory font-stack lifecycle operations with
+  nonempty/unique member validation, exact-order idempotence, conflict detection, and member-font retention. A
+  compiled-Wasm test registers a real baked Inter font, proves disposal fails while its stack is live, releases the
+  stack, and then disposes the font. Size measurement rejected a generic tree map at 837,865 raw / 312,057 gzip /
+  246,478 Brotli bytes in favor of a compact cold vector at 828,401 / 309,252 / 244,402. Technique/resource binding and
+  fallback shaping remain open, so this adds no frame latency claim.
+
+- **Made Wasm engine initialization explicit and eager** — The compiler-derived ABI now publishes `initialize()`, and
+  the standard host invokes it immediately after instantiation so module state is not lazily allocated by the first
+  font, session, or update operation. The focused compiled-Wasm frame test exercises the export. Concrete 32,768-record
+  shaping/layout lanes have not landed, so this checkpoint does not claim first-shape allocation or latency evidence.
+
+- **Retained ordered UTF-16 edits transactionally inside Rust sessions** — The frame decoder now borrows and validates
+  replacement records/payloads without allocating mutation objects. Sessions apply sequential edits to retained scratch
+  and swap only on commit; abort or an invalid later replacement preserves committed text. Compiled Wasm proves cold
+  reserve/re-pin, retained follow-up edit, invalid rollback, A/B preservation, and no same-capacity memory growth. Styles,
+  shaping, layout, and nonempty plans remain open, so this adds no end-to-end timing claim. The reachable slice adds
+  2,829 / 1,528 / 616 raw/gzip/Brotli bytes.
+
+- **Prewarmed retained text capacity without multiplying shaping scratch per session** — Session creation now reserves
+  both UTF-16 transaction buffers to 1,024 units by default, while cold create/reserve accepts an explicit text capacity.
+  The production 32,768-record analysis/shaping/layout workspace is fixed as one engine-global synchronous allocation
+  when those arrays land, covering the 25,515-glyph target without assigning that footprint to every paragraph.
+
+- **Fixed the semantic update record grammar in the compiler-derived ABI** — Added exact UTF-16 text replacement,
+  stable style, constraint, flow-vertex, region, exclusion, and inline-object layouts. Rectangle and bounded-polygon
+  geometry resolve inside the same request; style records carry shaping, spacing, material/color, and decoration data.
+  Generated ABI tests pin the record sizes and tags. Nonempty sections remain rejected until the Rust decoder lands, so
+  this checkpoint makes no layout or performance claim.
+
+- **Made Rust render-plan state session-owned and fence-safe** — The 124-byte compiler-derived update request now carries
+  a monotonic renderer-fence acknowledgment distinct from consumed plan revision. Each session owns the Rust mixed-plan
+  dispatcher and pins its committed policy identity. Wasm prepares, validates, stages, and only then commits planner and
+  revision state; failure aborts the planner while preserving a valid already-completed fence acknowledgment. Host and
+  compiled-Wasm tests cover accepted/future fences and A/B preservation; host tests cover stale fences, abort/retry,
+  capability changes, and policy replacement. Post-prepare Wasm abort coverage waits on nonempty semantic input. Reachability
+  raises optimized Wasm from 739,909 / 272,624 / 214,395 to 822,443 / 308,033 / 242,447 raw/gzip/Brotli bytes. Mutation
+  sections still reject nonempty semantic input, so this publishes an empty Rust plan and makes no shaping/layout
+  latency claim; the shared-runtime size increase is now a measured optimization target.
+
+- **Compiled mixed allocation strategies without semantic partitions** — Added a retained dispatcher that keeps the
+  homogeneous ordered-direct or stable-indirect path as one compiler and one direct plan view. A heterogeneous frame
+  lets both compilers filter the same borrowed glyph/field slices, then merges only resource, buffer, patch, primitive,
+  draw, retirement, and payload records. Disjoint low/high buffer-ID namespaces make the merged bindings unambiguous;
+  shared resources are validated and retained across an allocation-strategy transition; draws recover original global
+  order. Alternating-strategy, transition, mixed no-op, and settled-capacity tests pass. The dispatcher remains
+  unreachable from `text_update`; optimized Wasm stays 739,909 raw / 214,395 Brotli bytes. The unchanged shipping path's
+  25,515-glyph cold/font-size/width/text medians are 57.18/12.44/8.58/39.28 ms, so session integration and target timing
+  remain open rather than inferred.
+
+- **Completed ordered-direct display-list compilation** — Dirty retained updates now publish complete compact binding
+  and command tables while keeping physical payloads revision-directed. Consecutive compatible glyphs compile into one
+  primitive span and draw packet; interleaved `A, A, B, A` resources preserve three ordered spans over two deduplicated
+  resources and buffers. Material IDs split ordered draws without splitting shared physical glyph storage. Draw records
+  also carry numeric clip and depth identities, and the generated TypeScript ABI derives their 60-byte compiler layout
+  from Rust. No-op output remains empty and one changed glyph remains one four-byte payload in the focused policy fixture.
+  Policies independently select storage and draw keys, proving material-split draws both over shared storage and over
+  material-partitioned buffers. The planner remains LTO-stripped until session wiring; reachable ABI/policy growth from
+  the preceding checkpoint measures 266 raw / 70 gzip / 139 Brotli bytes. Stable-indirect compilation and end-to-end
+  timing remain open.
+
+- **Replaced the unimplemented effects vocabulary with material routing** — Superseded `renderVariant` and the declared-
+  only `TextEffect` proposal with one batch → text → span `material` property and numeric Rust/Wire `material_id` identity.
+  The Rust contract is fixed: policies control material draw compatibility, material changes never reshape or relayout,
+  and different materials may share canonical glyph buffers. The exact Three material-factory API remains deliberately
+  provisional for a later design pass; current first-party targets do not yet implement it.
+
+- **Implemented retained ordered-direct physical patches** — Added an abortable native planner that groups glyphs by
+  policy program/resource and uses stable instance IDs plus semantic revisions, never full-buffer byte comparison, to
+  select writes. Capability alignment and upload costs coalesce ranges; consecutive changed records retain SIMD policy
+  execution. Tests prove zero-output no-ops, one-record writes, ordered suffix movement, metadata-only tail deletion,
+  checkpoint/growth, retirement generations, abort preservation, wire validity, and stable warm scratch capacities.
+  Primitive/draw compilation, stable-indirect storage, Wasm session wiring, and latency evidence remain open. The
+  unreachable native slice is LTO-stripped; optimized Wasm is 739,643 raw / 272,537 gzip / 214,149 Brotli bytes.
+
+- **Completed the capability-shaped policy ABI** — Extended the compiler-mapped registration transaction with exact
+  capability-set, program-planning, and physical-buffer metadata: backend limits and upload costs, capability-specific
+  program selection, technique/resource and batch-key masks, ordered-direct versus stable-indirect allocation, and
+  aligned padded strides. Unknown capabilities and unsupported combinations fail before revision change; the executor
+  proves padding-safe writes. V0 keeps independently bindable vector streams and uses policy bytecode to pack `vec2`/
+  `vec4` records instead of adding aliased mutable interleaving. The focused Rust and Node gates pass; the optimized SIMD
+  artifact measures 739,647 raw / 272,532 gzip / 214,186 Brotli bytes. Retained diff compilation remains the next proof.
+
+- **Fixed the compiler-mapped render-plan wire grammar** — Extended the aligned result header from 128 to 144 bytes to
+  carry policy handle, capability set, and a deterministic validated-policy fingerprint. Added exact semantic, resource,
+  buffer, patch, primitive, draw, retirement, and diagnostic records plus tagged actions and allocation strategies.
+  Field-wise little-endian serialization rebases write-patch payloads inside the same immutable A/B publication and
+  rejects malformed spans before touching its inactive arena. Rust unit tests cover every table and the header-to-table
+  linkage; real Wasm integration reproduces policy identity, checkpoint/delta revisions, failure isolation, and A/B
+  immutability. Retained semantic compilation is not yet claimed.
+
+- **Admitted explicit-SIMD render-policy execution** — Added a production scalar interpreter for validated straight-line
+  render policies and a four-record `simd128` executor with scalar tails. Registration resolves policy buffer IDs once;
+  warm execution consumes borrowed semantic SoA fields, preflights every output, allocates nothing, and requires every
+  direct-memory region to remain inside a live host allocation before borrowing retained engine state. Scalar,
+  auto-vectorized, and explicit-SIMD artifacts produce identical horizontal, vertical, partial-tail, and four-byte-
+  aligned outputs. At 25,515 glyphs, the representative 17-operation policy improves p95 from 1.174 to 0.428 milliseconds
+  in Node and 1.113 to 0.438 milliseconds in Chromium. The production SIMD artifact is 530 raw bytes smaller and 62
+  Brotli bytes larger than scalar. Boundary search, native SIMD, and whole-update contribution remain unmeasured.
+
+- **Selected the first SIMD-shaped retained storage** — Added a test-only direct-pointer kernel lab over real 25,515-
+  and 100,602-glyph paragraph arrays and three isolated Wasm builds. Node 24 and Chromium 149 reproduce exact scalar
+  hashes for horizontal, vertical, partial-tail, and four-byte-aligned inputs with no warm allocation path or memory
+  growth. Compiler-vectorized source beats hand-written record packing; explicit 16-lane break/bidi masks and
+  integer-exact summaries pass the 20% admission threshold; large-workload evidence selects ABI-private 64-cluster,
+  16-byte-aligned SoA chunks. The selected lab delta is 1,652 raw / 1,158 Brotli bytes, while the standard production
+  SIMD artifact is 289 raw / 26 Brotli bytes smaller than scalar. SIMD now builds by default without runtime dispatch;
+  `PMNDRS_TEXT_SHAPER_SIMD=0` produces the same-ABI scalar artifact, whose disassembly contains no vector instructions
+  and whose 34 focused semantic tests pass. Policy execution, boundary search, native SIMD, and end-to-end contribution
+  stay measured follow-ups rather than inferred wins.
+
+- **Proved worker-owned frame transfer and return** — Added a test-only, byte-opaque transfer state machine around raw
+  Wasm publication bytes. One copy enters a bounded capacity-classed worker buffer; transfer to root detaches it and
+  charges its actual capacity to explicit count/byte backpressure limits. Retirement transfers the same storage back,
+  where a valid token/capacity pair either re-enters the bounded best-fit pool or becomes unreachable for worker-side
+  collection. Four focused tests prove exact bytes, two-way detachment, reuse, missing-return backpressure, forged and
+  duplicate return rejection, failed-send recovery, oversize rejection, and over-limit worker-side discard. The module
+  does not decode the compiler-defined frame ABI and remains unwired from the shipping TypeScript layout path.
+
+- **Proved the retained A/B frame transaction in the optimized Wasm** — Added session lifecycle, cold reservation, one
+  retained 16-byte-aligned request arena, two retained 16-byte-aligned result arenas, explicit engine/plan/publication
+  revisions, base-revision checkpoints, and a compiler-derived 120-byte request plus 128-byte result header. The result
+  already reserves fixed semantic, resource, buffer, patch, primitive, draw, retirement, and diagnostic table fields;
+  unimplemented nonempty sections fail at the Rust boundary instead of falling back to host typography. Updates return
+  the selected result pointer in their single call. Success alternates slots, while malformed or stale-revision requests
+  write only the inactive slot and leave the active publication byte-identical. A real Node/Wasm proof observes zero
+  warm memory growth, then forces an 8 MiB cold reserve, observes the old fixed buffer detach, re-reads the aligned request
+  pointer, and disposes the session exactly. Twenty-five Rust unit tests, both complete Unicode 17 bidi suites, and the
+  optimized-Wasm policy/frame proofs pass. The frame shell grows the optimized shaper from 698,238 to 725,302 raw bytes,
+  from 260,228 to 269,438 gzip bytes, and from 203,760 to 210,867 Brotli bytes. The tables are still empty, so this proves
+  ownership and transaction semantics rather than shaping/layout performance. The still-unwired 25,515-glyph host path
+  remains within run variance at 54.42/12.15/8.31/38.98 millisecond cold/font-size/layout-width/text medians and
+  70.38/14.48/11.31/40.89 millisecond p95 values. The package's 186 integration tests, six fuzz targets, 117 benchmark
+  application tests, 20/20 warmed headless conformance scenarios, and the 172,156-byte packed-consumer proof
+  (`af7bfb85f04a6a63c6462735a6e8ec6d739576adb354c07ca51e744814db2f7b`) also pass. The aggregate benchmark script
+  still stops at its deliberately stale checked package-size snapshot; this stage records the new measured size instead
+  of rewriting unrelated historical evidence.
+
+- **Registered fixed-layout render policies at the Rust/Wasm boundary** — Added compiler-derived `#[repr(C)]` policy
+  headers and fixed-width program, buffer, and operation records to the existing generated shaper ABI. Registration
+  performs one bounded direct-memory decode, rejects overlapping tables, forged lengths, nonzero reserved fields,
+  noncanonical op encodings, and semantically incomplete programs, then retains typed Rust policy state independent of
+  the caller's allocation. Identical handle registration is idempotent, conflicting registration is observable, and
+  disposal is exact. No JSON, string dispatch, runtime reflection, or frame-path schema decode entered the Wasm module.
+  Twenty-one Rust unit tests, both complete Unicode 17 bidi conformance suites, and a real optimized-Wasm lifecycle test
+  pass. Making validation and lifecycle reachable grows the optimized shaper from 680,312 to 698,238 raw bytes, from
+  253,568 to 260,228 gzip bytes, and from 199,365 to 203,760 Brotli bytes; this is registration-time infrastructure, not
+  evidence of frame-path performance. As expected for unreachable hot-path code, the 25,515-glyph comparison remains
+  within run variance: cold/font-size/layout-width/text medians move from 55.28/12.02/8.42/38.66 milliseconds to
+  52.48/11.92/8.23/38.73 milliseconds, with corresponding p95 values of 69.57/14.87/11.07/41.06 milliseconds.
+
+- **Began the Rust render-policy foundation without growing shipping Wasm** — Added the first renderer-neutral engine
+  module to the existing shaper `rlib`, preserving the single `no_std + alloc` Rust/Wasm codebase rather than creating a
+  second module. A bounded straight-line policy representation and total verifier now reject invalid identities,
+  duplicate technique variants/programs/buffers/stores, invalid vector lanes, unknown buffers, out-of-range semantic
+  fields, uninitialized or mistyped registers, and incomplete physical records before execution. Technique variants use
+  the same data and functions; no technique-specific class or packer entered the core. Sixteen focused Rust tests and the
+  two complete Unicode 17 bidi conformance suites pass. Because no Wasm export reaches the new module yet, the optimized
+  shaper remains exactly 680,312 raw bytes; the compiler-derived direct-memory ABI remains unchanged until the policy
+  records join it in the next commit.
+
+- **Locked the Rust text-engine and retained render-plan architecture** — Expanded the narrower layout-boundary proposal
+  into one `no_std + alloc` Rust semantic pipeline for Unicode analysis, bidi, fallback, shaping, per-line editorial
+  composition, typography geometry, and policy-directed incremental render-plan compilation. The steady-state host
+  transaction is one revisioned Wasm update with A/B synchronous publication, worker-owned transferable buffers for
+  retained/asynchronous consumers, explicit return-to-worker retirement, invalidation-directed patches, and
+  scalar-versus-SIMD admission on the target 25,515-glyph workload. The plan makes sequential regions and declarative
+  exclusions one-call inputs, cuts unbounded publishing solvers and second authored text channels, and puts the
+  Wasm/policy/display-list proof before added typography. Review of the base font-fallback implementation also exposed
+  that its same-technique restriction came from the old one-program/one-schema API rather than shaping or measured
+  performance. D-161 now makes technique and resource binding properties of each loaded font, permits heterogeneous
+  same-runtime stacks, removes technique from user-facing `Text` and `TextGroup`, requires every first-party engine policy
+  to support Bitmap, MSDF, and Slug, and lets third-party policies declare a runtime-validated subset. The render plan
+  partitions resolved glyphs by technique/resource/program and publishes all participating resources atomically instead
+  of requiring synthetic composite techniques.
 
 - **Boundary reshaping was redundant by construction** — The largest single cost left in a warm update turned out to be work that could not change its own output. Each reshape range supplied `contextStart: run.start, contextEnd: run.end`, which is exactly the context the retained paragraph shape was produced with, so the shaper returned the glyphs it had already returned — on roughly every line, on every layout. The buffer's beginning- and end-of-text flags did not rescue it either: they describe the buffer edge, and the surrounding text shipped as context overrides them. Three independent lines of evidence agree. The mechanism above; a measurement over 640 ranges and 20,280 glyphs across Latin word wrap, Arabic word wrap, and Arabic character wrap narrow enough to force breaks inside joined words, where every reshaped glyph matched the retained shape; and the pinned natural, wide, and narrow layout hashes plus the entire alignment, clipping, max-lines, ellipsis, and justification contract, all unchanged with it removed. An early attempt to measure this by disabling the range emission alone was wrong and briefly looked like proof that reshaping mattered: clearing the ranges while leaving the fragments flagged made positioning look for a result that no longer existed. `ReshapeRange` stays, because a narrowed context is a real future need — a truncated line whose last letter should take its final form, or a line composed as an isolated unit for per-line widths — and the contract tests now assert zero crossings so reintroducing one is deliberate rather than silent. Against the pre-optimization commit on an identical workload at 25,515 glyphs, a reflow now lays out in 8.09ms against 110.40ms, inside the 8.33ms budget at 120Hz; a resize in 10.59ms against 103.54ms; a text edit in 33.62ms against 109.66ms.
 

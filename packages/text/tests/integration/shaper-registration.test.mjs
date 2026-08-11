@@ -2,15 +2,15 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-import { createRuntimeShaper, FontRegistry } from '@pmndrs/text';
+import { FontRegistry } from '@pmndrs/text';
+import { createRuntimeShaper } from '../../dist/shaper.js';
 import { createFontBaker } from '@pmndrs/text-font-baker';
 import { validateFontArtifact } from '@pmndrs/text-font-baker/validate';
+import { fontBindingBytes, renderPolicyBytes, renderPolicyBytesFromPrograms } from '../support/engine-abi.mjs';
 
 const fixtureDirectory = new URL('../../../../apps/benchmarks/fixtures/fonts/inter-v4.1/', import.meta.url);
 const shaperWasmUrl = new URL('../../dist/text_shaper.wasm', import.meta.url);
 const shaperAbiUrl = new URL('../../dist/text-shaper-abi-v0.json', import.meta.url);
-const shapingDirectory = new URL('../../../../apps/benchmarks/fixtures/shaping/inter-regular/', import.meta.url);
-
 async function fixture() {
   const [source, bakerWasm, shaperWasm] = await Promise.all([
     readFile(new URL('Inter-Regular.ttf', fixtureDirectory)),
@@ -78,6 +78,211 @@ test('the shaper registers only the exact shaping views retained from the valida
   assert.throws(() => shaper.memoryReport(), /disposed/);
 });
 
+test('compiled Wasm retains ordered font stacks and prevents dangling font disposal', async () => {
+  const { artifact, shaperWasm } = await fixture();
+  const [validated, abi] = await Promise.all([
+    validateFontArtifact(artifact),
+    readFile(shaperAbiUrl, 'utf8').then(JSON.parse),
+  ]);
+  const instance = await WebAssembly.instantiate(await WebAssembly.compile(shaperWasm), {});
+  const memory = instance.exports[abi.memory];
+  const fn = Object.fromEntries(
+    Object.entries(abi.functions).map(([name, exported]) => [name, instance.exports[exported]]),
+  );
+  assert.equal(fn.initialize(), abi.status.ok);
+  const allocations = [
+    copyToWasm(memory, fn.allocate, validated.shapingSfnt),
+    copyToWasm(memory, fn.allocate, validated.glyphExtents),
+    copyToWasm(memory, fn.allocate, validated.glyphExtentsAvailability),
+  ];
+  assert.equal(
+    fn.registerFont(
+      101,
+      allocations[0].pointer,
+      allocations[0].length,
+      allocations[1].pointer,
+      allocations[1].length,
+      allocations[2].pointer,
+      allocations[2].length,
+    ),
+    abi.status.ok,
+  );
+  for (const allocation of allocations) fn.deallocate(allocation.pointer, allocation.length);
+
+  assert.deepEqual(abi.layouts.fontBindingStrike, { alignment: 4, ppem: 0, reserved: 4, size: 8 });
+  assert.deepEqual(abi.layouts.fontBindingResource, {
+    alignment: 4,
+    generation: 4,
+    id: 0,
+    kind: 8,
+    reference: 12,
+    reserved: 10,
+    size: 16,
+  });
+  const bindingBytes = fontBindingBytes(abi, {
+    techniqueId: 1,
+    glyphCount: validated.glyphExtents.byteLength / 8,
+    strikes: [0],
+    resources: [{ id: 71, generation: 1, kind: 1, reference: 19 }],
+    resourceIndices: new Array(validated.glyphExtents.byteLength / 8).fill(0),
+    glyphF32: [new Array(validated.glyphExtents.byteLength / 8).fill(1)],
+  });
+  const binding = copyToWasm(memory, fn.allocate, bindingBytes);
+  assert.equal(fn.fontBindingCount(), 0);
+  assert.equal(fn.registerFontBinding(101, 101, binding.pointer, binding.length), abi.status.ok);
+  assert.equal(fn.registerFontBinding(101, 101, binding.pointer, binding.length), abi.status.ok);
+  assert.equal(fn.fontBindingCount(), 1);
+  new DataView(memory.buffer).setUint32(binding.pointer + abi.layouts.fontBindingRequest.techniqueId, 2, true);
+  assert.equal(fn.registerFontBinding(101, 101, binding.pointer, binding.length), abi.status.policyConflict);
+  assert.equal(
+    fn.registerFontBinding(102, 101, binding.pointer, binding.length),
+    abi.status.ok,
+    'one shaping font may carry another independently selectable raster binding',
+  );
+  fn.deallocate(binding.pointer, binding.length);
+  assert.equal(fn.fontBindingCount(), 2, 'binding state must not borrow the registration allocation');
+
+  const stack = copyToWasm(memory, fn.allocate, Uint8Array.of(101, 0, 0, 0));
+  assert.equal(fn.registerFontStack(17, stack.pointer, 1), abi.status.ok);
+  fn.deallocate(stack.pointer, stack.length);
+  assert.equal(fn.fontStackCount(), 1);
+
+  const policyBytes = renderPolicyBytes(abi);
+  const policy = copyToWasm(memory, fn.allocate, policyBytes);
+  assert.equal(fn.registerPolicy(23, policy.pointer, policy.length), abi.status.ok);
+  fn.deallocate(policy.pointer, policy.length);
+  assert.equal(fn.createSession(29, 2048, 64 * 1024, 4), abi.status.ok);
+  const styleWarmBuffer = memory.buffer;
+  const initialUpdate = engineStyleUpdateBytes(abi, {
+    sessionId: 29,
+    policyHandle: 23,
+    fontStackHandle: 17,
+    text: [0x61, 0x62, 0x63, 0x64],
+    geometry: true,
+  });
+  assert.equal(fn.planCount(), 0);
+  let requestPointer = fn.requestPointer(29);
+  new Uint8Array(memory.buffer, requestPointer, initialUpdate.byteLength).set(initialUpdate);
+  let resultPointer = fn.textUpdate(29, requestPointer, initialUpdate.byteLength);
+  assert.strictEqual(memory.buffer, styleWarmBuffer, 'the pre-reserved first style update must not grow Wasm memory');
+  let result = new DataView(memory.buffer, resultPointer, abi.layouts.engineResult.size);
+  assert.equal(result.getUint32(abi.layouts.engineResult.status, true), abi.status.ok);
+  assert.equal(result.getUint32(abi.layouts.engineResult.engineRevision, true), 1);
+  for (const field of ['resourceCount', 'bufferCount', 'patchCount', 'primitiveCount', 'drawCount']) {
+    assert.ok(result.getUint32(abi.layouts.engineResult[field], true) > 0, `${field} must be nonempty`);
+  }
+  assert.equal(fn.planCount(), 1, 'text_update must shape retained runs through HarfRust');
+
+  const warmUpdate = engineStyleUpdateBytes(abi, {
+    sessionId: 29,
+    policyHandle: 23,
+    fontStackHandle: 17,
+    expectedEngineRevision: 1,
+    consumedPlanRevision: 1,
+    acknowledgedPublicationGeneration: 1,
+    textEnd: 4,
+    geometry: true,
+  });
+  requestPointer = fn.requestPointer(29);
+  new Uint8Array(memory.buffer, requestPointer, warmUpdate.byteLength).set(warmUpdate);
+  resultPointer = fn.textUpdate(29, requestPointer, warmUpdate.byteLength);
+  assert.strictEqual(memory.buffer, styleWarmBuffer, 'the identical nonempty frame must stay allocation-free');
+  result = new DataView(memory.buffer, resultPointer, abi.layouts.engineResult.size);
+  assert.equal(result.getUint32(abi.layouts.engineResult.status, true), abi.status.ok);
+  assert.equal(result.getUint32(abi.layouts.engineResult.engineRevision, true), 2);
+  assert.equal(result.getUint32(abi.layouts.engineResult.patchCount, true), 0);
+
+  const removeRoot = engineStyleUpdateBytes(abi, {
+    sessionId: 29,
+    policyHandle: 23,
+    fontStackHandle: 17,
+    expectedEngineRevision: 2,
+    consumedPlanRevision: 2,
+    acknowledgedPublicationGeneration: 2,
+    removeRoot: true,
+  });
+  requestPointer = fn.requestPointer(29);
+  new Uint8Array(memory.buffer, requestPointer, removeRoot.byteLength).set(removeRoot);
+  resultPointer = fn.textUpdate(29, requestPointer, removeRoot.byteLength);
+  assert.strictEqual(memory.buffer, styleWarmBuffer, 'an invalid retained style update must not grow Wasm memory');
+  result = new DataView(memory.buffer, resultPointer, abi.layouts.engineResult.size);
+  assert.equal(result.getUint32(abi.layouts.engineResult.status, true), abi.status.invalidRequest);
+  assert.equal(result.getUint32(abi.layouts.engineResult.engineRevision, true), 2);
+  assert.equal(fn.planCount(), 1, 'an aborted update must not perform another shape');
+  assert.equal(fn.disposeSession(29), abi.status.ok);
+  assert.equal(fn.disposePolicy(23), abi.status.ok);
+
+  assert.equal(fn.disposeFont(101), abi.status.fontInUse);
+  assert.equal(fn.disposeFontStack(17), abi.status.ok);
+  assert.equal(fn.disposeFontStack(17), abi.status.fontStackMissing);
+  assert.equal(fn.disposeFont(101), abi.status.ok);
+  assert.equal(fn.fontBindingCount(), 0);
+});
+
+test('text_update advances missing clusters through an ordered font stack', async () => {
+  const [interArtifact, devanagariArtifact, shaperWasm, abi] = await Promise.all([
+    readFile(new URL('../../../../apps/benchmarks/fixtures/rendering/inter-bitmap-16.font.glb', import.meta.url)),
+    readFile(
+      new URL(
+        '../../../../apps/benchmarks/fixtures/rendering/noto-sans-devanagari-bitmap-16.font.glb',
+        import.meta.url,
+      ),
+    ),
+    readFile(shaperWasmUrl),
+    readFile(shaperAbiUrl, 'utf8').then(JSON.parse),
+  ]);
+  const [inter, devanagari] = await Promise.all([
+    validateFontArtifact(interArtifact),
+    validateFontArtifact(devanagariArtifact),
+  ]);
+  const instance = await WebAssembly.instantiate(await WebAssembly.compile(shaperWasm), {});
+  const memory = instance.exports[abi.memory];
+  const fn = Object.fromEntries(
+    Object.entries(abi.functions).map(([name, exported]) => [name, instance.exports[exported]]),
+  );
+  assert.equal(fn.initialize(), abi.status.ok);
+  registerValidatedFont({ abi, fn, memory }, 101, inter);
+  registerValidatedFont({ abi, fn, memory }, 202, devanagari);
+  registerSimpleBinding({ abi, fn, memory }, 1001, 101, inter, 71, 1);
+  registerSimpleBinding({ abi, fn, memory }, 1002, 202, devanagari, 72, 2);
+
+  const stack = copyToWasm(memory, fn.allocate, Uint8Array.of(0xe9, 3, 0, 0, 0xea, 3, 0, 0));
+  assert.equal(fn.registerFontStack(17, stack.pointer, 2), abi.status.ok);
+  fn.deallocate(stack.pointer, stack.length);
+  const policyBytes = twoTechniquePolicyBytes(abi);
+  const policy = copyToWasm(memory, fn.allocate, policyBytes);
+  assert.equal(fn.registerPolicy(23, policy.pointer, policy.length), abi.status.ok);
+  fn.deallocate(policy.pointer, policy.length);
+  assert.equal(fn.createSession(29, 2048, 64 * 1024, 0), abi.status.ok);
+
+  const update = engineStyleUpdateBytes(abi, {
+    sessionId: 29,
+    policyHandle: 23,
+    fontStackHandle: 17,
+    text: [0x0915],
+    geometry: true,
+  });
+  const requestPointer = fn.requestPointer(29);
+  new Uint8Array(memory.buffer, requestPointer, update.byteLength).set(update);
+  const resultPointer = fn.textUpdate(29, requestPointer, update.byteLength);
+  const result = new DataView(memory.buffer, resultPointer, abi.layouts.engineResult.size);
+  assert.equal(result.getUint32(abi.layouts.engineResult.status, true), abi.status.ok);
+  const primitivesOffset = result.getUint32(abi.layouts.engineResult.primitivesOffset, true);
+  assert.equal(
+    new DataView(memory.buffer).getUint32(
+      resultPointer + primitivesOffset + abi.layouts.enginePrimitive.techniqueId,
+      true,
+    ),
+    2,
+    'the fallback glyph must retain its own raster technique in the Rust render plan',
+  );
+  assert.equal(
+    fn.planCount(),
+    2,
+    'Inter must shape .notdef before the Devanagari cluster advances to the fallback font',
+  );
+});
+
 test('shaper ownership stays scoped to its FontRegistry', async () => {
   const { artifact, shaperWasm } = await fixture();
   const firstRegistry = new FontRegistry();
@@ -90,371 +295,197 @@ test('shaper ownership stays scoped to its FontRegistry', async () => {
   foreign.dispose();
 });
 
-test('re-registering the same artifact creates a new lifecycle without reviving stale handles', async () => {
-  const { artifact, shaperWasm } = await fixture();
-  const registry = new FontRegistry();
-  const first = await registry.registerAsset(artifact);
-  const firstHandle = first.handle;
-  const shaper = await createRuntimeShaper({ registry, wasm: shaperWasm });
-  const request = {
-    textUtf16: utf16('A'),
-    features: [],
-    runs: [
-      {
-        font: firstHandle,
-        textStart: 0,
-        textEnd: 1,
-        direction: 'ltr',
-        script: 'Latn',
-        language: 'en',
-        clusterLevel: 0,
-        flags: 0x40,
-        featureStart: 0,
-        featureCount: 0,
-      },
-    ],
-  };
-  const ranges = [{ run: 0, itemStart: 0, itemEnd: 1, contextStart: 0, contextEnd: 1, flags: 0x40 }];
+function copyToWasm(memory, allocate, source) {
+  const bytes = new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+  const pointer = allocate(bytes.byteLength);
+  assert.notEqual(pointer, 0);
+  new Uint8Array(memory.buffer, pointer, bytes.byteLength).set(bytes);
+  return { pointer, length: bytes.byteLength };
+}
 
-  shaper.registerFont(first);
-  assert.equal(shaper.shapeBatch(request).glyphIds.length, 1);
-  first.dispose();
-  assert.throws(() => shaper.shapeBatch(request), /font handle .* is not registered/);
-  assert.throws(() => shaper.reshapeRanges({ ...request, ranges }), /font handle .* is not registered/);
-
-  const second = await registry.registerAsset(artifact);
-  assert.notEqual(second.handle, firstHandle);
-  assert.equal(second.shapingHash, first.shapingHash);
-  shaper.registerFont(second);
-  const secondRequest = {
-    ...request,
-    runs: [{ ...request.runs[0], font: second.handle }],
-  };
-  assert.equal(shaper.shapeBatch(secondRequest).glyphIds.length, 1);
-  assert.throws(() => shaper.shapeBatch(request), /font handle .* is not registered/);
-
-  second.dispose();
-  shaper.dispose();
-});
-
-test('shapes every pinned HarfRust case exactly from GLB-extracted font data', async () => {
-  const [{ artifact, shaperWasm }, corpus, oracle] = await Promise.all([
-    fixture(),
-    readJson(new URL('cases.json', shapingDirectory)),
-    readJson(new URL('harfrust.json', shapingDirectory)),
-  ]);
-  const registry = new FontRegistry();
-  const font = await registry.registerAsset(artifact);
-  const shaper = await createRuntimeShaper({ registry, wasm: shaperWasm });
-  shaper.registerFont(font);
-  const corpusCases = new Map(corpus.cases.map((entry) => [entry.id, entry]));
-
-  for (const expected of oracle.cases) {
-    const fixtureCase = corpusCases.get(expected.id);
-    assert.ok(fixtureCase, `missing corpus case ${expected.id}`);
-    const request = shapeRequest(font.handle, expected, fixtureCase);
-    assertShapedBatch(shaper.shapeBatch(request), font.handle, expected.glyphs);
-    assertShapedBatch(
-      shaper.reshapeRanges({
-        ...request,
-        ranges: [
-          {
-            run: 0,
-            itemStart: 0,
-            itemEnd: request.textUtf16.length,
-            contextStart: 0,
-            contextEnd: request.textUtf16.length,
-            flags: 0x40,
-          },
-        ],
-      }),
-      font.handle,
-      expected.glyphs,
-    );
-  }
-
-  assert.equal(shaper.memoryReport().planCount, 3);
-  const first = oracle.cases[0];
-  const firstCase = corpusCases.get(first.id);
-  shaper.shapeBatch(shapeRequest(font.handle, first, firstCase));
-  assert.equal(shaper.memoryReport().planCount, 3, 'equivalent plans must be reused');
-  font.dispose();
-  assert.equal(shaper.memoryReport().planCount, 0, 'font disposal must release its plans');
-  shaper.dispose();
-});
-
-test('rejects malformed batch fields before or at the Wasm trust boundary', async () => {
-  const { artifact, shaperWasm } = await fixture();
-  const registry = new FontRegistry();
-  const font = await registry.registerAsset(artifact);
-  const shaper = await createRuntimeShaper({ registry, wasm: shaperWasm });
-  shaper.registerFont(font);
-  const base = {
-    textUtf16: utf16('A'),
-    features: [],
-    runs: [
-      {
-        font: font.handle,
-        textStart: 0,
-        textEnd: 1,
-        direction: 'ltr',
-        script: 'Latn',
-        language: 'en',
-        clusterLevel: 0,
-        flags: 0x40,
-        featureStart: 0,
-        featureCount: 0,
-      },
-    ],
-  };
-  assert.throws(
-    () => shaper.shapeBatch({ ...base, runs: [{ ...base.runs[0], script: 'Latin' }] }),
-    /exactly four bytes/,
-  );
-  assert.throws(() => shaper.shapeBatch({ ...base, runs: [{ ...base.runs[0], flags: 0x100 }] }), /unknown bits/);
-  assert.throws(
-    () =>
-      shaper.reshapeRanges({
-        ...base,
-        ranges: [{ run: 0, itemStart: 0, itemEnd: 2, contextStart: 0, contextEnd: 2, flags: 0 }],
-      }),
-    /outside its run context/,
-  );
-
-  for (const language of ['zh-hans', 'zh-hant', 'ja', 'ko']) {
-    assert.doesNotThrow(() => shaper.shapeBatch({ ...base, runs: [{ ...base.runs[0], language }] }));
-  }
-  assert.equal(shaper.memoryReport().planCount, 4, 'canonical CJK languages must remain distinct shape-plan inputs');
-  for (const language of ['en\0us', 'en\nus', 'en--us']) {
-    assert.throws(() => shaper.shapeBatch({ ...base, runs: [{ ...base.runs[0], language }] }), /invalid batch request/);
-  }
-  assert.throws(
-    () => shaper.shapeBatch({ ...base, runs: [{ ...base.runs[0], language: '' }] }),
-    /must encode to 1\.\.65535 UTF-8 bytes/,
-  );
-  assert.throws(
-    () =>
-      shaper.shapeBatch({
-        ...base,
-        runs: [{ ...base.runs[0], language: 'a'.repeat(0x1_0000) }],
-      }),
-    /must encode to 1\.\.65535 UTF-8 bytes/,
-  );
-  assert.equal(shaper.memoryReport().planCount, 4, 'invalid languages must not create plans');
-  shaper.dispose();
-  font.dispose();
-});
-
-test("bounds each font's least-recently-used shape plans", async () => {
-  const { artifact, shaperWasm } = await fixture();
-  const registry = new FontRegistry();
-  const font = await registry.registerAsset(artifact);
-  const shaper = await createRuntimeShaper({ registry, wasm: shaperWasm });
-  shaper.registerFont(font);
-  const base = {
-    textUtf16: utf16('A'),
-    features: [],
-    runs: [
-      {
-        font: font.handle,
-        textStart: 0,
-        textEnd: 1,
-        direction: 'ltr',
-        script: 'Latn',
-        clusterLevel: 0,
-        flags: 0x40,
-        featureStart: 0,
-        featureCount: 0,
-      },
-    ],
-  };
-
-  for (let index = 0; index < 80; index += 1) {
-    shaper.shapeBatch({
-      ...base,
-      runs: [{ ...base.runs[0], language: `en-x-${index.toString(36)}` }],
-    });
-  }
-  assert.equal(shaper.memoryReport().planCount, 64);
-  shaper.shapeBatch({ ...base, runs: [{ ...base.runs[0], language: 'en-x-0' }] });
-  assert.equal(shaper.memoryReport().planCount, 64, 'revisiting an evicted plan must preserve the bound');
-
-  shaper.dispose();
-  font.dispose();
-});
-
-test('one coarse call shapes and reshapes multiple runs with absolute UTF-16 clusters', async () => {
-  const [{ artifact, shaperWasm }, oracle] = await Promise.all([
-    fixture(),
-    readJson(new URL('harfrust.json', shapingDirectory)),
-  ]);
-  const registry = new FontRegistry();
-  const font = await registry.registerAsset(artifact);
-  const shaper = await createRuntimeShaper({ registry, wasm: shaperWasm });
-  shaper.registerFont(font);
-  const expectedRuns = [
-    oracle.cases.find(({ id }) => id === 'ligature-default'),
-    oracle.cases.find(({ id }) => id === 'combining-mark'),
+function registerValidatedFont({ abi, fn, memory }, handle, validated) {
+  const allocations = [
+    copyToWasm(memory, fn.allocate, validated.shapingSfnt),
+    copyToWasm(memory, fn.allocate, validated.glyphExtents),
+    copyToWasm(memory, fn.allocate, validated.glyphExtentsAvailability),
   ];
-  assert.ok(expectedRuns.every(Boolean));
-  const combinedText = expectedRuns.map(({ text }) => text).join('');
-  const textUtf16 = utf16(combinedText);
-  let start = 0;
-  const runs = expectedRuns.map((expected) => {
-    const end = start + utf16(expected.text).length;
-    const run = {
-      font: font.handle,
-      textStart: start,
-      textEnd: end,
-      direction: expected.segment.direction,
-      script: expected.segment.script,
-      language: expected.segment.language,
-      clusterLevel: 0,
-      flags: 0x40,
-      featureStart: 0,
-      featureCount: 0,
-    };
-    start = end;
-    return run;
-  });
-  const request = { textUtf16, runs, features: [] };
-  const expectedGlyphs = expectedRuns.map((expected, run) =>
-    expected.glyphs.map((glyph) => ({ ...glyph, cluster: glyph.cluster + runs[run].textStart })),
+  assert.equal(
+    fn.registerFont(
+      handle,
+      allocations[0].pointer,
+      allocations[0].length,
+      allocations[1].pointer,
+      allocations[1].length,
+      allocations[2].pointer,
+      allocations[2].length,
+    ),
+    abi.status.ok,
   );
-  assertMultiRun(shaper.shapeBatch(request), font.handle, expectedGlyphs);
-  assert.equal(shaper.memoryReport().planCount, 1);
-  assertMultiRun(
-    shaper.reshapeRanges({
-      ...request,
-      ranges: runs.map((run, index) => ({
-        run: index,
-        itemStart: run.textStart,
-        itemEnd: run.textEnd,
-        contextStart: run.textStart,
-        contextEnd: run.textEnd,
-        flags: run.flags,
-      })),
-    }),
-    font.handle,
-    expectedGlyphs,
-  );
-  assert.equal(shaper.memoryReport().planCount, 1);
-  shaper.dispose();
-  font.dispose();
-});
+  for (const allocation of allocations) fn.deallocate(allocation.pointer, allocation.length);
+}
 
-function shapeRequest(font, expected, fixtureCase) {
-  const textUtf16 = utf16(expected.text);
-  assert.equal(textUtf16.length, fixtureCase.utf16Length);
-  const features = expected.segment.features.map((source) => {
-    const match = /^(.{4})(?:=(\d+))?$/.exec(source);
-    assert.ok(match, `unsupported fixture feature ${source}`);
-    return {
-      tag: match[1],
-      value: match[2] === undefined ? 1 : Number(match[2]),
-      start: 0,
-      end: textUtf16.length,
-    };
+function registerSimpleBinding({ abi, fn, memory }, bindingHandle, shapingHandle, validated, resourceId, techniqueId) {
+  const glyphCount = validated.glyphExtents.byteLength / 8;
+  const bytes = fontBindingBytes(abi, {
+    techniqueId,
+    glyphCount,
+    strikes: [0],
+    resources: [{ id: resourceId, generation: 1, kind: 1, reference: resourceId }],
+    resourceIndices: new Array(glyphCount).fill(0),
+    glyphF32: [new Array(glyphCount).fill(1)],
   });
-  return {
-    textUtf16,
-    features,
-    runs: [
-      {
-        font,
-        textStart: 0,
-        textEnd: textUtf16.length,
-        direction: expected.segment.direction,
-        script: expected.segment.script,
-        language: expected.segment.language,
-        clusterLevel: 0,
-        flags: 0x40,
-        featureStart: 0,
-        featureCount: features.length,
-      },
+  const allocation = copyToWasm(memory, fn.allocate, bytes);
+  assert.equal(
+    fn.registerFontBinding(bindingHandle, shapingHandle, allocation.pointer, allocation.length),
+    abi.status.ok,
+  );
+  fn.deallocate(allocation.pointer, allocation.length);
+}
+
+function twoTechniquePolicyBytes(abi) {
+  const program = (techniqueId, programId) => ({
+    techniqueId,
+    programId,
+    f32InputCount: 1,
+    u32InputCount: 0,
+    buffers: [{ id: 1, scalar: abi.policy.scalarTypes.f32, vectorWidth: 1 }],
+    operations: [
+      { opcode: abi.policy.opcodes.loadF32, target: 0, operand0: 0 },
+      { opcode: abi.policy.opcodes.storeF32, operand0: 0, immediate0: 1 },
     ],
-  };
+  });
+  return renderPolicyBytesFromPrograms(abi, [program(1, 1), program(2, 2)]);
 }
 
-function assertShapedBatch(actual, fontHandle, glyphs) {
-  assert.deepEqual([...actual.fontHandles], [fontHandle]);
-  assert.deepEqual([...actual.runFontSlots], [0]);
-  assert.deepEqual([...actual.runGlyphStarts], [0]);
-  assert.deepEqual([...actual.runGlyphCounts], [glyphs.length]);
-  assert.deepEqual(
-    {
-      glyphIds: [...actual.glyphIds],
-      clusters: [...actual.clusters],
-      xAdvances: [...actual.xAdvances],
-      yAdvances: [...actual.yAdvances],
-      xOffsets: [...actual.xOffsets],
-      yOffsets: [...actual.yOffsets],
-      glyphFlags: [...actual.glyphFlags],
-    },
-    {
-      glyphIds: glyphs.map(({ glyphId }) => glyphId),
-      clusters: glyphs.map(({ cluster }) => cluster),
-      xAdvances: glyphs.map(({ xAdvance }) => xAdvance),
-      yAdvances: glyphs.map(({ yAdvance }) => yAdvance),
-      xOffsets: glyphs.map(({ xOffset }) => xOffset),
-      yOffsets: glyphs.map(({ yOffset }) => yOffset),
-      glyphFlags: glyphs.map(({ flags }) => flags),
-    },
+function engineStyleUpdateBytes(
+  abi,
+  {
+    sessionId,
+    policyHandle,
+    fontStackHandle,
+    expectedEngineRevision = 0,
+    consumedPlanRevision = 0,
+    acknowledgedPublicationGeneration = 0,
+    text = [],
+    textEnd = text.length,
+    removeRoot = false,
+    geometry = false,
+  },
+) {
+  const request = abi.layouts.engineUpdateRequest;
+  const paragraphRecord = abi.layouts.engineParagraphMutation;
+  const textRecord = abi.layouts.engineTextMutation;
+  const styleRecord = abi.layouts.engineStyleMutation;
+  const paragraphRecordOffset = align(request.size, paragraphRecord.alignment);
+  const textRecordOffset = text.length === 0 ? 0 : paragraphRecordOffset + paragraphRecord.size;
+  const styleRecordOffset = align(
+    paragraphRecordOffset + paragraphRecord.size + (text.length === 0 ? 0 : textRecord.size),
+    styleRecord.alignment,
   );
-}
-
-function assertMultiRun(actual, fontHandle, runs) {
-  const glyphs = runs.flat();
-  const starts = [];
-  let start = 0;
-  for (const run of runs) {
-    starts.push(start);
-    start += run.length;
+  const textPayloadOffset = styleRecordOffset + styleRecord.size;
+  const textPayloadEnd = textPayloadOffset + text.length * 2;
+  const constraint = abi.layouts.engineConstraint;
+  const region = abi.layouts.engineRegion;
+  const constraintOffset = geometry ? align(textPayloadEnd, constraint.alignment) : 0;
+  const regionOffset = geometry ? align(constraintOffset + constraint.size, region.alignment) : 0;
+  const byteLength = geometry ? regionOffset + region.size : textPayloadEnd;
+  const bytes = new Uint8Array(byteLength);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(request.abiVersion, abi.version, true);
+  view.setUint32(request.byteLength, bytes.byteLength, true);
+  view.setUint32(request.sessionId, sessionId, true);
+  view.setUint32(request.expectedEngineRevision, expectedEngineRevision, true);
+  view.setUint32(request.consumedPlanRevision, consumedPlanRevision, true);
+  view.setUint32(request.acknowledgedPublicationGeneration, acknowledgedPublicationGeneration, true);
+  view.setUint32(request.policyHandle, policyHandle, true);
+  view.setUint32(request.capabilitySet, 1, true);
+  view.setUint32(request.maxParagraphs, 1, true);
+  for (const field of [
+    'maxClusters',
+    'maxLines',
+    'maxRegions',
+    'maxExclusions',
+    'maxInlineObjects',
+    'maxSlotsPerBand',
+  ]) {
+    view.setUint32(request[field], field === 'maxClusters' ? 2 : 1, true);
   }
-  assert.deepEqual([...actual.fontHandles], [fontHandle]);
-  assert.deepEqual(
-    [...actual.runFontSlots],
-    runs.map(() => 0),
+  view.setUint32(request.maxOutputBytes, 64 * 1024, true);
+  view.setUint32(request.paragraphMutationsOffset, paragraphRecordOffset, true);
+  view.setUint32(request.paragraphMutationCount, 1, true);
+  view.setUint32(request.textMutationsOffset, textRecordOffset, true);
+  view.setUint32(request.textMutationCount, text.length === 0 ? 0 : 1, true);
+  view.setUint32(request.styleMutationsOffset, styleRecordOffset, true);
+  view.setUint32(request.styleMutationCount, 1, true);
+  if (geometry) {
+    view.setUint32(request.constraintsOffset, constraintOffset, true);
+    view.setUint32(request.constraintCount, 1, true);
+    view.setUint32(request.regionsOffset, regionOffset, true);
+    view.setUint32(request.regionCount, 1, true);
+  }
+
+  view.setUint8(paragraphRecordOffset + paragraphRecord.opcode, abi.engine.paragraphMutationOpcodes.upsert);
+  view.setUint32(paragraphRecordOffset + paragraphRecord.paragraphId, 1, true);
+
+  if (text.length > 0) {
+    view.setUint8(textRecordOffset + textRecord.opcode, abi.engine.textMutationOpcodes.replaceUtf16);
+    view.setUint8(textRecordOffset + textRecord.encoding, abi.engine.textEncodings.utf16Le);
+    view.setUint32(textRecordOffset + textRecord.paragraphId, 1, true);
+    view.setUint32(textRecordOffset + textRecord.insertOffset, textPayloadOffset, true);
+    view.setUint32(textRecordOffset + textRecord.insertCount, text.length, true);
+    for (const [index, unit] of text.entries()) view.setUint16(textPayloadOffset + index * 2, unit, true);
+  }
+
+  view.setUint8(
+    styleRecordOffset + styleRecord.opcode,
+    removeRoot ? abi.engine.styleMutationOpcodes.remove : abi.engine.styleMutationOpcodes.upsert,
   );
-  assert.deepEqual([...actual.runGlyphStarts], starts);
-  assert.deepEqual(
-    [...actual.runGlyphCounts],
-    runs.map((run) => run.length),
-  );
-  assert.deepEqual(
-    [...actual.glyphIds],
-    glyphs.map(({ glyphId }) => glyphId),
-  );
-  assert.deepEqual(
-    [...actual.clusters],
-    glyphs.map(({ cluster }) => cluster),
-  );
-  assert.deepEqual(
-    [...actual.xAdvances],
-    glyphs.map(({ xAdvance }) => xAdvance),
-  );
-  assert.deepEqual(
-    [...actual.yAdvances],
-    glyphs.map(({ yAdvance }) => yAdvance),
-  );
-  assert.deepEqual(
-    [...actual.xOffsets],
-    glyphs.map(({ xOffset }) => xOffset),
-  );
-  assert.deepEqual(
-    [...actual.yOffsets],
-    glyphs.map(({ yOffset }) => yOffset),
-  );
-  assert.deepEqual(
-    [...actual.glyphFlags],
-    glyphs.map(({ flags }) => flags),
-  );
+  view.setUint32(styleRecordOffset + styleRecord.paragraphId, 1, true);
+  view.setUint32(styleRecordOffset + styleRecord.styleId, 1, true);
+  if (!removeRoot) {
+    view.setUint8(styleRecordOffset + styleRecord.flags, abi.engine.styleFlags.root);
+    view.setUint32(
+      styleRecordOffset + styleRecord.fieldMask,
+      abi.engine.styleFields.fontStack |
+        abi.engine.styleFields.fontSize |
+        abi.engine.styleFields.lineHeight |
+        abi.engine.styleFields.rasterPixelRatio,
+      true,
+    );
+    view.setUint32(styleRecordOffset + styleRecord.textEnd, textEnd, true);
+    view.setUint32(styleRecordOffset + styleRecord.fontStackHandle, fontStackHandle, true);
+    view.setFloat32(styleRecordOffset + styleRecord.fontSize, 16, true);
+    view.setFloat32(styleRecordOffset + styleRecord.lineHeight, 1.2, true);
+    view.setFloat32(styleRecordOffset + styleRecord.rasterPixelRatio, 1, true);
+  }
+  if (geometry) {
+    view.setUint32(constraintOffset + constraint.paragraphId, 1, true);
+    view.setUint32(constraintOffset + constraint.flowThreadId, 1, true);
+    view.setFloat32(constraintOffset + constraint.width, 100, true);
+    view.setFloat32(constraintOffset + constraint.height, 100, true);
+    view.setFloat32(constraintOffset + constraint.viewportBlockEnd, 100, true);
+    view.setUint32(constraintOffset + constraint.maxLines, 1, true);
+    view.setUint16(constraintOffset + constraint.regionCount, 1, true);
+    view.setUint8(constraintOffset + constraint.widthMode, abi.engine.axisModes.exact);
+    view.setUint8(constraintOffset + constraint.heightMode, abi.engine.axisModes.exact);
+    view.setUint8(constraintOffset + constraint.wrap, abi.engine.wrapModes.word);
+    view.setUint8(constraintOffset + constraint.align, abi.engine.inlineAlignments.start);
+    view.setUint8(constraintOffset + constraint.overflow, abi.engine.overflowModes.clip);
+    view.setUint8(constraintOffset + constraint.blockAlign, abi.engine.blockAlignments.start);
+
+    view.setUint32(regionOffset + region.id, 1, true);
+    view.setUint32(regionOffset + region.geometryRevision, 1, true);
+    view.setUint32(regionOffset + region.transformIndex, 1, true);
+    view.setUint8(regionOffset + region.shape, abi.engine.flowShapeKinds.rectangle);
+    view.setUint8(regionOffset + region.writingMode, abi.engine.writingModes.horizontalTb);
+    view.setUint8(regionOffset + region.textOrientation, abi.engine.textOrientations.mixed);
+    for (const field of ['inlineEnd', 'blockEnd', 'clipInlineEnd', 'clipBlockEnd']) {
+      view.setFloat32(regionOffset + region[field], 100, true);
+    }
+  }
+  return bytes;
 }
 
-function utf16(value) {
-  return Uint16Array.from({ length: value.length }, (_, index) => value.charCodeAt(index));
-}
-
-async function readJson(url) {
-  return JSON.parse(await readFile(url, 'utf8'));
+function align(value, alignment) {
+  return Math.ceil(value / alignment) * alignment;
 }

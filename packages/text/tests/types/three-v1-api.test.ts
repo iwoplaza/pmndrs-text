@@ -8,14 +8,19 @@ declare const mtsdfFont: LoadedFont<typeof msdf>;
 
 const emphasis = span(bitmapFont, { color: '#ff00ff' });
 const label = new Text({ font: bitmapFont, text: txt`Typed ${emphasis`span`}` });
-const labels = new TextGroup({ technique: bitmap });
+const labels = new TextGroup({ compositing: 'independent' });
+const compositing: 'ordered' | 'independent' = labels.compositing;
 labels.add(label);
 label.text = 'Updated';
+label.insertText(7, '!');
+label.deleteText(7, 8);
+label.replaceText(0, 7, 'Replaced');
 label.setCapacity({ size: 64, policy: 'grow' });
+const measurement = label.measureLayout();
+void measurement?.contentWidth;
 labels.setCapacity({ size: 4_096, policy: 'chunk' });
 
-// @ts-expect-error Directly adding another technique is rejected statically.
-labels.add(new Text({ font: mtsdfFont, text: 'Wrong technique' }));
+labels.add(new Text({ font: mtsdfFont, text: 'Mixed technique' }));
 
 const loader = new FontLoader();
 const loaded = loader.loadAsync({
@@ -24,3 +29,4 @@ const loaded = loader.loadAsync({
 });
 void loaded;
 void labels;
+void compositing;
