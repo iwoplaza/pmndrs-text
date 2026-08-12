@@ -37,6 +37,9 @@ describe('rich text composition', () => {
     expect(literal.spans.map(({ start, end }) => [start, end])).toEqual(
       RICH_TEXT_SPANS.map(({ start, end }) => [start, end]),
     );
+    const styledSpans = literal.spans.map((entry) => entry.style ?? {});
+    expect(styledSpans.some((style) => style.decoration?.underline === true)).toBe(true);
+    expect(styledSpans.some((style) => style.decoration?.lineThrough === true)).toBe(true);
     expect(RICH_TEXT_SPANS.map(({ name, start, end }) => [name, literal.text.slice(start, end)])).toEqual([
       ['properNoun', 'Tyrell'],
       ['tracked', 'NEXUS'],
@@ -56,11 +59,11 @@ describe('rich text composition', () => {
     expect(properNoun?.font).toBe(companionFonts.emphasis);
     expect(properNoun?.style).toEqual({ features: [{ tag: RICH_TEXT_SMALL_CAPS_FEATURE }] });
     expect(tracked?.style).toEqual({ letterSpacing: BODY * 0.3125 });
-    expect(emphasis?.style).toEqual({ fontSize: BODY * 1.9 });
+    expect(emphasis?.style).toEqual({ decoration: { underline: true }, fontSize: BODY * 1.9 });
     expect(face?.font).toBe(companionFonts.emphasis);
     expect(foreign?.font).toBe(companionFonts.foreign);
     expect(accent?.paint).toEqual({ color: RICH_TEXT_ACCENT_COLOR });
-    expect(accent?.style).toEqual({ fontSize: BODY * 1.25 });
+    expect(accent?.style).toEqual({ decoration: { lineThrough: true }, fontSize: BODY * 1.25 });
     // The nested span states a size and no paint, so it must inherit the enclosing paint rather than restate it.
     expect(nested?.style).toEqual({ fontSize: BODY * 0.78 });
     expect(nested?.paint).toBeUndefined();

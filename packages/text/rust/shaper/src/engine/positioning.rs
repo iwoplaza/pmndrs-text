@@ -12,7 +12,7 @@ use super::{
     identity_index::{IdentityIndex, IdentityIndexError},
     policy_gather::LayoutGlyph,
     shaping_state::{BoundaryShape, BoundaryShapeArena, ShapeArena, ShapingRun},
-    style_state::StyleSegment,
+    style_state::{ResolvedStyle, StyleSegment},
 };
 
 pub(crate) const SEMANTIC_F32_FIELD_COUNT: usize = 6;
@@ -47,6 +47,25 @@ pub(crate) struct SemanticGlyph {
     pub block_origin: f32,
 }
 
+/// One solid decoration line for a contiguous decorated visual run: underline,
+/// overline, or line-through geometry in positioned space, colored by the style's
+/// decoration paint. Non-solid line styles carry their style bits for later paint work
+/// and render as solid geometry until then.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DecorationRecord {
+    pub flags: u32,
+    pub style: u8,
+    pub color: u32,
+    pub inline_start: f32,
+    pub inline_extent: f32,
+    pub block_start: f32,
+    pub block_extent: f32,
+    pub clip_id: u32,
+    pub region_id: u32,
+    pub flow_thread_id: u32,
+    pub transform_index: u32,
+}
+
 #[derive(Default)]
 pub(crate) struct PositionedGlyphArena {
     glyphs: Vec<LayoutGlyph>,
@@ -63,6 +82,26 @@ pub(crate) struct PositionedGlyphArena {
     visual_levels: Vec<u8>,
     line_levels: Vec<u8>,
     recomposed_glyphs: Option<RecomposedGlyphRange>,
+    decorations: Vec<DecorationRecord>,
+}
+
+/// Two resolved styles share one decoration line when every declared decoration field
+/// matches: the CSS decorating-box group.
+fn same_decoration_group(left: &ResolvedStyle, right: &ResolvedStyle) -> bool {
+    left.decoration_flags == right.decoration_flags
+        && left.decoration_rgba == right.decoration_rgba
+        && left.decoration_style == right.decoration_style
+        && left.decoration_thickness.to_bits() == right.decoration_thickness.to_bits()
+        && left.decoration_offset.to_bits() == right.decoration_offset.to_bits()
+        && left.decoration_font_size.to_bits() == right.decoration_font_size.to_bits()
+}
+
+#[derive(Clone, Copy)]
+struct DecoratedRun {
+    style: ResolvedStyle,
+    font_handle: u32,
+    start: f64,
+    end: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -306,6 +345,7 @@ impl PositionedGlyphArena {
     }
 
     pub(crate) fn clear(&mut self) {
+        self.decorations.clear();
         self.glyphs.clear();
         self.line_glyph_starts.clear();
         self.line_glyph_counts.clear();
@@ -324,6 +364,10 @@ impl PositionedGlyphArena {
         self.visual_levels.clear();
         self.line_levels.clear();
         self.recomposed_glyphs = None;
+    }
+
+    pub(crate) fn decorations(&self) -> &[DecorationRecord] {
+        &self.decorations
     }
 
     pub(crate) fn glyphs(&self) -> &[LayoutGlyph] {
@@ -434,6 +478,7 @@ impl PositionedGlyphArena {
         };
         let mut cursor = fragment.slot_start + offset;
         let baseline = line.block_start + line.baseline;
+        let mut decorated_run: Option<DecoratedRun> = None;
         let visual_count = if visually_ltr {
             retained_cluster_end.saturating_sub(cluster_start)
         } else {
@@ -566,6 +611,34 @@ impl PositionedGlyphArena {
             if per_space != 0.0 && cluster_is_space(text, clusters, cluster) {
                 cursor += per_space;
             }
+            if style.decoration_flags == 0 {
+                if decorated_run.is_some() {
+                    self.flush_decorated_run(&mut decorated_run, line, metrics_for)?;
+                }
+            } else {
+                match decorated_run {
+                    // One continuous line per CSS decorating box: nested spans that inherit
+                    // the same declared decoration extend the run across style changes.
+                    Some(ref mut run)
+                        if run.font_handle == font_handle
+                            && same_decoration_group(&run.style, &style) =>
+                    {
+                        run.end = cursor
+                    }
+                    _ => {
+                        self.flush_decorated_run(&mut decorated_run, line, metrics_for)?;
+                        decorated_run = Some(DecoratedRun {
+                            style,
+                            font_handle,
+                            start: cluster_origin,
+                            end: cursor,
+                        });
+                    }
+                }
+            }
+        }
+        if decorated_run.is_some() {
+            self.flush_decorated_run(&mut decorated_run, line, metrics_for)?;
         }
         if let Some(boundary) = boundary {
             let _ = self.position_boundary(
@@ -583,6 +656,82 @@ impl PositionedGlyphArena {
             )?;
         }
         Ok(fragment.line.advance + per_space * f64::from(justify_spaces))
+    }
+
+    fn flush_decorated_run(
+        &mut self,
+        run: &mut Option<DecoratedRun>,
+        line: FlowLine,
+        metrics_for: impl Fn(u32) -> Option<FontMetrics>,
+    ) -> Result<(), EngineError> {
+        let Some(run) = run.take() else {
+            return Ok(());
+        };
+        let metrics = metrics_for(run.font_handle).ok_or(EngineError::InvalidRequest)?;
+        if metrics.units_per_em == 0 {
+            return Err(EngineError::InvalidRequest);
+        }
+        let decoration_font_size = if run.style.decoration_font_size > 0.0 {
+            run.style.decoration_font_size
+        } else {
+            run.style.font_size
+        };
+        let scale = f64::from(decoration_font_size) / f64::from(metrics.units_per_em);
+        let baseline = line.block_start + line.baseline;
+        let inline_start = finite_f32(run.start)?;
+        let inline_extent = nonnegative_f32((run.end - run.start).max(0.0))?;
+        if inline_extent == 0.0 {
+            return Ok(());
+        }
+        let style = run.style;
+        let overrides = (style.decoration_offset, style.decoration_thickness);
+        let emit = |flag: u32, position: i16, size: i16, arena: &mut Vec<DecorationRecord>| {
+            if style.decoration_flags & flag == 0 {
+                return Ok(());
+            }
+            let block_position = baseline - f64::from(position) * scale + f64::from(overrides.0);
+            let thickness = if overrides.1 > 0.0 {
+                f64::from(overrides.1)
+            } else {
+                f64::from(size) * scale
+            };
+            arena
+                .try_reserve(1)
+                .map_err(|_| EngineError::ResultTooLarge)?;
+            arena.push(DecorationRecord {
+                flags: flag,
+                style: style.decoration_style,
+                color: style.decoration_rgba,
+                inline_start,
+                inline_extent,
+                block_start: finite_f32(block_position)?,
+                block_extent: nonnegative_f32(thickness.max(0.0))?,
+                clip_id: line.clip_id,
+                region_id: line.region_id,
+                flow_thread_id: line.flow_thread_id,
+                transform_index: line.transform_index,
+            });
+            Ok(())
+        };
+        emit(
+            super::frame::DECORATION_UNDERLINE,
+            metrics.underline_position,
+            metrics.underline_thickness,
+            &mut self.decorations,
+        )?;
+        emit(
+            super::frame::DECORATION_OVERLINE,
+            metrics.ascender,
+            metrics.underline_thickness,
+            &mut self.decorations,
+        )?;
+        emit(
+            super::frame::DECORATION_LINE_THROUGH,
+            metrics.strikeout_position,
+            metrics.strikeout_size,
+            &mut self.decorations,
+        )?;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1314,6 +1463,327 @@ mod tests {
         assert_eq!(justification_space_advance(22.0, 0), 0.0);
     }
 
+    /// CSS decorating box: a nested font-size change inside one declared decoration
+    /// keeps a single continuous line at the declaring span's geometry.
+    #[test]
+    fn nested_size_changes_keep_one_continuous_decoration_line() {
+        let text = vec![0x61, 0x62, 0x0a];
+        let mut declaring = ResolvedStyle::test_typography(10.0, 0.0, 0.0);
+        declaring.decoration_flags = crate::engine::frame::DECORATION_UNDERLINE;
+        declaring.decoration_rgba = 0xff00_00ff;
+        declaring.decoration_font_size = 10.0;
+        let mut nested = declaring;
+        nested.font_size = 7.0;
+        let styles = [
+            StyleSegment {
+                text_start: 0,
+                text_end: 1,
+                style: declaring,
+            },
+            StyleSegment {
+                text_start: 1,
+                text_end: 3,
+                style: nested,
+            },
+        ];
+        let runs = [ShapingRun {
+            text_start: 0,
+            text_end: 2,
+            script: u32::from_be_bytes(*b"Latn"),
+            direction: 0,
+            bidi_level: 0,
+            style: declaring,
+        }];
+        let clusters = ClusterArena {
+            starts: vec![0, 1, 2],
+            ends: vec![1, 2, 3],
+            advances: vec![6.0, 4.2, 0.0],
+            flags: vec![CLUSTER_SAFE_BEFORE, CLUSTER_SAFE_BEFORE, CLUSTER_HARD_BREAK],
+            style_indexes: vec![0, 1, 0],
+            source_runs: vec![0, 0, u32::MAX],
+            binding_handles: vec![11, 11, 0],
+            font_handles: vec![1, 1, 0],
+            stable_ids: vec![10, 20, 30],
+            glyph_starts: vec![0, 1, 2],
+            glyph_counts: vec![1, 1, 0],
+            glyph_indices: vec![0, 1],
+            glyph_stable_ids: vec![100, 200],
+            index_at: vec![0, 1, 2, 3],
+            ..ClusterArena::default()
+        };
+        let shape = ShapeArena {
+            runs: vec![],
+            glyph_ids: vec![1, 2],
+            clusters: vec![0, 1],
+            x_advances: vec![500, 500],
+            y_advances: vec![0, 0],
+            x_offsets: vec![0, 0],
+            y_offsets: vec![0, 0],
+            glyph_flags: vec![0, 0],
+        };
+        let bidi = BidiAnalysis {
+            levels: vec![0, 0, BIDI_B],
+            classes: vec![0, 0, BIDI_B],
+            paragraph_starts: vec![0],
+            paragraph_ends: vec![3],
+            paragraph_levels: vec![0],
+            runs: vec![],
+        };
+        let flow = FlowLayoutArena {
+            lines: vec![FlowLine {
+                flow_thread_id: 7,
+                region_id: 9,
+                transform_index: 9,
+                clip_id: 9,
+                fragment_start: 0,
+                fragment_count: 1,
+                align: ALIGN_CENTER,
+                block_start: 0.0,
+                baseline: 8.0,
+                height: 10.0,
+            }],
+            fragments: vec![FlowFragment {
+                line: ComposedLine {
+                    cluster_start: 0,
+                    cluster_end: 3,
+                    text_start: 0,
+                    text_end: 2,
+                    advance: 10.2,
+                    hard_break: true,
+                },
+                slot_start: 0.0,
+                slot_end: 20.0,
+                boundary_index: NO_BOUNDARY,
+            }],
+            ..FlowLayoutArena::default()
+        };
+        let metrics = |_| {
+            Some(FontMetrics {
+                units_per_em: 1_000,
+                ascender: 800,
+                descender: -200,
+                line_gap: 0,
+                underline_position: -100,
+                underline_thickness: 50,
+                strikeout_position: 300,
+                strikeout_size: 50,
+            })
+        };
+        let extents = |_, _| {
+            Some(FontGlyphExtents {
+                x_min: 0,
+                y_min: 0,
+                x_max: 500,
+                y_max: 700,
+            })
+        };
+        let mut index = IdentityIndex::default();
+        let mut active = PositionedGlyphArena::default();
+        let mut next_revision = 1;
+        active
+            .build(
+                &PositionedGlyphArena::default(),
+                &flow,
+                &text,
+                &clusters,
+                &runs,
+                &shape,
+                &BoundaryShapeArena::default(),
+                &styles,
+                &bidi,
+                &mut index,
+                &mut next_revision,
+                metrics,
+                extents,
+            )
+            .unwrap();
+
+        assert_eq!(active.decorations.len(), 1);
+        let underline = active.decorations[0];
+        // One line spans both clusters: centered 10.2 advance in the 20.0 slot.
+        assert_eq!(underline.inline_start, 4.9);
+        assert_eq!(underline.inline_extent, 10.2);
+        // Geometry from the declaring 10.0 size, not the nested 7.0: 8.0 + 100 * 0.01.
+        assert_eq!(underline.block_start, 9.0);
+        assert_eq!(underline.block_extent, 0.5);
+    }
+
+    /// Decoration slice: a styled run with underline and line-through flags emits
+    /// decoration records with geometry from the registered font's decoration metrics
+    /// (fixture: underline -100/50, strikeout 300/50 at 1000 upem, font size 10).
+    #[test]
+    fn decorated_runs_emit_underline_and_line_through_records() {
+        let text = vec![0x61, 0x62, 0x0a];
+        let mut style = ResolvedStyle::test_typography(10.0, 0.0, 0.0);
+        style.decoration_flags = crate::engine::frame::DECORATION_UNDERLINE
+            | crate::engine::frame::DECORATION_LINE_THROUGH;
+        style.decoration_rgba = 0xff00_00ff;
+        let styles = [StyleSegment {
+            text_start: 0,
+            text_end: 3,
+            style,
+        }];
+        let runs = [ShapingRun {
+            text_start: 0,
+            text_end: 2,
+            script: u32::from_be_bytes(*b"Latn"),
+            direction: 0,
+            bidi_level: 0,
+            style,
+        }];
+        let clusters = ClusterArena {
+            starts: vec![0, 1, 2],
+            ends: vec![1, 2, 3],
+            advances: vec![6.0, 6.0, 0.0],
+            flags: vec![CLUSTER_SAFE_BEFORE, CLUSTER_SAFE_BEFORE, CLUSTER_HARD_BREAK],
+            style_indexes: vec![0, 0, 0],
+            source_runs: vec![0, 0, u32::MAX],
+            binding_handles: vec![11, 11, 0],
+            font_handles: vec![1, 1, 0],
+            stable_ids: vec![10, 20, 30],
+            glyph_starts: vec![0, 1, 2],
+            glyph_counts: vec![1, 1, 0],
+            glyph_indices: vec![0, 1],
+            glyph_stable_ids: vec![100, 200],
+            index_at: vec![0, 1, 2, 3],
+            ..ClusterArena::default()
+        };
+        let shape = ShapeArena {
+            runs: vec![],
+            glyph_ids: vec![1, 2],
+            clusters: vec![0, 1],
+            x_advances: vec![500, 500],
+            y_advances: vec![0, 0],
+            x_offsets: vec![0, 0],
+            y_offsets: vec![0, 0],
+            glyph_flags: vec![0, 0],
+        };
+        let bidi = BidiAnalysis {
+            levels: vec![0, 0, BIDI_B],
+            classes: vec![0, 0, BIDI_B],
+            paragraph_starts: vec![0],
+            paragraph_ends: vec![3],
+            paragraph_levels: vec![0],
+            runs: vec![],
+        };
+        let flow = FlowLayoutArena {
+            lines: vec![FlowLine {
+                flow_thread_id: 7,
+                region_id: 9,
+                transform_index: 9,
+                clip_id: 9,
+                fragment_start: 0,
+                fragment_count: 1,
+                align: ALIGN_CENTER,
+                block_start: 0.0,
+                baseline: 8.0,
+                height: 10.0,
+            }],
+            fragments: vec![FlowFragment {
+                line: ComposedLine {
+                    cluster_start: 0,
+                    cluster_end: 3,
+                    text_start: 0,
+                    text_end: 2,
+                    advance: 12.0,
+                    hard_break: true,
+                },
+                slot_start: 0.0,
+                slot_end: 20.0,
+                boundary_index: NO_BOUNDARY,
+            }],
+            ..FlowLayoutArena::default()
+        };
+        let metrics = |_| {
+            Some(FontMetrics {
+                units_per_em: 1_000,
+                ascender: 800,
+                descender: -200,
+                line_gap: 0,
+                underline_position: -100,
+                underline_thickness: 50,
+                strikeout_position: 300,
+                strikeout_size: 50,
+            })
+        };
+        let extents = |_, _| {
+            Some(FontGlyphExtents {
+                x_min: 0,
+                y_min: 0,
+                x_max: 500,
+                y_max: 700,
+            })
+        };
+        let mut index = IdentityIndex::default();
+        let mut active = PositionedGlyphArena::default();
+        let mut next_revision = 1;
+        active
+            .build(
+                &PositionedGlyphArena::default(),
+                &flow,
+                &text,
+                &clusters,
+                &runs,
+                &shape,
+                &BoundaryShapeArena::default(),
+                &styles,
+                &bidi,
+                &mut index,
+                &mut next_revision,
+                metrics,
+                extents,
+            )
+            .unwrap();
+
+        assert_eq!(active.decorations.len(), 2);
+        let underline = active.decorations[0];
+        // Centered 12.0 advance in the 20.0 slot: run spans 4.0..16.0.
+        assert_eq!(underline.flags, crate::engine::frame::DECORATION_UNDERLINE);
+        assert_eq!(underline.inline_start, 4.0);
+        assert_eq!(underline.inline_extent, 12.0);
+        // post underline position -100 at scale 0.01 in down-positive space: 8.0 + 1.0.
+        assert_eq!(underline.block_start, 9.0);
+        assert_eq!(underline.block_extent, 0.5);
+        assert_eq!(underline.color, 0xff00_00ff);
+        assert_eq!(underline.clip_id, 9);
+        assert_eq!(underline.region_id, 9);
+        assert_eq!(underline.flow_thread_id, 7);
+        assert_eq!(underline.transform_index, 9);
+        let line_through = active.decorations[1];
+        assert_eq!(
+            line_through.flags,
+            crate::engine::frame::DECORATION_LINE_THROUGH
+        );
+        // OS/2 strikeout position 300 above the baseline: 8.0 - 3.0.
+        assert_eq!(line_through.block_start, 5.0);
+        assert_eq!(line_through.block_extent, 0.5);
+        // Undecorated rebuilds emit none.
+        let mut plain = PositionedGlyphArena::default();
+        let plain_styles = [StyleSegment {
+            text_start: 0,
+            text_end: 3,
+            style: ResolvedStyle::test_typography(10.0, 0.0, 0.0),
+        }];
+        plain
+            .build(
+                &PositionedGlyphArena::default(),
+                &flow,
+                &text,
+                &clusters,
+                &runs,
+                &shape,
+                &BoundaryShapeArena::default(),
+                &plain_styles,
+                &bidi,
+                &mut index,
+                &mut next_revision,
+                metrics,
+                extents,
+            )
+            .unwrap();
+        assert_eq!(plain.decorations.len(), 0);
+    }
+
     /// Roadmap 11.13: the contract must represent a break-inserted hyphen glyph that has
     /// no source cluster. The proof drives a NON-final soft-wrapped fragment through a
     /// boundary record whose source span is empty and whose inserted span is one shaped
@@ -1469,6 +1939,10 @@ mod tests {
                 ascender: 800,
                 descender: -200,
                 line_gap: 0,
+                underline_position: -100,
+                underline_thickness: 50,
+                strikeout_position: 300,
+                strikeout_size: 50,
             })
         };
         let extents = |_, _| {
@@ -1606,6 +2080,10 @@ mod tests {
                 ascender: 800,
                 descender: -200,
                 line_gap: 0,
+                underline_position: -100,
+                underline_thickness: 50,
+                strikeout_position: 300,
+                strikeout_size: 50,
             })
         };
         let extents = |_, _| {

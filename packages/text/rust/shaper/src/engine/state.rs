@@ -705,7 +705,12 @@ impl TextEngine {
                 *gather_cache = None;
                 *prepared_gather_cache = None;
                 let capability_set = CapabilitySetId(request.capability_set);
-                let attempted_retained = cached_gather == Some(current_gather_key);
+                // Decoration rows bypass the retained gather cursor arithmetic, so a session with
+                // any decorated paragraph must rebuild from a reset workspace; entering the
+                // retained path and falling back mid-append would stack fresh rows onto the
+                // previous update's buffers.
+                let attempted_retained =
+                    cached_gather == Some(current_gather_key) && !session_has_decorations(session);
                 let retained = attempted_retained
                     && gather
                         .begin_retained(policy, record_count)
@@ -1033,6 +1038,21 @@ fn prepared_gather_key(prepared: PreparedUpdate, revision: SessionRevision) -> G
     }
 }
 
+/// Whether any live paragraph carries decoration records, using pending state when prepared —
+/// the same view `append_session_gather` reads.
+fn session_has_decorations(session: &EngineSession) -> bool {
+    session.active_order().iter().any(|ordered| {
+        session.paragraph(ordered.id).is_some_and(|paragraph| {
+            let positioned = if paragraph.state.positioned_prepared {
+                &paragraph.state.pending_positioned
+            } else {
+                &paragraph.state.positioned
+            };
+            !positioned.decorations().is_empty()
+        })
+    })
+}
+
 fn append_session_gather(
     gather: &mut PolicyGatherWorkspace,
     session: &EngineSession,
@@ -1074,6 +1094,16 @@ fn append_session_gather(
                 .find(|binding| binding.handle == handle)
                 .map(|binding| &binding.binding)
         };
+        gather
+            .append_decorations(
+                policy,
+                capability_set,
+                positioned.decorations(),
+                ordered.id,
+                session.revision.engine.max(1),
+                super::policy_gather::DecorationPass::Under,
+            )
+            .map_err(gather_error)?;
         if retaining {
             match gather
                 .append_retained(policy, capability_set, input, binding_for_font)
@@ -1106,6 +1136,16 @@ fn append_session_gather(
                 )
                 .map_err(gather_error)?;
         }
+        gather
+            .append_decorations(
+                policy,
+                capability_set,
+                positioned.decorations(),
+                ordered.id,
+                session.revision.engine.max(1),
+                super::policy_gather::DecorationPass::Over,
+            )
+            .map_err(gather_error)?;
     }
     if retaining && !gather.finish_retained() {
         gather.truncate_to_retained_prefix();
@@ -4347,6 +4387,7 @@ mod tests {
                 },
             ],
             programs: vec![ProgramDescriptor {
+                primitive_kind: 1,
                 technique,
                 variant: 0,
                 id: ProgramId(1),

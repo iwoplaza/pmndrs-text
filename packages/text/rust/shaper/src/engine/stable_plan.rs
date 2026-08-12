@@ -28,9 +28,9 @@ use super::{
     },
     render_plan::{
         BUFFER_STABLE_INDIRECT, BufferRecord, DrawRecord, PATCH_ALLOCATE_OR_RESIZE, PATCH_WRITE,
-        POLICY_BUFFER_ORDER, PatchRecord, PrimitiveRecord, RESOURCE_ACTION_CREATE,
-        RESOURCE_ACTION_RETAIN, RETIRE_BUFFER, RETIRE_RESOURCE, RETIRE_SLOT_RANGE, RenderPlanView,
-        ResourceRecord, RetirementRecord,
+        POLICY_BUFFER_ORDER, PRIMITIVE_DECORATION, PatchRecord, PrimitiveRecord,
+        RESOURCE_ACTION_CREATE, RESOURCE_ACTION_RETAIN, RETIRE_BUFFER, RETIRE_RESOURCE,
+        RETIRE_SLOT_RANGE, RenderPlanView, ResourceRecord, RetirementRecord,
     },
     sort,
     stable_order::{
@@ -348,25 +348,39 @@ impl StablePlanCompiler {
         self.input_order_records.resize(input.glyphs.len(), 0);
         self.batch_pending_indices.resize(self.batches.len(), NONE);
 
+        let mut cached_kind_program = None;
         for (input_index, glyph) in input.glyphs.iter().copied().enumerate() {
-            validate_glyph(glyph)?;
+            let program = match cached_kind_program {
+                Some((technique, variant, program))
+                    if technique == glyph.technique && variant == glyph.program_variant =>
+                {
+                    program
+                }
+                _ => {
+                    let program = policy
+                        .program(capability_set, glyph.technique, glyph.program_variant)
+                        .ok_or(StablePlanError::ProgramMissing)?;
+                    cached_kind_program = Some((glyph.technique, glyph.program_variant, program));
+                    program
+                }
+            };
+            validate_glyph(glyph, program.primitive_kind == PRIMITIVE_DECORATION)?;
             if !self.identity_set.insert(glyph.stable_id) {
                 return Err(StablePlanError::DuplicateIdentity);
             }
-            let program = policy
-                .program(capability_set, glyph.technique, glyph.program_variant)
-                .ok_or(StablePlanError::ProgramMissing)?;
             if program.allocation_strategy != ALLOCATION_STABLE_INDIRECT {
                 if strict_strategy {
                     return Err(StablePlanError::UnsupportedStrategy);
                 }
                 continue;
             }
-            let resource_bit = 1_u32
-                .checked_shl(u32::from(glyph.resource_kind - 1))
-                .ok_or(StablePlanError::InvalidResource)?;
-            if program.resource_kind_mask & resource_bit == 0 {
-                return Err(StablePlanError::InvalidResource);
+            if program.primitive_kind != PRIMITIVE_DECORATION {
+                let resource_bit = 1_u32
+                    .checked_shl(u32::from(glyph.resource_kind - 1))
+                    .ok_or(StablePlanError::InvalidResource)?;
+                if program.resource_kind_mask & resource_bit == 0 {
+                    return Err(StablePlanError::InvalidResource);
+                }
             }
             let key = BatchKey {
                 technique: glyph.technique,
@@ -1313,6 +1327,10 @@ impl StablePlanCompiler {
             if self.input_batches[input_index] == NONE {
                 continue;
             }
+            // Decoration records are resource-free and publish no resource lifecycle.
+            if glyph.resource_id == 0 && glyph.resource_kind == 0 {
+                continue;
+            }
             if let Some(resource) = self.resources.iter().find(|resource| {
                 resource.id == glyph.resource_id && resource.generation == glyph.resource_generation
             }) {
@@ -1402,19 +1420,23 @@ impl StablePlanCompiler {
                 .map_err(|_| StablePlanError::ArithmeticOverflow)?;
             let (inline_start, block_start, inline_extent, block_extent) =
                 span_bounds(&context.input.glyphs[input_index..end])?;
-            let resource_start = self
-                .resources
-                .iter()
-                .position(|resource| {
-                    resource.id == first.resource_id
-                        && resource.generation == first.resource_generation
-                })
-                .ok_or(StablePlanError::InvalidResource)?;
+            let resource_start = if program.primitive_kind == PRIMITIVE_DECORATION {
+                0
+            } else {
+                self.resources
+                    .iter()
+                    .position(|resource| {
+                        resource.id == first.resource_id
+                            && resource.generation == first.resource_generation
+                    })
+                    .ok_or(StablePlanError::InvalidResource)?
+            };
             push_glyph_draw(
                 &mut self.primitives,
                 &mut self.draws,
                 GlyphDraw {
                     glyph: first,
+                    primitive_kind: program.primitive_kind,
                     program_id: batch.key.program_id,
                     record_count: count,
                     buffer_id: pending.order_buffer_id,
@@ -1489,14 +1511,17 @@ impl StablePlanCompiler {
                         .iter()
                         .map(|input_index| *input_index as usize),
                 )?;
-                let resource_start = self
-                    .resources
-                    .iter()
-                    .position(|resource| {
-                        resource.id == first.resource_id
-                            && resource.generation == first.resource_generation
-                    })
-                    .ok_or(StablePlanError::InvalidResource)?;
+                let resource_start = if program.primitive_kind == PRIMITIVE_DECORATION {
+                    0
+                } else {
+                    self.resources
+                        .iter()
+                        .position(|resource| {
+                            resource.id == first.resource_id
+                                && resource.generation == first.resource_generation
+                        })
+                        .ok_or(StablePlanError::InvalidResource)?
+                };
                 let semantic_id = if input_indices[start..end].iter().all(|input_index| {
                     context.input.glyphs[*input_index as usize].semantic_id == first.semantic_id
                 }) {
@@ -1509,6 +1534,7 @@ impl StablePlanCompiler {
                     &mut self.draws,
                     GlyphDraw {
                         glyph: first,
+                        primitive_kind: program.primitive_kind,
                         program_id: key.program_id,
                         record_count: count,
                         buffer_id: pending.order_buffer_id,
@@ -2260,7 +2286,77 @@ mod tests {
     }
 
     fn policy_with_budget(partition_materials: bool, fragmentation_budget: u16) -> ValidatedPolicy {
-        ValidatedPolicy::new(PolicyDescriptor {
+        ValidatedPolicy::new(descriptor_with_budget(
+            partition_materials,
+            fragmentation_budget,
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn stable_decoration_rows_pack_and_draw_without_resources() {
+        let policy = {
+            let mut descriptor = descriptor_with_budget(false, 8);
+            let mut program = descriptor.programs[0].clone();
+            program.primitive_kind = PRIMITIVE_DECORATION;
+            program.technique = TechniqueId(99);
+            program.id = ProgramId(9);
+            program.resource_kind_mask = 0;
+            program.buffers[0].id = BufferId(9);
+            for operation in &mut program.operations {
+                if let Operation::StoreF32 { buffer, .. } = operation {
+                    *buffer = BufferId(9);
+                }
+            }
+            descriptor.programs.push(program);
+            ValidatedPolicy::new(descriptor).unwrap()
+        };
+        let mut compiler = StablePlanCompiler::default();
+        let decoration = StableGlyph {
+            stable_id: 0x8000_0000,
+            content_revision: 1,
+            technique: TechniqueId(99),
+            program_variant: 0,
+            resource_id: 0,
+            resource_generation: 0,
+            resource_kind: 0,
+            resource_reference: 0,
+            semantic_id: 0x8000_0000,
+            transform_id: 1,
+            material_id: 1,
+            clip_id: 0,
+            depth_key: 0,
+            inline_start: 4.0,
+            block_start: 9.0,
+            inline_extent: 12.0,
+            block_extent: 0.5,
+        };
+        let rows = [glyph(1, 1), decoration];
+        prepare(&mut compiler, &policy, &rows, &[1.0, 4.0], true, 1, 0);
+        let view = compiler
+            .plan_view(7, CAPABILITY, policy.fingerprint())
+            .unwrap();
+        let primitive = view
+            .primitives
+            .iter()
+            .find(|primitive| primitive.kind == PRIMITIVE_DECORATION)
+            .expect("decoration primitive");
+        assert_eq!(primitive.resource_id, 0);
+        let draw = view
+            .draws
+            .iter()
+            .find(|draw| {
+                view.primitives[draw.primitive_start as usize].kind == PRIMITIVE_DECORATION
+            })
+            .expect("decoration draw");
+        assert_eq!(draw.resource_count, 0);
+    }
+
+    fn descriptor_with_budget(
+        partition_materials: bool,
+        fragmentation_budget: u16,
+    ) -> PolicyDescriptor {
+        PolicyDescriptor {
             capability_sets: vec![CapabilitySet {
                 id: CAPABILITY,
                 flags: CAP_STABLE_INDIRECT,
@@ -2275,6 +2371,7 @@ mod tests {
                 whole_buffer_threshold_basis_points: 10_000,
             }],
             programs: vec![ProgramDescriptor {
+                primitive_kind: 1,
                 technique: TECHNIQUE,
                 variant: 0,
                 id: ProgramId(5),
@@ -2319,8 +2416,7 @@ mod tests {
                     },
                 ],
             }],
-        })
-        .unwrap()
+        }
     }
 
     fn read_f32(bytes: &[u8], offset: usize) -> f32 {

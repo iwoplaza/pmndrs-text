@@ -260,6 +260,9 @@ pub enum Operation {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProgramDescriptor {
+    /// `PRIMITIVE_GLYPH` or `PRIMITIVE_DECORATION`: the plan primitive kind this
+    /// program's records publish as.
+    pub primitive_kind: u16,
     pub technique: TechniqueId,
     pub variant: u16,
     pub id: ProgramId,
@@ -294,6 +297,17 @@ pub struct ValidatedPolicy {
 }
 
 impl ValidatedPolicy {
+    /// The decoration program admitted for this capability set, if the policy declares one.
+    pub fn decoration_program(
+        &self,
+        capability_set: CapabilitySetId,
+    ) -> Option<&ProgramDescriptor> {
+        self.programs.iter().find(|program| {
+            program.primitive_kind == super::render_plan::PRIMITIVE_DECORATION
+                && (program.capability_set.0 == 0 || program.capability_set == capability_set)
+        })
+    }
+
     pub fn new(descriptor: PolicyDescriptor) -> Result<Self, PolicyError> {
         validate_policy(&descriptor)?;
         let mut execution = Vec::new();
@@ -1516,7 +1530,11 @@ fn validate_policy(descriptor: &PolicyDescriptor) -> Result<(), PolicyError> {
         {
             return Err(PolicyError::UnknownCapabilitySet);
         }
-        if program.resource_kind_mask == 0 {
+        // Decoration programs draw without raster resources; every other program must
+        // declare the resource kinds it accepts.
+        if program.resource_kind_mask == 0
+            && program.primitive_kind != super::render_plan::PRIMITIVE_DECORATION
+        {
             return Err(PolicyError::InvalidResourceKinds);
         }
         if program.storage_key_mask & !STORAGE_KEY_FIELDS != 0
@@ -1875,6 +1893,7 @@ mod tests {
 
     fn valid_program() -> ProgramDescriptor {
         ProgramDescriptor {
+            primitive_kind: 1,
             technique: BITMAP,
             variant: 0,
             id: PROGRAM,
@@ -2239,6 +2258,7 @@ mod tests {
         let object = BufferId(2);
         let page = BufferId(3);
         let policy = ValidatedPolicy::new(descriptor(vec![ProgramDescriptor {
+            primitive_kind: 1,
             technique: BITMAP,
             variant: 0,
             id: PROGRAM,
