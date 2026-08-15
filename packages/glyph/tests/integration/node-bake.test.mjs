@@ -405,7 +405,7 @@ test('CLI help and malformed arguments are deterministic and side-effect free', 
   const help = captureIo();
   assert.equal(await runCli(['--help'], help.io), 0);
   assert.match(help.stdout(), /^Usage: glyph <command>/);
-  assert.match(help.stdout(), /text <command> --help/);
+  assert.match(help.stdout(), /glyph <command> --help/);
   assert.equal(help.stderr(), '');
 
   const bakeHelp = captureIo();

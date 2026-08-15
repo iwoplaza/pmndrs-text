@@ -12,6 +12,16 @@ test('the published contract is ESM-only', async () => {
   assert.equal(manifest.type, 'module');
   assert.equal(manifest.main, undefined);
   assert.equal(manifest.module, undefined);
+  assert.equal(manifest.private, undefined);
+  assert.deepEqual(manifest.repository, {
+    type: 'git',
+    url: 'git+https://github.com/pmndrs/glyph.git',
+    directory: 'packages/glyph',
+  });
+  assert.deepEqual(manifest.publishConfig, {
+    access: 'public',
+    registry: 'https://registry.npmjs.org/',
+  });
   assert.deepEqual(manifest.bin, { glyph: './bin/glyph.js' });
   assert.equal(manifest.exports['./internal/raster-baker-profile'], undefined);
   assert.deepEqual(manifest.pmndrs, {

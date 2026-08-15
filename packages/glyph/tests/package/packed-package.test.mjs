@@ -11,6 +11,7 @@ test('the packed package exposes every ESM subpath and no CommonJS entry', async
   const temporaryDirectory = await mkdtemp(join(packageDirectory, '.packed-package-'));
   context.after(() => rm(temporaryDirectory, { recursive: true, force: true }));
 
+  const sourceManifest = JSON.parse(await readFile(join(packageDirectory, 'package.json'), 'utf8'));
   const archiveDirectory = join(temporaryDirectory, 'archive');
   const installedDirectory = join(temporaryDirectory, 'consumer', 'node_modules', '@pmndrs', 'glyph');
   await mkdir(archiveDirectory, { recursive: true });
@@ -21,7 +22,13 @@ test('the packed package exposes every ESM subpath and no CommonJS entry', async
   });
   execFileSync(
     'tar',
-    ['-xzf', join(archiveDirectory, 'pmndrs-glyph-0.0.0.tgz'), '--strip-components=1', '-C', installedDirectory],
+    [
+      '-xzf',
+      join(archiveDirectory, `pmndrs-glyph-${sourceManifest.version}.tgz`),
+      '--strip-components=1',
+      '-C',
+      installedDirectory,
+    ],
     { stdio: 'ignore' },
   );
 

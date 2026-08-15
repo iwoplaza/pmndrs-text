@@ -463,7 +463,7 @@ Global options:
   -h, --help            Show this help
   -v, --version         Show the installed @pmndrs/glyph version
 
-Run "text <command> --help" for command-specific options and examples.
+Run "glyph <command> --help" for command-specific options and examples.
 `;
 }
 

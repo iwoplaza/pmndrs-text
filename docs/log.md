@@ -2,6 +2,10 @@
 
 ## 2026-08-15
 
+- **Canary publishing** — Made `@pmndrs/glyph` publicly publishable and added a `main`-branch release workflow that
+  runs the complete package check, derives an immutable commit-and-date canary version, and publishes the `canary`
+  dist-tag through npm trusted publishing with GitHub OIDC and automatic provenance.
+
 - **Glyph package identity** — Renamed the workspace, public package, CLI, companion packages, Rust crates and Wasm ABI
   namespaces, discovery manifest, runtime diagnostics, repository paths, imports, examples, and canonical documentation
   from text to Glyph. Typography concepts such as `Text`, formatted text, and the text-shaper artifact retain their

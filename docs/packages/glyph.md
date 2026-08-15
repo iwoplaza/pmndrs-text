@@ -5,12 +5,15 @@ description: Implements portable font loading, retained Rust shaping and layout,
 resource: ../../packages/glyph
 workspace_package: '@pmndrs/glyph'
 documentation_type: reference
-source_digest: 'sha256:07cd9c33e9801c3b66009c2de9672e42870e76a08f09e04c05944153a0e912a0'
+source_digest: 'sha256:0d31b5547c9c7168881a2da18d0fb0f4bf338a31c3961172480bad4d14acdbfe'
 tags: [package, public-api, rust, wasm, threejs, typography]
 sources:
   - id: manifest
     resource: ../../packages/glyph/package.json
     title: Package manifest
+  - id: release-workflow
+    resource: ../../.github/workflows/release.yml
+    title: npm canary release workflow
   - id: public-api
     resource: ../../packages/glyph/src/index.ts
     title: Renderer-neutral public exports
@@ -64,12 +67,12 @@ sources:
     title: Three.js text API reference
 generated:
   by: openai-codex/gpt-5.6
-  at: '2026-08-15T15:53:27Z'
+  at: '2026-08-15T22:44:31Z'
 ---
 
 # Package reference: `@pmndrs/glyph`
 
-Status: foundation cutover in progress; publishing-feature stacks follow after merge
+Status: foundation merged; canary publishing configured while publishing-feature stacks continue
 
 ## Ownership
 
@@ -103,6 +106,14 @@ TypeScript does not independently shape, lay out, or pack paragraphs.
 | `@pmndrs/glyph/runtime-bake` | Explicit browser Worker host for optional runtime baking.                                                                        |
 | `@pmndrs/glyph/raster/*`     | Renderer-neutral Bitmap, MSDF, and Slug decoding and raster-technique contracts.                                                 |
 | `@pmndrs/glyph/bakers/*`     | Optional portable raster bakers and validators.                                                                                  |
+
+## Canary releases
+
+Pushes to `main` run the package's complete `check` lane and publish `@pmndrs/glyph` to npm under the `canary` dist-tag.
+The workflow derives an immutable prerelease version from the manifest's base version, the first eight commit SHA
+characters, and the UTC release date. npm trusted publishing authenticates the GitHub-hosted job with OIDC; the package
+manifest pins the public npm registry and repository identity, and npm generates provenance for the public package.
+The workflow carries no long-lived npm token.
 
 The font-baker Rust source, direct-memory wrapper, schemas, tests, build pipeline, optimized Wasm, and generated ABI are
 owned by this package. There is no separately published font-baker package. The root entry has no static edge to the

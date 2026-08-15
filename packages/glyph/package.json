@@ -1,9 +1,13 @@
 {
   "name": "@pmndrs/glyph",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "license": "MIT",
   "author": "Justin Walsh (https://github.com/thejustinwalsh)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pmndrs/glyph.git",
+    "directory": "packages/glyph"
+  },
   "bin": {
     "glyph": "./bin/glyph.js"
   },
@@ -97,6 +101,10 @@
     "./font-baker.wasm": "./dist/font_baker.wasm",
     "./font-baker-abi.json": "./dist/font-baker-abi-v0.json",
     "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "scripts": {
     "build": "node ./scripts/unicode.mts check-data && node ./scripts/build.mjs",
