@@ -5,7 +5,7 @@ description: Implements portable font loading, retained Rust shaping and layout,
 resource: ../../packages/glyph
 workspace_package: '@pmndrs/glyph'
 documentation_type: reference
-source_digest: 'sha256:94a5a169e7ed697668d7a002dcdace719c2b2542c6826bc88ec857c14789a550'
+source_digest: 'sha256:d2329e42da8b6e4584a04b887d90bf2f51e0bc18b9460206b38465ce6dbeb868'
 tags: [package, public-api, rust, wasm, threejs, typography]
 sources:
   - id: manifest
@@ -39,7 +39,7 @@ sources:
     resource: ../../packages/glyph/rust/shaper/src/engine/state.rs
     title: Retained Rust text engine
   - id: frame-host
-    resource: ../../packages/glyph/src/internal/text-engine-host.ts
+    resource: ../../packages/glyph/src/core/host.ts
     title: Single-export Wasm host
   - id: three-api
     resource: ../../packages/glyph/src/three.ts
