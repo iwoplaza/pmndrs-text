@@ -5,7 +5,7 @@ description: Implements portable font loading, retained Rust shaping and layout,
 resource: ../../packages/glyph
 workspace_package: '@pmndrs/glyph'
 documentation_type: reference
-source_digest: 'sha256:331c42ecca120b8cc75979a02d38b6bbaaca69068008b80945508679815fc7a0'
+source_digest: 'sha256:a05cfbb2b9c43ac971c71259b6d93e962d4550dd0c44a424b21c30f1b0980e59'
 tags: [package, public-api, rust, wasm, threejs, typography]
 sources:
   - id: manifest
@@ -41,6 +41,12 @@ sources:
   - id: frame-host
     resource: ../../packages/glyph/src/core/host.ts
     title: Single-export Wasm host
+  - id: core-api
+    resource: ../../packages/glyph/src/core.ts
+    title: Public renderer-neutral core subpath
+  - id: tsl-shaders
+    resource: ../../packages/glyph/src/tsl.ts
+    title: Public technique shader library subpath
   - id: three-api
     resource: ../../packages/glyph/src/three.ts
     title: Three.js public exports
@@ -289,6 +295,13 @@ TypeScript hosts consume those generated constants directly and validate the dec
 There are no instance-ignoring runtime ABI readers. Package builds isolate the distributable MTSDF and Slug
 `artifact-baker` feature sets from kernel-only test targets and reject an optimized module missing any contract-declared
 artifact export, preventing Cargo's shared top-level artifact path from silently publishing a smaller test variant.
+
+The renderer-neutral core publishes as `@pmndrs/glyph/core` (D-249): runtime shaper creation, the engine host and
+sessions, frame-wire serialization, render-plan and layout views, font-binding compilation, the versioned ABI, and the
+policy-authoring toolkit. The four technique TSL node graphs publish as `@pmndrs/glyph/tsl` under Tsl-prefixed names,
+including the Slug shader tree that previously lived in core internals. Three's first-party policy is authored with the
+same public toolkit in `three/render-policy.ts`, and a scoped import lint denies the three, tsl, and react surfaces any
+import from `internal/` or `generated/`, so the first-party integrations consume exactly the surface a third party gets.
 
 The renderer-neutral core owns the completed asynchronous Worker transfer contract: it copies opaque frame bytes once
 into a bounded worker-owned transferable pool, applies explicit backpressure, and requires root to transfer each retired

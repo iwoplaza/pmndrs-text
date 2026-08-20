@@ -172,30 +172,32 @@ Fonts without authored glyph names still report exact glyph IDs.
 
 Every Three primitive above is built on a renderer-neutral core with four moves: load a font into the Wasm shaper, describe text as one serialized frame, register a validated render policy, and consume the revisioned render plan each update publishes. The engine never calls back into JavaScript during shaping, layout, or packing — a renderer only encodes requests and reads fixed-record results.
 
-> These modules currently live under `internal/` without a stable subpath; Three consumes exactly this surface, and the wire contracts are versioned and integration-tested. Import paths below name the modules, not a published subpath.
-
 Load a font and own the engine lifecycle once:
 
 ```ts
 import { createTextRuntime } from '@pmndrs/glyph';
-import { textRuntimeShaper } from '…/text-runtime';
-import { TextEngineHost } from '…/internal/text-engine-host';
-import { firstPartyThreeRenderPolicyBytes } from '…/internal/render-policy-wire';
+import { msdf } from '@pmndrs/glyph/raster/msdf';
+import { compileRenderPolicy, TextEngineHost, textRuntimeShaper } from '@pmndrs/glyph/core';
 
 const runtime = await createTextRuntime();
-const [inter] = await runtime.loadFont({
+const inter = await runtime.loadFont({
   input: { baked: '/fonts/Inter.font.glb' },
   raster: { technique: msdf },
 });
 
+// Styles reference fonts through stack handles, so bind and stack the loaded font once.
 const host = new TextEngineHost(textRuntimeShaper(runtime));
-host.registerPolicy(POLICY, firstPartyThreeRenderPolicyBytes());
+host.registerPolicy(POLICY, compileRenderPolicy(myPolicy));
+host.registerFontBinding(BINDING, inter.font.handle, myBindingBytes);
+host.registerFontStack(STACK, [BINDING]);
 ```
+
+The policy is your own declaration — `@pmndrs/glyph/core` exports the authoring toolkit (`compileRenderPolicy`, `programContext`, the wire-identity registry) that Three's first-party policy is itself built with.
 
 Shape text — a session update is one serialized frame of mutations, constraints, and the revision handshake:
 
 ```ts
-import { compileTextEngineFrameUpdate } from '…/internal/engine-frame-wire';
+import { compileTextEngineFrameUpdate } from '@pmndrs/glyph/core';
 
 const session = host.createSession({ handle: SESSION, requestCapacity: 4096, resultCapacity: 65536 });
 const publication = session.update(
@@ -219,8 +221,7 @@ const publication = session.update(
 Consume the plan. A publication is borrowed A/B memory — its bytes stay readable only until the next call into the same Wasm module, so a synchronous renderer walks it before touching the engine again. The static path applies buffer patches, then issues one draw per packet:
 
 ```ts
-import { TextEngineRenderPlanView } from '…/internal/render-plan-view';
-import { textShaperAbi } from '…/generated/text-shaper-abi';
+import { TextEngineRenderPlanView, textShaperAbi } from '@pmndrs/glyph/core';
 
 const plan = new TextEngineRenderPlanView().bind(publication);
 
@@ -228,8 +229,10 @@ const patches = plan.table('patches');
 const patchLayout = textShaperAbi.layouts.enginePatch;
 for (let index = 0; index < patches.count; index += 1) {
   const patch = plan.record(patches, index);
-  // Copy plan.u32(patch + patchLayout.byteLength) bytes into the GPU buffer named by
-  // plan.u32(patch + patchLayout.bufferId) at plan.u32(patch + patchLayout.destinationOffset).
+  // Dispatch on plan.u8(patch + patchLayout.opcode): allocate and retire manage buffer
+  // lifetimes, write copies plan.u32(patch + patchLayout.byteLength) payload bytes into
+  // the buffer named by patchLayout.bufferId at patchLayout.destinationOffset, and
+  // fill/copy move data without a payload.
 }
 
 const draws = plan.table('draws');
@@ -307,9 +310,9 @@ A renderer integration has five responsibilities:
 4. Realize materials and submit draw packets without re-shaping, re-sorting, or reconstructing layout.
 5. Acknowledge completed publication generations before the planner reuses retired storage.
 
-Three is the maintained reference executor. Importing `@pmndrs/glyph/three/bitmap`, `/msdf`, or `/slug` registers that technique's policy program and TSL material implementation. A custom Three technique can use the public `registerThreeRasterPlanProgram` and `threePolicyAbi` exports to provide its declarative policy, cold font binding, and material realization.
+Three is the maintained reference executor. `@pmndrs/glyph/three/bitmap`, `/msdf`, and `/slug` export each technique's raster contract; the Three runtime resolves the matching policy program and TSL material when a loaded font requests that technique. A custom Three technique can use the public `registerThreeRasterPlanProgram` and `threePolicyAbi` exports to provide its declarative policy, cold font binding, and material realization.
 
-The portable policy and render-plan wire contract is implemented and documented, but a renderer-neutral host is not yet exposed as a stable package subpath. A new engine integration should currently follow the [Rust layout engine contract](docs/planning/rust-layout-engine.md#render-plan-policy) and the [Three executor](docs/planning/three-api.md) as its reference. TypeGPU support will be built against this contract in an upcoming release.
+The renderer-neutral host, frame wire, policy authoring toolkit, and plan view publish as `@pmndrs/glyph/core`, and the technique shader library as `@pmndrs/glyph/tsl` — the [Core API](#core-api) section shows the four moves. A new engine integration can follow the [Rust layout engine contract](docs/planning/rust-layout-engine.md#render-plan-policy) and the [Three executor](docs/planning/three-api.md) as its reference; Three itself consumes only these public surfaces, enforced by lint. TypeGPU support will be built against the same contract.
 
 ## Develop
 

@@ -97,7 +97,7 @@ export async function createTextRuntime(options: TextRuntimeOptions = {}): Promi
 
 /**
  * Rust-engine access for renderer integrations: the bridge from a font-loading runtime to
- * the shaper instance a `TextEngineHost` drives. Public through `@pmndrs/glyph/engine`.
+ * the shaper instance a `TextEngineHost` drives. Public through `@pmndrs/glyph/core`.
  */
 export function textRuntimeShaper(runtime: TextRuntime): RuntimeShaper {
   if (!(runtime instanceof TextRuntimeImpl)) throw new TypeError('text runtime was not created by this package');

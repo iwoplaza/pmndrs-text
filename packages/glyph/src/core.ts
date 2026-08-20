@@ -5,13 +5,19 @@
  */
 export {
   createRuntimeShaper,
-  runtimeShaperEngineExports,
   type RuntimeShaper,
   type RuntimeShaperMemoryReport,
   type RuntimeShaperOptions,
   type TextShaperWasmSource,
 } from './shaper.js';
 export { textRuntimeShaper } from './text-runtime.js';
+export {
+  acquireFontSelectionForRuntime,
+  assertFontSelectionForRuntime,
+  concreteFonts,
+  observeLoadedFontDispose,
+  releaseFontSelection,
+} from './loaded-font.js';
 export {
   TextEngineHost,
   TextEngineSession,
@@ -24,7 +30,9 @@ export {
   type TextEngineConstraint,
   type TextEngineDecoration,
   type TextEngineExclusion,
+  type TextEngineFeature,
   type TextEngineFrameLimits,
+  type TextEngineFlowVertex,
   type TextEngineFrameUpdate,
   type TextEngineInlineObject,
   type TextEngineParagraphMutation,
@@ -38,6 +46,7 @@ export { readTextEngineLayouts, readTextEngineMeasurements } from './core/layout
 export {
   compileFontBinding,
   emptyFontBindingTable,
+  loadedFontBindingBytes,
   fontBindingResources,
   type BindingResource,
   type FontBindingDescriptor,
@@ -46,14 +55,14 @@ export {
 export {
   compileRenderPolicy,
   createProgram,
-  firstPartyTechniqueWireIds,
+  techniqueWireIds,
   floatBuffers,
   programContext,
   renderWireId,
   RenderWireIdentityRegistry,
   stores,
   u32Buffers,
-  type FirstPartyTechniqueWireIds,
+  type TechniqueWireIds,
   type PolicyAllocationMode,
   type PolicyBuffer,
   type PolicyCapabilitySet,

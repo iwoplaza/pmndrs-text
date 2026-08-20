@@ -1,12 +1,18 @@
-import { observeLoadedFontDispose, type LoadedFont } from '../loaded-font.js';
+import type { LoadedFont } from '../loaded-font.js';
 import { bitmap, type BitmapData, type BitmapStrikeData } from '../raster/bitmap-technique.js';
 import { msdf, type MsdfData } from '../raster/msdf.js';
 import { slug, type SlugData, type SlugPageData } from '../raster/slug-technique.js';
 import type { AnyRasterTechnique } from '../raster-technique.js';
-import { textRuntimeShaper, type TextRuntime } from '../text-runtime.js';
-import { firstPartyFontBindingBytes } from '../core/font-binding.js';
-import { firstPartyThreeRenderPolicyBytes, type ThreeTransformMode } from './render-policy.js';
-import { TextEngineHost, type TextEngineSession, type TextEngineSessionOptions } from '../core/host.js';
+import type { TextRuntime } from '../text-runtime.js';
+import {
+  loadedFontBindingBytes,
+  observeLoadedFontDispose,
+  TextEngineHost,
+  textRuntimeShaper,
+  type TextEngineSession,
+  type TextEngineSessionOptions,
+} from '../core.js';
+import { threeRenderPolicyBytes, type ThreeTransformMode } from './render-policy.js';
 import type { ThreeTextMaterial } from './material.js';
 import { compiledThreeRasterPlanPrograms, type CompiledThreeRasterPlanProgram } from './plan-program-registry.js';
 
@@ -77,7 +83,7 @@ export class ThreeTextEngineCoordinator {
     this.#planPrograms = new Map(planPrograms.map((program) => [program.technique.id, program]));
     this.host.registerPolicy(
       POLICY_HANDLE,
-      firstPartyThreeRenderPolicyBytes(
+      threeRenderPolicyBytes(
         this.host.wireIdentities,
         options.transformMode,
         planPrograms.map((program) => program.policy),
@@ -190,11 +196,7 @@ export class ThreeTextEngineCoordinator {
     const program = this.#planPrograms.get(font.technique.id);
     if (program === undefined) {
       this.#registerResources(font);
-      this.host.registerFontBinding(
-        handle,
-        font.font.handle,
-        firstPartyFontBindingBytes(font, this.host.wireIdentities),
-      );
+      this.host.registerFontBinding(handle, font.font.handle, loadedFontBindingBytes(font, this.host.wireIdentities));
     } else {
       const compiled = program.compileFont(font, this.host.wireIdentities);
       for (const [key, resource] of compiled.resources) {
