@@ -358,11 +358,11 @@ const coreSubpath = await measureJavaScript(
     // The renderer-neutral subpath must not pull any renderer integration.
     expectedDynamic: [],
     excludedInitial: [
-      '/packages/text/dist/react.js',
-      '/packages/text/dist/three.js',
-      '/packages/text/dist/tsl.js',
-      '/packages/text/dist/three/',
-      '/packages/text/dist/tsl/',
+      '/packages/glyph/dist/react.js',
+      '/packages/glyph/dist/three.js',
+      '/packages/glyph/dist/tsl.js',
+      '/packages/glyph/dist/three/',
+      '/packages/glyph/dist/tsl/',
     ],
   },
 );
@@ -376,7 +376,7 @@ const tslSubpath = await measureJavaScript(
   {
     // The shader library must not pull the Three scene integration or React.
     expectedDynamic: [],
-    excludedInitial: ['/packages/text/dist/react.js', '/packages/text/dist/three.js', '/packages/text/dist/three/'],
+    excludedInitial: ['/packages/glyph/dist/react.js', '/packages/glyph/dist/three.js', '/packages/glyph/dist/three/'],
   },
 );
 const threeRuntime = await measureJavaScript(
