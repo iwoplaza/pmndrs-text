@@ -4,7 +4,8 @@ import test from 'node:test';
 
 import { createTextRuntime, FontRegistry } from '@pmndrs/glyph';
 import { bitmap } from '@pmndrs/glyph/three/bitmap';
-import { bitmapShader, defineTextMaterial, msdfShader, slugShader, Text } from '@pmndrs/glyph/three';
+import { defineTextMaterial, Text } from '@pmndrs/glyph/three';
+import { bitmapShader, decorationShader, msdfShader, slugShader } from '@pmndrs/glyph/tsl';
 import * as TSL from 'three/tsl';
 import * as THREE from 'three/webgpu';
 
@@ -14,6 +15,7 @@ test('the canonical technique shaders are exported as callable node builders', (
   assert.equal(typeof bitmapShader, 'function');
   assert.equal(typeof msdfShader, 'function');
   assert.equal(typeof slugShader, 'function');
+  assert.equal(typeof decorationShader, 'function');
 });
 
 test('a custom Three material composes over the Bitmap shader in the Rust command-buffer draw path', async () => {
