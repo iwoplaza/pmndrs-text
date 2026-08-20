@@ -45,6 +45,7 @@ export { TextEngineRenderPlanView, type RenderPlanTable } from './core/plan-view
 export { readTextEngineLayouts, readTextEngineMeasurements } from './core/layout-query-view.js';
 export {
   compileFontBinding,
+  schemaFieldTable,
   emptyFontBindingTable,
   loadedFontBindingBytes,
   fontBindingResources,
@@ -74,4 +75,33 @@ export {
   type PolicyTransformMode,
   type ProgramContext,
 } from './core/render-policy.js';
+export {
+  definePolicyBuffers,
+  defineTechniqueSchema,
+  schemaPolicyBuffers,
+  type PolicyBufferDeclaration,
+  type PolicyBufferDeclarations,
+  type PolicyScalarKind,
+  type TechniqueBindingDeclaration,
+  type TechniqueResourceDeclaration,
+  type TechniqueSchema,
+  type TechniqueSchemaDeclaration,
+} from './core/technique-schema.js';
+export {
+  addF32,
+  constantF32,
+  constantU32,
+  multiplyF32,
+  policyProgram,
+  techniqueProgram,
+  subtractF32,
+  u32ToF32,
+  type CompiledPolicyProgramBody,
+  type PolicyColorChannels,
+  type PolicyF32Value,
+  type PolicyProgramBuilder,
+  type PolicyProgramOptions,
+  type PolicyProgramSemantics,
+  type PolicyU32Value,
+} from './core/policy-program.js';
 export { textShaperAbi } from './generated/text-shaper-abi.js';

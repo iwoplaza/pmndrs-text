@@ -13,6 +13,46 @@
 
 ## 2026-08-11
 
+- **Technique-contract review closure (D-250/D-251)** — Closed all four adversarial-review findings on the
+  schema-authority stack. Policy-DSL values now carry session provenance: a value loaded from one program's input
+  table throws when stored through another builder instead of silently reading a shifted input. Technique schemas
+  deep-freeze at definition, making the documented immutability true at runtime. The remaining smear sites now
+  derive from schemas: `schemaPolicyBuffers` replaces hand-rolled width lists in the Three programs,
+  `schemaFieldTable` orders binding-table readers by the schema's declared names so a misspelled or missing reader
+  is a compile error, the executor resolves draw buffers by schema name instead of literal id ranges, and the
+  plan-program registry references the transform system buffer instead of restating `15`. Glyph-origin
+  augmentation became schema-declared opt-in metadata (`glyphOrigin`) rather than assuming Bitmap's buffer layout
+  for every technique. The structural gate now also rejects literal-width buffer builders, literal id ranges, and
+  restated system ids. Every policy and binding byte golden stayed pinned — the derivations reproduce the
+  hand-rolled bytes exactly, decided by the existing decoded-equivalence proof. The adversarial re-review then
+  confirmed provenance and glyph-origin closed and surfaced follow-up defects, fixed in a second pass: session
+  provenance is now stamped at node construction and combined in O(1) — a shared expression DAG no longer costs an
+  exponential graph walk, and mixing sessions fails at the combinator itself; schema definition validates the
+  caller's input first and returns an owned, deeply frozen copy, so rejection leaves caller data untouched and a
+  hostile lanes accessor can never change a validated width; the size-budget notes now record the measured deltas
+  (+3.5 KB raw / +1.7 KB minified per surface of real validation and derivation code) instead of claiming
+  comment-dominated growth; and the package reference gained `/core` and `/tsl` rows with `/three/{bitmap,msdf,slug}`
+  described as the compatibility aliases they are. The re-review's remaining structural finding — TSL shader lane
+  meaning and the external example still restate schema knowledge — is migration layers 3–4 of the technique
+  contract plan, scheduled with the audit.
+
+- **Technique schema authority (D-251)** — Buffer ids, lanes, and binding fields are declared once per technique
+  by colocated schemas; programs store through schema handles, the executor reads declared ids, and a repository
+  gate forbids literal buffer identity anywhere else. Policy bytes proven byte-identical across the change. The
+  full contract plan — shader-interface derivation, data origins including the reserved `pretext` fallback, and
+  the tsdown build — is recorded in docs/planning/raster-technique-contract.md.
+
+- **Policy interpreter tail measurement** — Driving the kernel-lab explicit artifact at controlled record counts:
+  a 4-record vector iteration costs ~50–75 ns and each scalar tail record ~50 ns, so a span of 7 records
+  (1 vector + 3 scalar, 282 ns) costs more than the 8-record two-vector shape (181 ns) that a tail-overlap
+  rewrite would produce. Overlap would therefore save roughly 100 ns per tailed draw-span — real but bounded:
+  a frame needs thousands of tailed spans before it reaches microseconds. Not wired per the D-245 admission
+  bar; revisit if a workload profile ever shows many small draw-spans dominating the packing pass.
+
+- **Policy authoring DSL (D-250)** — Policy programs are written against named semantic and binding handles with
+  automatic register allocation; the four Three programs ported with a decoded-bytes equivalence proof against the
+  hand-numbered fixtures and re-pinned goldens. Wire format and interpreter unchanged.
+
 - **Core API surface (D-249)** — The renderer-neutral engine publishes as `@pmndrs/glyph/core` and the technique
   shader library as `@pmndrs/glyph/tsl`. Three's first-party policy and the Slug shader tree leave core internals,
   and a scoped import lint holds the first-party integrations to the same public surface a third party gets.

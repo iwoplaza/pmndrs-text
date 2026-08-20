@@ -5,7 +5,7 @@ description: Implements portable font loading, retained Rust shaping and layout,
 resource: ../../packages/glyph
 workspace_package: '@pmndrs/glyph'
 documentation_type: reference
-source_digest: 'sha256:a05cfbb2b9c43ac971c71259b6d93e962d4550dd0c44a424b21c30f1b0980e59'
+source_digest: 'sha256:165fd636d138709fe954feaea7b79188e6fb6271d45a9efdceb55f420e430b37'
 tags: [package, public-api, rust, wasm, threejs, typography]
 sources:
   - id: manifest
@@ -100,26 +100,20 @@ TypeScript does not independently shape, lay out, or pack paragraphs.
 
 ## Public package surfaces
 
-| Subpath                      | Purpose                                                                                                                          |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Subpath                     | Purpose                                                                                                                          |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `@pmndrs/glyph`              | Font/raster contracts, loading, fallback stacks, formatting helpers, paragraph inputs, layout-query values, and portable bakers. |
+| `@pmndrs/glyph/core`         | Renderer-neutral engine host, frame wire, plan/layout-query views, technique schemas, policy-program DSL, and binding compiler.  |
+| `@pmndrs/glyph/tsl`          | Canonical TSL shader realizations of the first-party technique interfaces; no scene integration.                                 |
 | `@pmndrs/glyph/three`        | Three `FontLoader`, `Text`, `TextGroup`, material factories, and policy registration.                                            |
-| `@pmndrs/glyph/three/bitmap` | Bitmap technique, policy program, and canonical TSL shader.                                                                      |
-| `@pmndrs/glyph/three/msdf`   | MSDF technique, policy program, and canonical TSL shader.                                                                        |
-| `@pmndrs/glyph/three/slug`   | Slug technique, policy program, and canonical TSL shader.                                                                        |
+| `@pmndrs/glyph/three/bitmap` | Compatibility alias re-exporting the renderer-neutral Bitmap raster module.                                                      |
+| `@pmndrs/glyph/three/msdf`   | Compatibility alias re-exporting the renderer-neutral MSDF raster module.                                                        |
+| `@pmndrs/glyph/three/slug`   | Compatibility alias re-exporting the renderer-neutral Slug raster module.                                                        |
 | `@pmndrs/glyph/react`        | React `<Text>`, `<TextGroup>`, and `useFont`, reconciled through React Three Fiber.                                              |
-| `@pmndrs/glyph/bake`         | Node programmatic font baking, glyph selection, and font inspection used by the `glyph` CLI.                                     |
+| `@pmndrs/glyph/bake`         | Node programmatic font baking, glyph selection, and font inspection used by the `text` CLI.                                      |
 | `@pmndrs/glyph/runtime-bake` | Explicit browser Worker host for optional runtime baking.                                                                        |
 | `@pmndrs/glyph/raster/*`     | Renderer-neutral Bitmap, MSDF, and Slug decoding and raster-technique contracts.                                                 |
 | `@pmndrs/glyph/bakers/*`     | Optional portable raster bakers and validators.                                                                                  |
-
-## Canary releases
-
-Pushes to `main` run the package's complete `check` lane and publish `@pmndrs/glyph` to npm under the `canary` dist-tag.
-The workflow derives an immutable prerelease version from the manifest's base version, the first eight commit SHA
-characters, and the UTC release date. npm trusted publishing authenticates the GitHub-hosted job with OIDC; the package
-manifest pins the public npm registry and repository identity, and npm generates provenance for the public package.
-The workflow carries no long-lived npm token.
 
 The font-baker Rust source, direct-memory wrapper, schemas, tests, build pipeline, optimized Wasm, and generated ABI are
 owned by this package. There is no separately published font-baker package. The root entry has no static edge to the
