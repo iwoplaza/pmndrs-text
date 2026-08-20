@@ -322,4 +322,25 @@ pnpm install
 pnpm dev
 ```
 
+### Enable the repository hooks
+
+Every `docs/packages/<name>.md` pins a `source_digest` over its package tree, and CI rejects commits whose
+digests trail their sources. Hook definitions ship versioned in the repository's `.gitconfig` (Git 2.54
+config-based hooks) with their scripts in `.githooks/`; the committed pre-commit hook re-pins those digests
+automatically at commit time and runs the knowledge-base validation, so the pin can never go stale by
+accident. Opt in once per clone — the explicit include is the consent boundary for repository-supplied
+configuration, and every future hook change then ships with `git pull`, nothing to re-run:
+
+```sh
+git config set include.path ../.gitconfig
+```
+
+Verify with `git hook list --show-scope pre-commit`. On older Git, `git config core.hooksPath .githooks`
+enables the same script through the fallback dispatcher. The hook never blocks a commit: it computes
+digests from the staged tree (unstaged edits never leak into a pin), rewrites and stages the affected
+`docs/packages/*.md` pins automatically, and downgrades anything it cannot do — including a missing
+Ruby — to a warning, leaving CI's knowledge-base gate as the enforcement. It runs on any Ruby 3.1 or
+newer, however installed; no managed toolchain is required. Run it directly at any time as
+`.githooks/okf-digests`.
+
 `@pmndrs/glyph` is ESM-only and MIT licensed.

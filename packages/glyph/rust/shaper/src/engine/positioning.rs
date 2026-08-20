@@ -11,7 +11,7 @@ use super::{
     frame::{ALIGN_CENTER, ALIGN_END, ALIGN_JUSTIFY, ALIGN_START},
     identity_index::{IdentityIndex, IdentityIndexError},
     policy_gather::LayoutGlyph,
-    shaping_state::{BoundaryShape, BoundaryShapeArena, ShapeArena, ShapingRun},
+    shaping_state::{BoundaryShape, BoundaryShapeArena, ShapingRun},
     style_state::{ResolvedStyle, StyleSegment},
 };
 
@@ -136,7 +136,6 @@ impl PositionedGlyphArena {
         text: &[u16],
         clusters: &ClusterArena,
         runs: &[ShapingRun],
-        shape: &ShapeArena,
         boundary_shape: &BoundaryShapeArena,
         styles: &[StyleSegment],
         bidi: &BidiAnalysis,
@@ -147,7 +146,7 @@ impl PositionedGlyphArena {
         extents_for: impl Fn(u32, u32) -> Option<FontGlyphExtents> + Copy,
     ) -> Result<(), EngineError> {
         self.clear();
-        self.reserve(shape.glyph_ids.len())?;
+        self.reserve(clusters.glyph_ids.len())?;
         reserve(&mut self.line_glyph_starts, flow.lines.len())?;
         reserve(&mut self.line_glyph_counts, flow.lines.len())?;
         reserve(&mut self.semantic_line_glyph_starts, flow.lines.len())?;
@@ -205,7 +204,6 @@ impl PositionedGlyphArena {
                     text,
                     clusters,
                     runs,
-                    shape,
                     boundary_shape,
                     styles,
                     bidi,
@@ -418,7 +416,6 @@ impl PositionedGlyphArena {
         text: &[u16],
         clusters: &ClusterArena,
         runs: &[ShapingRun],
-        shape: &ShapeArena,
         boundary_shape: &BoundaryShapeArena,
         styles: &[StyleSegment],
         bidi: &BidiAnalysis,
@@ -470,10 +467,26 @@ impl PositionedGlyphArena {
             );
         }
 
-        let available =
-            (fragment.slot_end - fragment.slot_start - indent - fragment.line.advance).max(0.0);
         let paragraph_level = paragraph_level_at(bidi, fragment.line.text_start);
-        let justify = justification_adjustment(
+        // Whether the hung suffix lands visually FIRST is a property of that cluster's own
+        // resolved level, not of the paragraph: a span-level bidi override can give the
+        // terminating space the opposite parity to the paragraph it sits in. Alignment and
+        // indent deliberately keep asking the paragraph, because CSS resolves `start`/`end`
+        // against the inline base direction; only visual order asks the cluster.
+        let hung_leads = if fragment.line.hung_advance == 0.0 {
+            false
+        } else {
+            let terminating = retained_cluster_end.saturating_sub(1).max(cluster_start);
+            cluster_level(
+                terminating,
+                fragment.line.text_start,
+                clusters,
+                runs,
+                &self.line_levels,
+            )? & 1
+                != 0
+        };
+        let (justify, pen_origin) = fragment_pen(
             line,
             fragment,
             final_line,
@@ -482,23 +495,34 @@ impl PositionedGlyphArena {
             cluster_end,
             indent,
             controls,
+            paragraph_level,
+            hung_leads,
         );
-        let offset = if justify.per_space == 0.0 && justify.per_gap == 0.0 {
-            alignment_offset(line.align, paragraph_level, available)
-        } else {
-            0.0
-        };
-        // The indent reserves inline space on the paragraph-direction start
-        // side: the LTR pen shifts right; the RTL pen keeps its origin and the
-        // reduced `available` moves the right edge inward instead.
-        let indent_shift = if paragraph_level & 1 == 0 {
-            indent
-        } else {
-            0.0
-        };
-        let mut cursor = fragment.slot_start + indent_shift + offset;
+        let mut cursor = pen_origin;
         let baseline = line.block_start + line.baseline;
         let mut decorated_run: Option<DecoratedRun> = None;
+        let mut space_ordinal = 0_i64;
+        let mut gap_ordinal = 0_i64;
+        // The adjacency-order glyph stream is one equal-length column family;
+        // a single admission per fragment lets every cluster's range walk the
+        // columns sequentially with direct indexing — no shape-order gather.
+        let stream_len = clusters.glyph_ids.len();
+        if clusters.glyph_clusters.len() != stream_len
+            || clusters.glyph_x_advances.len() != stream_len
+            || clusters.glyph_x_offsets.len() != stream_len
+            || clusters.glyph_y_offsets.len() != stream_len
+            || clusters.glyph_shape_flags.len() != stream_len
+            || clusters.glyph_stable_ids.len() != stream_len
+        {
+            return Err(EngineError::InvalidRequest);
+        }
+        let stream_ids = &clusters.glyph_ids[..stream_len];
+        let stream_clusters = &clusters.glyph_clusters[..stream_len];
+        let stream_x_advances = &clusters.glyph_x_advances[..stream_len];
+        let stream_x_offsets = &clusters.glyph_x_offsets[..stream_len];
+        let stream_y_offsets = &clusters.glyph_y_offsets[..stream_len];
+        let stream_shape_flags = &clusters.glyph_shape_flags[..stream_len];
+        let stream_stable_ids = &clusters.glyph_stable_ids[..stream_len];
         let visual_count = if visually_ltr {
             retained_cluster_end.saturating_sub(cluster_start)
         } else {
@@ -522,71 +546,40 @@ impl PositionedGlyphArena {
                 .style;
             let font_handle = clusters.font_handles[cluster];
             let binding_handle = clusters.binding_handles[cluster];
-            let metrics = metrics_for(font_handle).ok_or(EngineError::InvalidRequest)?;
-            if font_handle == 0 || metrics.units_per_em == 0 {
+            // The owning font's units-per-em rides the cluster arena (it can only
+            // change on re-shape), so the hot loop derives its scale from the
+            // CURRENT style without a per-cluster registry resolution.
+            let units_per_em = clusters.units_per_em[cluster];
+            if font_handle == 0 || units_per_em == 0.0 {
                 return Err(EngineError::InvalidRequest);
             }
-            let scale = f64::from(style.font_size) / f64::from(metrics.units_per_em);
+            let scale = f64::from(style.font_size) / units_per_em;
             let cluster_origin = cursor;
             let glyph_start = usize::try_from(clusters.glyph_starts[cluster])
                 .map_err(|_| EngineError::InvalidRequest)?;
             let glyph_count = usize::try_from(clusters.glyph_counts[cluster])
                 .map_err(|_| EngineError::InvalidRequest)?;
-            for ordinal in 0..glyph_count {
-                let adjacency = glyph_start + ordinal;
-                let shaped = usize::try_from(
-                    *clusters
-                        .glyph_indices
-                        .get(adjacency)
-                        .ok_or(EngineError::InvalidRequest)?,
-                )
-                .map_err(|_| EngineError::InvalidRequest)?;
-                let glyph_id = u32::from(
-                    *shape
-                        .glyph_ids
-                        .get(shaped)
-                        .ok_or(EngineError::InvalidRequest)?,
-                );
-                let x_advance = f64::from(
-                    shape
-                        .x_advances
-                        .get(shaped)
-                        .copied()
-                        .ok_or(EngineError::InvalidRequest)?,
-                )
-                .abs()
-                    * scale;
-                let x_offset = f64::from(
-                    shape
-                        .x_offsets
-                        .get(shaped)
-                        .copied()
-                        .ok_or(EngineError::InvalidRequest)?,
-                ) * scale;
-                let y_offset = f64::from(
-                    shape
-                        .y_offsets
-                        .get(shaped)
-                        .copied()
-                        .ok_or(EngineError::InvalidRequest)?,
-                ) * scale;
-                let stable_id = *clusters
-                    .glyph_stable_ids
-                    .get(adjacency)
-                    .ok_or(EngineError::InvalidRequest)?;
-                let flags = *shape
-                    .glyph_flags
-                    .get(shaped)
-                    .ok_or(EngineError::InvalidRequest)?;
+            let adjacency_end = glyph_start
+                .checked_add(glyph_count)
+                .ok_or(EngineError::InvalidRequest)?;
+            // The cluster's adjacency range is admitted once; the walk below
+            // reads the stream columns sequentially without further checks.
+            if adjacency_end > stream_len {
+                return Err(EngineError::InvalidRequest);
+            }
+            for adjacency in glyph_start..adjacency_end {
+                let stable_id = stream_stable_ids[adjacency];
+                let glyph_id = u32::from(stream_ids[adjacency]);
+                let x_advance = f64::from(stream_x_advances[adjacency]).abs() * scale;
+                let x_offset = f64::from(stream_x_offsets[adjacency]) * scale;
+                let y_offset = f64::from(stream_y_offsets[adjacency]) * scale;
+                let flags = stream_shape_flags[adjacency];
                 let origin_inline = cursor + x_offset;
                 let origin_block = baseline - y_offset - f64::from(style.baseline_shift);
                 self.semantic_glyphs.push(SemanticGlyph {
                     stable_id,
                     font_handle,
-                    cluster: *shape
-                        .clusters
-                        .get(shaped)
-                        .ok_or(EngineError::InvalidRequest)?,
+                    cluster: stream_clusters[adjacency],
                     glyph_id: u16::try_from(glyph_id).map_err(|_| EngineError::ResultTooLarge)?,
                     flags,
                     font_size: style.font_size,
@@ -628,11 +621,33 @@ impl PositionedGlyphArena {
                 cursor += x_advance;
             }
             cursor = cluster_origin + clusters.advances[cluster];
-            if justify.per_space != 0.0 && clusters.flags[cluster] & CLUSTER_SPACE != 0 {
-                cursor += justify.per_space;
+            // Adjustments are span-bounded and count-limited in visual encounter
+            // order: exactly the `spaces` counted word spaces and `gaps` gaps
+            // inside the trimmed span receive units — trailing logical spaces
+            // (outside `gap_end`) and any visual cluster beyond the counted set
+            // never absorb uncounted adjustments, in either direction, so the
+            // applied cursor sum equals the measured distribution total. Each
+            // unit count converts through the dyadic 1/64 exactly, and the
+            // leading encounters carry the euclidean remainder one unit at a
+            // time.
+            if clusters.flags[cluster] & CLUSTER_SPACE != 0
+                && cluster < justify.gap_end
+                && space_ordinal < i64::from(justify.spaces)
+                && (justify.per_space_units != 0 || justify.extra_space_units != 0)
+            {
+                let units =
+                    justify.per_space_units + i64::from(space_ordinal < justify.extra_space_units);
+                cursor += super::layout_units::scaled_from_layout_units(units);
+                space_ordinal += 1;
             }
-            if justify.per_gap != 0.0 && cluster + 1 < justify.gap_end {
-                cursor += justify.per_gap;
+            if cluster < justify.gap_end
+                && gap_ordinal < i64::from(justify.gaps)
+                && (justify.per_gap_units != 0 || justify.extra_gap_units != 0)
+            {
+                let units =
+                    justify.per_gap_units + i64::from(gap_ordinal < justify.extra_gap_units);
+                cursor += super::layout_units::scaled_from_layout_units(units);
+                gap_ordinal += 1;
             }
             if style.decoration_flags == 0 {
                 if decorated_run.is_some() {
@@ -680,8 +695,7 @@ impl PositionedGlyphArena {
         }
         Ok(indent
             + fragment.line.advance
-            + justify.per_space * f64::from(justify.spaces)
-            + justify.per_gap * f64::from(justify.gaps))
+            + super::layout_units::scaled_from_layout_units(justify.total_units()))
     }
 
     fn flush_decorated_run(
@@ -1311,6 +1325,161 @@ fn reorder_l2(indices: &mut [u32], levels: &mut [u8], start: usize) {
     }
 }
 
+// Stage aggregation: each argument is one explicit input threaded through the
+// pipeline rather than hidden mutable state, and D-244 measured outlining these
+// bodies as size-neutral. Arity is the shape, not a smell.
+#[allow(clippy::too_many_arguments)]
+/// The per-fragment pen derivation: the justify distribution and the pen's
+/// starting origin (slot start plus indent shift plus alignment offset). This
+/// is the ONE definition of that arithmetic — `position_fragment` walks glyphs
+/// from it, and the resize equivalence proof compares it, so the proof can
+/// never drift from what positioning actually computes. The indent reserves
+/// inline space on the paragraph-direction start side: the LTR pen shifts
+/// right; the RTL pen keeps its origin and the reduced available width moves
+/// the right edge inward instead.
+fn fragment_pen(
+    line: FlowLine,
+    fragment: FlowFragment,
+    final_line: bool,
+    clusters: &ClusterArena,
+    cluster_start: usize,
+    cluster_end: usize,
+    indent: f64,
+    controls: JustifyControls,
+    paragraph_level: u8,
+    hung_leads: bool,
+) -> (JustifyDistribution, f64) {
+    let available =
+        (fragment.slot_end - fragment.slot_start - indent - fragment.line.advance).max(0.0);
+    let justify = justification_adjustment(
+        line,
+        fragment,
+        final_line,
+        clusters,
+        cluster_start,
+        cluster_end,
+        indent,
+        controls,
+    );
+    let offset = if justify.is_zero() {
+        alignment_offset(line.align, paragraph_level, available)
+    } else {
+        0.0
+    };
+    let indent_shift = if paragraph_level & 1 == 0 {
+        indent
+    } else {
+        0.0
+    };
+    // A line keeps its terminating spaces but does not charge them to `advance`. Visual
+    // order decides whether that is free: LTR lays them last, past the end of the line,
+    // where they have no ink and no consequence. RTL lays them FIRST -- they are visually
+    // leftmost -- so they occupy the pen and push every visible glyph right by their
+    // width. Discounting them here puts the ink back exactly where a line with no
+    // terminating space would sit, which is what makes the right edge hold still while
+    // text is typed.
+    let hung_shift = if hung_leads {
+        fragment.line.hung_advance
+    } else {
+        0.0
+    };
+    (
+        justify,
+        fragment.slot_start + indent_shift + offset - hung_shift,
+    )
+}
+
+/// Whether a freshly composed flow would position EXACTLY as the committed
+/// flow — the geometry-only resize short-circuit (the resize analogue of the
+/// D-253 measure adoption). Positioning is a deterministic function of each
+/// fragment's cluster range, pen origin, and justify distribution once text,
+/// styles, clusters, and bidi are unchanged (the caller's precondition), so
+/// bit-equality of those computed inputs proves output equality without
+/// running the positioning, gather, or publication tail. Boundary-bearing
+/// (ellipsis) flows fall through to the full path.
+pub(crate) fn flow_positioning_equivalent(
+    pending: &FlowLayoutArena,
+    committed: &FlowLayoutArena,
+    clusters: &ClusterArena,
+    bidi: &BidiAnalysis,
+    pending_typography: impl Fn(u32) -> ThreadTypography + Copy,
+    committed_typography: impl Fn(u32) -> ThreadTypography + Copy,
+) -> Result<bool, EngineError> {
+    if pending.lines.len() != committed.lines.len()
+        || !pending.ellipsis_threads().is_empty()
+        || !committed.ellipsis_threads().is_empty()
+    {
+        return Ok(false);
+    }
+    for (line_index, (line, previous)) in
+        pending.lines.iter().zip(committed.lines.iter()).enumerate()
+    {
+        if line.flow_thread_id != previous.flow_thread_id
+            || line.region_id != previous.region_id
+            || line.transform_index != previous.transform_index
+            || line.clip_id != previous.clip_id
+            || line.fragment_count != previous.fragment_count
+            || line.align != previous.align
+            || line.block_start.to_bits() != previous.block_start.to_bits()
+            || line.baseline.to_bits() != previous.baseline.to_bits()
+            || line.height.to_bits() != previous.height.to_bits()
+        {
+            return Ok(false);
+        }
+        let final_line = pending
+            .lines
+            .get(line_index + 1)
+            .is_none_or(|next| next.flow_thread_id != line.flow_thread_id);
+        let fragments = line_fragments(pending, *line)?;
+        let previous_fragments = line_fragments(committed, *previous)?;
+        if fragments.len() != previous_fragments.len() {
+            return Ok(false);
+        }
+        for (fragment, previous_fragment) in fragments.iter().zip(previous_fragments.iter()) {
+            if fragment.line != previous_fragment.line
+                || fragment.boundary_index != super::flow_composition::NO_BOUNDARY
+                || previous_fragment.boundary_index != super::flow_composition::NO_BOUNDARY
+            {
+                return Ok(false);
+            }
+            let inputs = |fragment: &FlowFragment, typography: ThreadTypography| {
+                let indent = if fragment.line.cluster_start == 0 {
+                    typography.first_line_indent
+                } else {
+                    0.0
+                };
+                let (distribution, origin) = fragment_pen(
+                    *line,
+                    *fragment,
+                    final_line,
+                    clusters,
+                    usize::try_from(fragment.line.cluster_start).unwrap_or(0),
+                    usize::try_from(fragment.line.cluster_end).unwrap_or(0),
+                    indent,
+                    typography.justify,
+                    paragraph_level_at(bidi, fragment.line.text_start),
+                    // This compares two pens rather than placing glyphs, and the caller's
+                    // precondition is that text, styles, clusters, and bidi are unchanged --
+                    // so the real predicate resolves identically on both sides. Any predicate
+                    // applied to both therefore yields the same equality answer, and shaping
+                    // runs are not in scope here to resolve the true one.
+                    paragraph_level_at(bidi, fragment.line.text_start) & 1 != 0,
+                );
+                (distribution, origin.to_bits(), indent.to_bits())
+            };
+            let next = inputs(fragment, pending_typography(line.flow_thread_id));
+            let prior = inputs(
+                previous_fragment,
+                committed_typography(previous.flow_thread_id),
+            );
+            if next != prior {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
 fn paragraph_level_at(bidi: &BidiAnalysis, offset: u32) -> u8 {
     bidi.paragraph_starts
         .iter()
@@ -1363,38 +1532,79 @@ pub(crate) fn constraint_typography(
     }
 }
 
-/// One line's resolved justification: uniform word-space delta, bounded
-/// letter-gap delta, and the trimmed cluster bound the gaps apply within.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// One line's resolved justification in F26.6 layout units (integer-units plan,
+/// slice 4): a uniform per-space delta with a euclidean remainder spread one unit
+/// at a time over the leading spaces, the bounded letter-gap equivalent, and the
+/// trimmed cluster bound the gaps apply within. The euclidean split makes the
+/// distributed total exact — `per * count + extra` reproduces the admitted growth
+/// or shrink to the unit — so measurement and positioning agree bit-for-bit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct JustifyDistribution {
     pub spaces: u32,
-    pub per_space: f64,
+    pub per_space_units: i64,
+    pub extra_space_units: i64,
     pub gaps: u32,
-    pub per_gap: f64,
+    pub per_gap_units: i64,
+    pub extra_gap_units: i64,
     pub gap_end: usize,
+}
+
+impl JustifyDistribution {
+    pub(crate) fn is_zero(&self) -> bool {
+        self.per_space_units == 0
+            && self.extra_space_units == 0
+            && self.per_gap_units == 0
+            && self.extra_gap_units == 0
+    }
+
+    /// The exact total the distribution adds to the line, in layout units.
+    pub(crate) fn total_units(&self) -> i64 {
+        self.per_space_units * i64::from(self.spaces)
+            + self.extra_space_units
+            + self.per_gap_units * i64::from(self.gaps)
+            + self.extra_gap_units
+    }
+}
+
+/// Splits an exact unit total over `count` sites: every site takes the euclidean
+/// quotient and the first `remainder` sites take one more unit, in either sign.
+fn distribute_units(total: i64, count: u32) -> (i64, i64) {
+    if count == 0 {
+        return (0, 0);
+    }
+    let divisor = i64::from(count);
+    (total.div_euclid(divisor), total.rem_euclid(divisor))
 }
 
 struct JustifiableSpan {
     spaces: u32,
-    space_advance_sum: f64,
+    space_advance_units: i64,
     trimmed_end: usize,
 }
 
 fn justifiable_span(clusters: &ClusterArena, start: usize, mut end: usize) -> JustifiableSpan {
+    // A hard break is a zero-advance sentinel that ends the line, so the spaces behind it
+    // are still the line's terminating spaces. Stopping at the sentinel would leave them
+    // justifiable here while the fit hangs them, and the two stages must agree on which
+    // spaces exist — that disagreement is the whole subject of D-257.
+    if end > start && clusters.flags[end - 1] & CLUSTER_HARD_BREAK != 0 {
+        end -= 1;
+    }
     while end > start && clusters.flags[end - 1] & CLUSTER_SPACE != 0 {
         end -= 1;
     }
     let mut spaces = 0_u32;
-    let mut space_advance_sum = 0.0_f64;
+    let mut space_advance_units = 0_i64;
     // The D-245 flag-mask kernel scans sixteen cluster flags per step on
-    // simd128 builds; the visit order matches the scalar loop exactly.
+    // simd128 builds; the visit order matches the scalar loop exactly, and the
+    // integer sum matches the fit's chunk-summarized space totals.
     super::line_kernels::for_each_flagged(&clusters.flags, start, end, CLUSTER_SPACE, |cluster| {
         spaces = spaces.saturating_add(1);
-        space_advance_sum += clusters.advances[cluster];
+        space_advance_units += i64::from(clusters.advances_f26[cluster]);
     });
     JustifiableSpan {
         spaces,
-        space_advance_sum,
+        space_advance_units,
         trimmed_end: end,
     }
 }
@@ -1419,15 +1629,23 @@ fn justification_adjustment(
     if span.spaces == 0 {
         return JustifyDistribution::default();
     }
-    let deficit = fragment.slot_end - fragment.slot_start - indent - fragment.line.advance;
-    if deficit >= 0.0 {
-        // Expansion: word spaces grow uniformly up to the declared cap, then the
-        // remainder spills into inter-cluster gaps bounded per gap; any residue
-        // stays unfilled and the line reads as under-full.
+    // ONE quantization site per fragment: the signed deficit rounds half-up into
+    // layout units, and every bound below is exact integer arithmetic from here.
+    let deficit_units = i64::from(super::layout_units::layout_units_from_scaled(
+        fragment.slot_end - fragment.slot_start - indent - fragment.line.advance,
+    ));
+    if deficit_units >= 0 {
+        // Expansion: word spaces grow up to the declared cap — the excess ratio
+        // applied by Q16 mul/shift like the fit applies its shrink budget — then
+        // the remainder spills into inter-cluster gaps bounded per gap; any
+        // residue stays unfilled and the line reads as under-full.
         let space_growth = if controls.maximum_word_space_ratio > 0.0 {
-            deficit.min(f64::from(controls.maximum_word_space_ratio - 1.0) * span.space_advance_sum)
+            deficit_units.min(super::layout_units::apply_ratio(
+                span.space_advance_units,
+                f64::from(controls.maximum_word_space_ratio) - 1.0,
+            ))
         } else {
-            deficit
+            deficit_units
         };
         let gaps = u32::try_from(
             span.trimmed_end
@@ -1435,29 +1653,47 @@ fn justification_adjustment(
                 .saturating_sub(1),
         )
         .unwrap_or(u32::MAX);
-        let remainder = deficit - space_growth;
-        let per_gap = if controls.letter_space_expansion > 0.0 && gaps > 0 && remainder > 0.0 {
-            (remainder / f64::from(gaps)).min(f64::from(controls.letter_space_expansion))
+        let remainder = deficit_units - space_growth;
+        let gap_growth = if controls.letter_space_expansion > 0.0 && gaps > 0 && remainder > 0 {
+            remainder.min(
+                i64::from(super::layout_units::layout_units_from_scaled(f64::from(
+                    controls.letter_space_expansion,
+                )))
+                .saturating_mul(i64::from(gaps)),
+            )
         } else {
-            0.0
+            0
         };
+        let (per_space_units, extra_space_units) = distribute_units(space_growth, span.spaces);
+        let (per_gap_units, extra_gap_units) = distribute_units(gap_growth, gaps);
         JustifyDistribution {
             spaces: span.spaces,
-            per_space: justification_space_advance(space_growth, span.spaces),
+            per_space_units,
+            extra_space_units,
             gaps,
-            per_gap,
+            per_gap_units,
+            extra_gap_units,
             gap_end: span.trimmed_end,
         }
     } else if controls.minimum_word_space_ratio > 0.0 {
-        // Compression: an overfull line shrinks its word spaces uniformly, never
-        // below the declared minimum of their natural advance sum.
-        let shrink = deficit
-            .max(-f64::from(1.0 - controls.minimum_word_space_ratio) * span.space_advance_sum);
+        // Compression: an overfull line shrinks its word spaces, never below the
+        // declared minimum of their natural advance sum. The capacity applies
+        // the SAME exact-ratio expression the integer fit used to admit the
+        // line, so positioning can always shrink what the fit promised to
+        // within the rounding contract's half unit.
+        let capacity = super::layout_units::apply_ratio(
+            span.space_advance_units,
+            1.0 - f64::from(controls.minimum_word_space_ratio),
+        );
+        let shrink = (-deficit_units).min(capacity);
+        let (per_space_units, extra_space_units) = distribute_units(-shrink, span.spaces);
         JustifyDistribution {
             spaces: span.spaces,
-            per_space: justification_space_advance(shrink, span.spaces),
+            per_space_units,
+            extra_space_units,
             gaps: 0,
-            per_gap: 0.0,
+            per_gap_units: 0,
+            extra_gap_units: 0,
             gap_end: span.trimmed_end,
         }
     } else {
@@ -1489,18 +1725,11 @@ pub(crate) fn positioned_fragment_advance(
         indent,
         controls,
     );
+    // The distributed total is exact in layout units and dyadic in f64, so this
+    // advance agrees bit-for-bit with the adjustments positioning applies.
     Ok(indent
         + fragment.line.advance
-        + distribution.per_space * f64::from(distribution.spaces)
-        + distribution.per_gap * f64::from(distribution.gaps))
-}
-
-fn justification_space_advance(available: f64, space_count: u32) -> f64 {
-    if space_count == 0 {
-        0.0
-    } else {
-        available / f64::from(space_count)
-    }
+        + super::layout_units::scaled_from_layout_units(distribution.total_units()))
 }
 
 fn finite_f32(value: f64) -> Result<f32, EngineError> {
@@ -1538,7 +1767,98 @@ fn reserve<T>(values: &mut Vec<T>, capacity: usize) -> Result<(), EngineError> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::shaping_state::ShapeArena;
     use super::*;
+
+    /// A line that ends in a space keeps that space but does not charge it to `advance`.
+    /// In LTR it is laid last, past the end, and costs nothing. In RTL it is laid FIRST,
+    /// so without a discount it pushes every visible glyph right by its width -- which is
+    /// the whole line visibly jumping right as each new character lands.
+    #[test]
+    fn a_hung_terminating_space_does_not_move_rtl_ink() {
+        fn pen(paragraph_level: u8, hung_advance: f64) -> f64 {
+            pen_with(paragraph_level, hung_advance, paragraph_level & 1 != 0)
+        }
+
+        fn pen_with(paragraph_level: u8, hung_advance: f64, hung_leads: bool) -> f64 {
+            let line = FlowLine {
+                flow_thread_id: 1,
+                region_id: 1,
+                transform_index: 0,
+                clip_id: 0,
+                fragment_start: 0,
+                fragment_count: 1,
+                align: ALIGN_START,
+                block_start: 0.0,
+                baseline: 8.0,
+                height: 10.0,
+            };
+            let fragment = FlowFragment {
+                line: ComposedLine {
+                    cluster_start: 0,
+                    cluster_end: 0,
+                    text_start: 0,
+                    text_end: 0,
+                    advance: 10.0,
+                    hung_advance,
+                    hard_break: false,
+                },
+                slot_start: 0.0,
+                slot_end: 20.0,
+                boundary_index: 0,
+            };
+            let clusters = ClusterArena::default();
+            let (justify, origin) = fragment_pen(
+                line,
+                fragment,
+                true,
+                &clusters,
+                0,
+                0,
+                0.0,
+                JustifyControls::default(),
+                paragraph_level,
+                hung_leads,
+            );
+            assert!(justify.is_zero(), "start alignment must not justify");
+            origin
+        }
+
+        // RTL start-alignment pins the ink's RIGHT edge to the slot end. The hung space is
+        // laid before the ink, so the ink begins at `pen + hung` and must still end at 20.
+        for hung in [0.0, 3.0] {
+            let origin = pen(1, hung);
+            assert_eq!(
+                origin + hung + 10.0,
+                20.0,
+                "RTL ink right edge moved with a hung space of {hung}",
+            );
+        }
+
+        // LTR start-alignment never consults the advance, so it was never affected and
+        // must stay exactly where it was.
+        for hung in [0.0, 3.0] {
+            assert_eq!(
+                pen(0, hung),
+                0.0,
+                "LTR pen moved with a hung space of {hung}"
+            );
+        }
+
+        // The discount follows the terminating cluster's RESOLVED level, not the
+        // paragraph's. A span-level bidi override can give that space the opposite parity
+        // to the paragraph it sits in, and the pen has to believe the cluster.
+        assert_eq!(
+            pen_with(0, 3.0, true),
+            -3.0,
+            "an RTL-override suffix in an LTR paragraph must still be discounted",
+        );
+        assert_eq!(
+            pen_with(1, 3.0, false),
+            10.0,
+            "an LTR-override suffix in an RTL paragraph must not be discounted",
+        );
+    }
     use crate::engine::{
         cluster_state::CLUSTER_SAFE_BEFORE, flow_composition::NO_BOUNDARY,
         line_composition::ComposedLine, style_state::ResolvedStyle,
@@ -1581,9 +1901,103 @@ mod tests {
     }
 
     #[test]
-    fn justification_expands_only_lines_with_expandable_spaces() {
-        assert_eq!(justification_space_advance(22.0, 2), 11.0);
-        assert_eq!(justification_space_advance(22.0, 0), 0.0);
+    fn resize_equivalence_admits_only_position_identical_flows() {
+        let (_text, clusters, line, fragment) = justify_fixture();
+        let bidi = BidiAnalysis::default();
+        let typography = |_: u32| ThreadTypography {
+            first_line_indent: 0.0,
+            justify: JustifyControls::default(),
+        };
+        let arena = |align: u8, slot_end: f64| FlowLayoutArena {
+            lines: vec![FlowLine { align, ..line }],
+            fragments: vec![FlowFragment {
+                slot_end,
+                ..fragment
+            }],
+            ellipsis_threads: alloc::vec::Vec::new(),
+            recomposed_lines: None,
+        };
+        let equivalent = |pending: &FlowLayoutArena, committed: &FlowLayoutArena| {
+            flow_positioning_equivalent(
+                pending, committed, &clusters, &bidi, typography, typography,
+            )
+            .unwrap()
+        };
+        // A start-aligned line ignores the right edge: widening is a no-op.
+        assert!(equivalent(
+            &arena(ALIGN_START, 17.0),
+            &arena(ALIGN_START, 25.0)
+        ));
+        // End alignment derives the pen origin from the slot end: not a no-op.
+        assert!(!equivalent(
+            &arena(ALIGN_END, 17.0),
+            &arena(ALIGN_END, 25.0)
+        ));
+        assert!(!equivalent(
+            &arena(ALIGN_CENTER, 17.0),
+            &arena(ALIGN_CENTER, 25.0)
+        ));
+        // A final line under the auto last-line policy never justifies, so a
+        // width change is genuinely a positioning no-op there.
+        assert!(equivalent(
+            &arena(ALIGN_JUSTIFY, 17.0),
+            &arena(ALIGN_JUSTIFY, 25.0)
+        ));
+        // With the last line justified, the distribution tracks the slot span:
+        // not a no-op when the span differs, a no-op when it matches exactly.
+        let justified = |_: u32| ThreadTypography {
+            first_line_indent: 0.0,
+            justify: JustifyControls {
+                last_line_justify: true,
+                ..JustifyControls::default()
+            },
+        };
+        let justified_equivalent = |pending: &FlowLayoutArena, committed: &FlowLayoutArena| {
+            flow_positioning_equivalent(pending, committed, &clusters, &bidi, justified, justified)
+                .unwrap()
+        };
+        assert!(!justified_equivalent(
+            &arena(ALIGN_JUSTIFY, 17.0),
+            &arena(ALIGN_JUSTIFY, 25.0)
+        ));
+        assert!(justified_equivalent(
+            &arena(ALIGN_JUSTIFY, 17.0),
+            &arena(ALIGN_JUSTIFY, 17.0)
+        ));
+        // A boundary-bearing fragment always takes the full path.
+        let mut with_boundary = arena(ALIGN_START, 17.0);
+        with_boundary.fragments[0].boundary_index = 0;
+        assert!(!equivalent(&with_boundary, &arena(ALIGN_START, 17.0)));
+    }
+
+    #[test]
+    fn justification_distributes_exact_unit_totals_in_either_sign() {
+        assert_eq!(distribute_units(1_408, 2), (704, 0));
+        assert_eq!(distribute_units(22, 0), (0, 0));
+        // Remainders spread one unit at a time and the totals stay exact.
+        assert_eq!(distribute_units(641, 4), (160, 1));
+        assert_eq!(160 * 4 + 1, 641);
+        assert_eq!(distribute_units(-5, 2), (-3, 1));
+        assert_eq!(-3 * 2 + 1, -5);
+    }
+
+    #[test]
+    fn justification_totals_fill_the_deficit_exactly_including_remainders() {
+        let (_text, clusters, line, mut fragment) = justify_fixture();
+        // Deficit 10.015625px = 641 units over 2 spaces: euclidean split gives
+        // 320 units + one extra leading unit, and the fragment advance fills
+        // the slot exactly.
+        fragment.slot_end = 17.015_625;
+        let controls = JustifyControls::default();
+        let distribution =
+            justification_adjustment(line, fragment, false, &clusters, 0, 7, 0.0, controls);
+        assert_eq!(distribution.spaces, 2);
+        assert_eq!(distribution.per_space_units, 320);
+        assert_eq!(distribution.extra_space_units, 1);
+        assert_eq!(distribution.total_units(), 641);
+        let advance =
+            positioned_fragment_advance(line, fragment, false, &clusters, 0.0, controls).unwrap();
+        assert_eq!(advance, 17.015_625);
     }
 
     fn justify_fixture() -> (Vec<u16>, ClusterArena, FlowLine, FlowFragment) {
@@ -1596,6 +2010,8 @@ mod tests {
             starts: (0..7).collect(),
             ends: (1..=7).collect(),
             advances: vec![1.0; 7],
+            advances_f26: vec![64; 7],
+            units_per_em: vec![1_000.0; 7],
             flags,
             style_indexes: vec![0; 7],
             source_runs: vec![0; 7],
@@ -1622,6 +2038,7 @@ mod tests {
                 text_start: 0,
                 text_end: 7,
                 advance: 7.0,
+                hung_advance: 0.0,
                 hard_break: false,
             },
             slot_start: 0.0,
@@ -1646,16 +2063,18 @@ mod tests {
         let distribution =
             justification_adjustment(line, fragment, false, &clusters, 0, 7, 0.0, controls);
         assert_eq!(distribution.spaces, 2);
-        assert_eq!(distribution.per_space, 2.0);
+        assert_eq!(distribution.per_space_units, 128);
+        assert_eq!(distribution.extra_space_units, 0);
         assert_eq!(distribution.gaps, 6);
-        assert_eq!(distribution.per_gap, 0.75);
+        assert_eq!(distribution.per_gap_units, 48);
+        assert_eq!(distribution.extra_gap_units, 0);
 
         // Unbounded controls reproduce the pre-tier distribution exactly.
         let unbounded = JustifyControls::default();
         let plain =
             justification_adjustment(line, fragment, false, &clusters, 0, 7, 0.0, unbounded);
-        assert_eq!(plain.per_space, 5.0);
-        assert_eq!(plain.per_gap, 0.0);
+        assert_eq!(plain.per_space_units, 320);
+        assert_eq!(plain.per_gap_units, 0);
     }
 
     #[test]
@@ -1663,14 +2082,14 @@ mod tests {
         let (_text, clusters, line, fragment) = justify_fixture();
         let auto = JustifyControls::default();
         let final_auto = justification_adjustment(line, fragment, true, &clusters, 0, 7, 0.0, auto);
-        assert_eq!(final_auto.per_space, 0.0);
+        assert_eq!(final_auto.per_space_units, 0);
         let policy = JustifyControls {
             last_line_justify: true,
             ..JustifyControls::default()
         };
         let final_justified =
             justification_adjustment(line, fragment, true, &clusters, 0, 7, 0.0, policy);
-        assert_eq!(final_justified.per_space, 5.0);
+        assert_eq!(final_justified.per_space_units, 320);
     }
 
     #[test]
@@ -1687,8 +2106,9 @@ mod tests {
         };
         let shrunk =
             justification_adjustment(line, fragment, false, &clusters, 0, 7, 0.0, controls);
-        assert_eq!(shrunk.per_space, -0.25);
-        assert_eq!(shrunk.per_gap, 0.0);
+        assert_eq!(shrunk.per_space_units, -16);
+        assert_eq!(shrunk.extra_space_units, 0);
+        assert_eq!(shrunk.per_gap_units, 0);
         // Without a declared minimum an overfull line never shrinks.
         let rigid = justification_adjustment(
             line,
@@ -1700,7 +2120,7 @@ mod tests {
             0.0,
             JustifyControls::default(),
         );
-        assert_eq!(rigid.per_space, 0.0);
+        assert_eq!(rigid.per_space_units, 0);
     }
 
     /// CSS decorating box: a nested font-size change inside one declared decoration
@@ -1738,6 +2158,7 @@ mod tests {
             starts: vec![0, 1, 2],
             ends: vec![1, 2, 3],
             advances: vec![6.0, 4.2, 0.0],
+            units_per_em: vec![1_000.0; 3],
             flags: vec![CLUSTER_SAFE_BEFORE, CLUSTER_SAFE_BEFORE, CLUSTER_HARD_BREAK],
             style_indexes: vec![0, 1, 0],
             source_runs: vec![0, 0, u32::MAX],
@@ -1746,20 +2167,15 @@ mod tests {
             stable_ids: vec![10, 20, 30],
             glyph_starts: vec![0, 1, 2],
             glyph_counts: vec![1, 1, 0],
-            glyph_indices: vec![0, 1],
+            glyph_ids: vec![1, 2],
+            glyph_clusters: vec![0, 1],
+            glyph_x_advances: vec![500, 500],
+            glyph_x_offsets: vec![0, 0],
+            glyph_y_offsets: vec![0, 0],
+            glyph_shape_flags: vec![0, 0],
             glyph_stable_ids: vec![100, 200],
             index_at: vec![0, 1, 2, 3],
             ..ClusterArena::default()
-        };
-        let shape = ShapeArena {
-            runs: vec![],
-            glyph_ids: vec![1, 2],
-            clusters: vec![0, 1],
-            x_advances: vec![500, 500],
-            y_advances: vec![0, 0],
-            x_offsets: vec![0, 0],
-            y_offsets: vec![0, 0],
-            glyph_flags: vec![0, 0],
         };
         let bidi = BidiAnalysis {
             levels: vec![0, 0, BIDI_B],
@@ -1789,6 +2205,7 @@ mod tests {
                     text_start: 0,
                     text_end: 2,
                     advance: 10.2,
+                    hung_advance: 0.0,
                     hard_break: true,
                 },
                 slot_start: 0.0,
@@ -1827,7 +2244,6 @@ mod tests {
                 &text,
                 &clusters,
                 &runs,
-                &shape,
                 &BoundaryShapeArena::default(),
                 &styles,
                 &bidi,
@@ -1876,6 +2292,7 @@ mod tests {
             starts: vec![0, 1, 2],
             ends: vec![1, 2, 3],
             advances: vec![6.0, 6.0, 0.0],
+            units_per_em: vec![1_000.0; 3],
             flags: vec![CLUSTER_SAFE_BEFORE, CLUSTER_SAFE_BEFORE, CLUSTER_HARD_BREAK],
             style_indexes: vec![0, 0, 0],
             source_runs: vec![0, 0, u32::MAX],
@@ -1884,20 +2301,15 @@ mod tests {
             stable_ids: vec![10, 20, 30],
             glyph_starts: vec![0, 1, 2],
             glyph_counts: vec![1, 1, 0],
-            glyph_indices: vec![0, 1],
+            glyph_ids: vec![1, 2],
+            glyph_clusters: vec![0, 1],
+            glyph_x_advances: vec![500, 500],
+            glyph_x_offsets: vec![0, 0],
+            glyph_y_offsets: vec![0, 0],
+            glyph_shape_flags: vec![0, 0],
             glyph_stable_ids: vec![100, 200],
             index_at: vec![0, 1, 2, 3],
             ..ClusterArena::default()
-        };
-        let shape = ShapeArena {
-            runs: vec![],
-            glyph_ids: vec![1, 2],
-            clusters: vec![0, 1],
-            x_advances: vec![500, 500],
-            y_advances: vec![0, 0],
-            x_offsets: vec![0, 0],
-            y_offsets: vec![0, 0],
-            glyph_flags: vec![0, 0],
         };
         let bidi = BidiAnalysis {
             levels: vec![0, 0, BIDI_B],
@@ -1927,6 +2339,7 @@ mod tests {
                     text_start: 0,
                     text_end: 2,
                     advance: 12.0,
+                    hung_advance: 0.0,
                     hard_break: true,
                 },
                 slot_start: 0.0,
@@ -1965,7 +2378,6 @@ mod tests {
                 &text,
                 &clusters,
                 &runs,
-                &shape,
                 &BoundaryShapeArena::default(),
                 &styles,
                 &bidi,
@@ -2013,7 +2425,6 @@ mod tests {
                 &text,
                 &clusters,
                 &runs,
-                &shape,
                 &BoundaryShapeArena::default(),
                 &plain_styles,
                 &bidi,
@@ -2054,6 +2465,7 @@ mod tests {
             starts: vec![0, 1, 2, 3],
             ends: vec![1, 2, 3, 4],
             advances: vec![6.0, 6.0, 6.0, 6.0],
+            units_per_em: vec![1_000.0; 4],
             flags: vec![
                 CLUSTER_SAFE_BEFORE,
                 CLUSTER_SAFE_BEFORE,
@@ -2067,20 +2479,15 @@ mod tests {
             stable_ids: vec![10, 20, 30, 40],
             glyph_starts: vec![0, 1, 2, 3],
             glyph_counts: vec![1, 1, 1, 1],
-            glyph_indices: vec![0, 1, 2, 3],
+            glyph_ids: vec![1, 2, 3, 4],
+            glyph_clusters: vec![0, 1, 2, 3],
+            glyph_x_advances: vec![500, 500, 500, 500],
+            glyph_x_offsets: vec![0, 0, 0, 0],
+            glyph_y_offsets: vec![0, 0, 0, 0],
+            glyph_shape_flags: vec![0, 0, 0, 0],
             glyph_stable_ids: vec![100, 200, 300, 400],
             index_at: vec![0, 1, 2, 3, 4],
             ..ClusterArena::default()
-        };
-        let shape = ShapeArena {
-            runs: vec![],
-            glyph_ids: vec![1, 2, 3, 4],
-            clusters: vec![0, 1, 2, 3],
-            x_advances: vec![500, 500, 500, 500],
-            y_advances: vec![0, 0, 0, 0],
-            x_offsets: vec![0, 0, 0, 0],
-            y_offsets: vec![0, 0, 0, 0],
-            glyph_flags: vec![0, 0, 0, 0],
         };
         let bidi = BidiAnalysis {
             levels: vec![0, 0, 0, 0],
@@ -2154,6 +2561,7 @@ mod tests {
                         text_start: 0,
                         text_end: 2,
                         advance: 15.0,
+                        hung_advance: 0.0,
                         hard_break: false,
                     },
                     slot_start: 0.0,
@@ -2167,6 +2575,7 @@ mod tests {
                         text_start: 2,
                         text_end: 4,
                         advance: 12.0,
+                        hung_advance: 0.0,
                         hard_break: false,
                     },
                     slot_start: 0.0,
@@ -2206,7 +2615,6 @@ mod tests {
                 &text,
                 &clusters,
                 &runs,
-                &shape,
                 &boundary,
                 &styles,
                 &bidi,
@@ -2259,6 +2667,7 @@ mod tests {
             starts: vec![0, 1, 2],
             ends: vec![1, 2, 3],
             advances: vec![6.0, 6.0, 0.0],
+            units_per_em: vec![1_000.0; 3],
             flags: vec![CLUSTER_SAFE_BEFORE, CLUSTER_SAFE_BEFORE, CLUSTER_HARD_BREAK],
             style_indexes: vec![0, 0, 0],
             source_runs: vec![0, 0, u32::MAX],
@@ -2267,20 +2676,15 @@ mod tests {
             stable_ids: vec![10, 20, 30],
             glyph_starts: vec![0, 1, 2],
             glyph_counts: vec![1, 1, 0],
-            glyph_indices: vec![0, 1],
+            glyph_ids: vec![1, 2],
+            glyph_clusters: vec![0, 1],
+            glyph_x_advances: vec![500, 500],
+            glyph_x_offsets: vec![0, 0],
+            glyph_y_offsets: vec![0, 0],
+            glyph_shape_flags: vec![0, 0],
             glyph_stable_ids: vec![100, 200],
             index_at: vec![0, 1, 2, 3],
             ..ClusterArena::default()
-        };
-        let shape = ShapeArena {
-            runs: vec![],
-            glyph_ids: vec![1, 2],
-            clusters: vec![0, 1],
-            x_advances: vec![500, 500],
-            y_advances: vec![0, 0],
-            x_offsets: vec![0, 0],
-            y_offsets: vec![0, 0],
-            glyph_flags: vec![0, 0],
         };
         let bidi = BidiAnalysis {
             levels: vec![0, 0, BIDI_B],
@@ -2310,6 +2714,7 @@ mod tests {
                     text_start: 0,
                     text_end: 2,
                     advance: 12.0,
+                    hung_advance: 0.0,
                     hard_break: true,
                 },
                 slot_start: 0.0,
@@ -2348,7 +2753,6 @@ mod tests {
                 &text,
                 &clusters,
                 &runs,
-                &shape,
                 &BoundaryShapeArena::default(),
                 &styles,
                 &bidi,
@@ -2383,7 +2787,6 @@ mod tests {
                 &text,
                 &clusters,
                 &runs,
-                &shape,
                 &BoundaryShapeArena::default(),
                 &styles,
                 &bidi,
@@ -2407,7 +2810,6 @@ mod tests {
                 &text,
                 &clusters,
                 &runs,
-                &shape,
                 &BoundaryShapeArena::default(),
                 &styles,
                 &bidi,

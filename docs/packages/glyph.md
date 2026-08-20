@@ -5,7 +5,7 @@ description: Implements portable font loading, retained Rust shaping and layout,
 resource: ../../packages/glyph
 workspace_package: '@pmndrs/glyph'
 documentation_type: reference
-source_digest: 'sha256:adb0aa8d4dd23153e97b36b3a359b699b0656c5f449331c30d8293b72d5e302e'
+source_digest: 'sha256:f0d02444415a88d11af570a4dd49ef7681316756fd3aa9e3a6f7d7ea09d96c82'
 tags: [package, public-api, rust, wasm, threejs, typography]
 sources:
   - id: manifest
@@ -100,8 +100,8 @@ TypeScript does not independently shape, lay out, or pack paragraphs.
 
 ## Public package surfaces
 
-| Subpath                     | Purpose                                                                                                                          |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Subpath                      | Purpose                                                                                                                          |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `@pmndrs/glyph`              | Font/raster contracts, loading, fallback stacks, formatting helpers, paragraph inputs, layout-query values, and portable bakers. |
 | `@pmndrs/glyph/core`         | Renderer-neutral engine host, frame wire, plan/layout-query views, technique schemas, policy-program DSL, and binding compiler.  |
 | `@pmndrs/glyph/tsl`          | Canonical TSL shader realizations of the first-party technique interfaces; no scene integration.                                 |
@@ -251,8 +251,32 @@ selected font binding—not a `Text` technique selector—carries the renderer p
 
 Ordinary rendering requests no layout readback. `Text.measureLayout()` explicitly requests aggregate measurements and
 counts; `Text.inspectLayout()` additionally copies line and glyph arrays. Query results are cached by committed revision.
-If a query observes pending changes, it synchronizes the containing Rust session once and the following render traversal
-reuses that publication.
+When the only pending change is the measured text's geometry, `measureLayout()` routes through the core host's
+`session.measureParagraph` — the paragraph-scoped synchronous query below — so repeated measurement under changing
+constraints performs no publication flips and no revision burns, and the next ordinary frame adopts the speculative
+work. Any other pending change synchronizes the containing Rust session once and the following render traversal reuses
+that publication.
+
+The engine additionally exports `pmndrs_glyph_engine_measure_paragraph`, a paragraph-scoped synchronous query beside
+`pmndrs_glyph_engine_update`. It reuses the update request layout with the queried paragraph as an ABI argument, runs
+validation and speculative preparation for that paragraph only, and writes the header plus semantic table into the
+inactive result slot without publishing: no A/B flip, no publication-generation bump, no revision advance, and no
+renderer-fence acknowledgment. The host must copy the records out before its next update call (host lease). The query
+terminates leave-committed, so the following ordinary frame proceeds from pre-measure revisions with no checkpoint
+hazard.
+
+The prepared pending state is retained as one speculative session transaction. Sequential queries extend it while the
+committed revision, lifecycle input, and the queried paragraph's text/style input fingerprints still match — a
+geometry-only follow-up query re-runs just geometry, flow, and positioning over the retained semantic prefix, and
+identities extend linearly from the transaction's high-water marks instead of rolling back between queries. Any
+fingerprint mismatch rebuilds cold with results identical to a fresh preparation.
+
+The committing frame adopts the transaction instead of discarding it: when the frame's lifecycle input matches, its
+identity counters continue from the transaction's reserved high-water marks, and each paragraph whose text/style/geometry
+inputs fingerprint-match its speculative pending state skips preparation entirely — the stable glyph identities a query
+reported stay valid in the committed frame. A paragraph whose prefix matches but whose geometry changed re-runs only the
+geometry/flow/positioning tail; anything else prepares cold. A frame whose inputs do not match the transaction drops it
+leave-committed at entry, so committed state never observes an unadopted query.
 
 The semantic values preserve information useful to callers:
 
@@ -316,7 +340,18 @@ The foundation currently has:
   zero differing channel bytes and pinned SHA-256 `a47930d3…15e893`;
 - source-font SHA-256, registered shaping hashes, and HarfRust/HarfBuzz oracle identities authenticated independently of
   the browser behavior check;
-- byte-identical Bitmap, MSDF, and Slug packing/consumer gates retained elsewhere in the benchmark suite.
+- byte-identical Bitmap, MSDF, and Slug packing/consumer gates retained elsewhere in the benchmark suite;
+- a sequence-level property gate (`engine-sequence-property.test.mjs`) driving randomized-but-seeded interactive
+  sequences through the public Three surface — text edits, resizes, metric and paint restyles, direction, language and
+  feature flips, font swaps, and lifecycle churn, with measure queries interleaved so speculative transactions are opened
+  and then adopted or dropped — asserting per step that valid input publishes, that a repeated measurement agrees with
+  itself, and that the per-glyph inspection lane and the line-level measurement lane report the same glyph and line
+  totals. Determinism is part of the contract: a fixed seed list, no wall clock, no retry, and a failure names the seed
+  and operation journal that reproduce it. Reverting the three status-6 fixes (D-255) turns it red at seed 1;
+- React paragraph lease accounting under StrictMode and react-three-fiber's idle-deferred disposal, with a positive
+  control proving a lease is genuinely held so the silence in the other cases is not vacuous;
+- total teardown: repeated group and runtime disposal neither throws nor leaves a font half-disposed, and teardown in the
+  wrong order — runtime first, paragraphs after — completes, which is the ordering r3f actually produces.
 
 The browser paragraph target is fully green under the explicit f32 frame contract. The former UIKit mismatch came from a
 fixture generated by the deleted TypeScript path, where authored JavaScript-double line height survived until final array
@@ -457,6 +492,15 @@ and 2.76× faster. This proves the migration comparison on this machine; it does
 objective. Local-edit p95 remains about 6 ms and high-variance, while width p95 ranges from 4.29 to 4.75 ms across
 techniques.
 
+The paragraph-scoped synchronous measure (11.17) closes that objective for the explicit measure shape. At the same
+22,000-glyph corpus and cadence, the new `measure-query` lane answers the identical alternating widths as the
+`column-resize` lane through `pmndrs_glyph_engine_measure_paragraph`: 1.815 ms median / 1.930 ms p95 / 3.0% RSD with
+zero patches and zero publication bytes, beside the full update's 2.996 ms median / 4.483 ms p95 / 21.7% RSD in the
+same run — the first width-change lane under the 4 ms p95 objective, recorded in the
+[measure-query record](../../apps/benchmarks/fixtures/results/rust-layout-bitmap-measure-a42c976-darwin-arm64.json).
+The variance collapse follows from what the query skips: no gather, no plan compile, no publication packing, and no
+revision burn, so the following ordinary frame adopts the speculative layout instead of paying a checkpoint rebuild.
+
 The preceding unchanged 22,000-glyph localized-edit lane measured the complete production `text_update` plus Bitmap render
 plan at 2.607 ms median / 6.184 ms p95 after 40 warmups over 101 updates. The fast ASCII-letter path reuses Unicode and
 bidi state and recomposes until the line cursor converges; punctuation and spacing edits deliberately retain the full
@@ -521,6 +565,92 @@ mutations run twice with identical status sequences, include accepted and reject
 input leaves a fresh valid transaction usable. This supplements the Rust parser unit cases at the compiled ABI rather
 than restoring any deleted `shapeBatch`, `reshapeRanges`, or TypeScript paragraph state machine. The package gate now
 contains 165 Node integration tests plus three deterministic fuzz-smoke tests.
+
+The integer layout-units migration (D-254) moved cluster advances, line fitting, justification, and positioning onto
+F26.6 integers with one rounding contract (`layout_units.rs`: round-half-up as `floor(value * 64 + 1/2)`), landed as
+stacked slices with an interleaved same-run A/B for each — sides alternated in identical order within one process
+session, because this host drifts several percent between sessions. Step deltas, medians at the 22,000-glyph corpus:
+
+| Slice                                  | Lane deltas (median, rounds consistent)                                                                                                                          |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Registry flattening (slice 1)          | lane-neutral; shaper −9,433 raw bytes                                                                                                                            |
+| F26.6 fit + chunk-64 kernels (slice 2) | ~2% measure lane, scales with line length; byte-exact break parity                                                                                               |
+| Retained adjacency stream (slice 3)    | column-resize 2.996 → 2.781 ms (−7.2%), measure-query 1.930 → 1.824 ms (−5.5%), both 3/3; suffix +1.3% / splice +2.1% (re-shape scatter, accepted); cold neutral |
+| Metric-only scale refresh (slice 3)    | font-size 6.715 → 5.898 ms (−12.2%, 3/3) — 9.2% below the pre-stream baseline; other lanes neutral                                                               |
+| Integer justification (slice 4)        | lane-neutral 2/2 (the direct lanes do not justify); totals now exact                                                                                             |
+
+The stream replaces the glyph permutation with six adjacency-order payload columns scattered at build, so positioning
+walks sequential memory and geometry-only updates reuse the stream untouched; a metrics-only restyle re-derives just the
+advance lanes from that stream in one sequential pass, bit-identical to a cold build by a lane-for-lane oracle.
+Justification distributes euclideanly in layout units — per-site quotient plus a remainder spread one unit over leading
+sites — so the fragment advance and the applied cursor adjustments agree exactly, and the compression capacity
+quantizes through the same `ratio_q16` expression the fit used to admit the line. The
+[integer-units checkpoint record](../../apps/benchmarks/fixtures/results/rust-layout-bitmap-integer-units-c2e895e-darwin-arm64.json)
+pins the slice-4 artifact end-state (measure-query 1.890/2.054 ms median/p95 on a visibly hot host session; the
+interleaved deltas above are the comparative evidence).
+
+Corpus re-derivation statement: the packaged fixtures held byte-identical through every slice except the deliberate
+quantized-boundary re-pins recorded with their commits — one RTL ellipsis extent at the slice-2b flip (+0.0134 px), the
+paragraph bidi and CJK contracts (30 and 25 numeric leaves, maxima 0.070 px and 0.101 px, the latter a long Korean
+line's accumulated per-site sub-unit quantization), and the advanced-shaping and rich-text composed hashes, whose
+roughly twenty-five structural pins each — glyph and draw counts, line counts, both first-line break positions — held
+exactly while origins settled on 1/64 boundaries. Integer justification required no re-pin: both contract corpora and
+the sixteen-scenario conformance suite reproduce byte-identically because their justified cases divide evenly. Native
+and Wasm agree bit-for-bit on the contract corpora by construction of the shared rounding contract, and the linux CI
+host reproduces both composed scenario hashes recorded on this darwin host.
+
+The review fold that closed the migration replaced the fit's Q16 shrink budget with an exactly-applied f64 ratio —
+one IEEE multiply and one round-half-up per comparison, shared verbatim by justification's growth and compression
+caps and by the f64 parity twin — after a review counterexample showed the Q16 ratio's 2^-17 relative error
+exceeding the one-unit tolerance above ~2^16-unit space sums and its `<<16` comparison overflowing i64 inside the
+admitted magnitude range. The same fold bounded justification application to the counted span in visual encounter
+order (trailing logical spaces and uncounted gaps no longer absorb adjustments, so the applied cursor sum equals
+the reported fragment advance in both directions), required positional run-topology stability before the
+metric-only scale refresh (a metrics restyle can merge adjacent runs and dangle retained run indices), and
+collapsed the build's payload scatter to bulk copies when shaped runs tile the glyph array in cluster order.
+
+The measure-query stretch target is met: a measurement-only query now skips the per-glyph positioning tail —
+measurement derives at line level from flow and clusters, glyph totals from the adjacency stream and boundary
+records, and the committing frame runs exactly the missing tail once, proven byte-identical to a never-measured
+control by an integration test. The lane moved from 1.82–1.90 ms to 0.458 ms median / 0.607 ms p95 (−75%,
+three interleaved rounds), inside the plan's 0.6–0.9 ms objective; the earlier attribution of the residual floor
+to the fit walk was wrong — the floor was the positioning tail. The identity-order scatter reclaimed the
+retained-stream cost on the edit lanes (suffix and splice both −1.6%, three rounds); font-size pays +1.2% for the
+correctness admissions and remains ~11% below the pre-stream baseline. Still open: the committing-resize
+p95-under-4-ms objective. The tail is structural, not noise — 4.42–4.49 p95 against a 2.8 ms median on both sides
+of every round — and belongs to break-sensitive full recomposition; the productized interactive width path is the
+measure query above, and the raw full-update tail remains the documented open gate.
+
+Per-sample attribution (the benchmark's `--samples` dump, 101 widening reps at 22k glyphs) later replaced that
+characterization with measured structure: the resize distribution has three classes, none of them noise. A third of
+the samples — widths whose +7 px quantized to an identical layout — published ZERO bytes yet still cost ~3.2 ms:
+the engine re-fits, re-positions, re-gathers, and re-diffs the full corpus to discover nothing changed. The bulk
+class (~60%) republishes the entire ~170 KB positioned output as one patch at ~3.5 ms, and the p95 class (~6%,
+present in every width quartile) writes the same bytes at ~5.4 ms of roughly doubled compute. The identified fix
+for the first class is a break-sequence equivalence short-circuit: the integer fit is cheap and chunk-skipped, so
+when the composed lines equal the committed lines under unchanged text and styles, the positioning, gather, and
+publication tail can adopt committed state and publish nothing — the same adoption shape D-253 established for
+measure transactions.
+
+That short-circuit is landed. `flow_positioning_equivalent` proves, per fragment, bit-equality of the cluster
+range, the computed pen origin (slot start plus indent shift plus alignment offset), and the justify distribution
+against the committed flow — exactly the inputs positioning consumes — and the geometry-only update path then
+aborts the pending flow, retains committed positioning, and commits the new constraint, which the equivalence
+proof is precisely the license for. End alignment, centering, justified spans with changed slot spans, and
+boundary-bearing flows fail the proof and take the full path; a unit matrix pins each discrimination and an
+integration sequence drives adopt → relayout → adopt across the equivalence boundary. Measured at the same
+101-rep widening sweep: the zero-publication class (34 of 101 frames) drops from ~3.2 ms to 0.357 ms median
+(−89%), the published classes are unchanged, and every other lane is neutral over two interleaved rounds. The
+lane median and p95 are order statistics over the published classes and move little; what changed is that a
+third of resize frames now cost a third of a millisecond.
+
+Two follow-ups from the closing audit are tracked in [the integer layout-units plan](../planning/integer-layout-units.md)
+as slice 6 so they cannot silently lapse: the integer pen (layout decisions resolve in F26.6 while the
+intra-line cursor still accumulates the f64 advance lane — one deliberate seam, deterministic but dual-lane,
+whose closure deletes the f64 advances column and re-pins the visual corpus), and the explicit-state-machine
+consolidation of the engine's prepared/pending flag lattice, which produced one live regression and one
+review finding during the migration and belongs to the first maintainability-review pass together with a
+direct dual-derivation assertion for the glyph-count lanes.
 
 ## Merge gates still open
 

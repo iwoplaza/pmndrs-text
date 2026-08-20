@@ -690,7 +690,10 @@ async function createInstrumentedRuntime(registry) {
   const abi = JSON.parse(await readFile(new URL('../../dist/text-shaper-abi-v0.json', import.meta.url), 'utf8'));
   const originalInstantiate = WebAssembly.instantiate;
   let crossings = 0;
+  let measureCrossings = 0;
   let latestRequest;
+  let latestUpdateFlags = 0;
+  let latestUpdateGeneration = 0;
   WebAssembly.instantiate = async (source, imports) => {
     const instance = await originalInstantiate(source, imports);
     const exports = { ...instance.exports };
@@ -700,8 +703,21 @@ async function createInstrumentedRuntime(registry) {
       crossings += 1;
       const [, pointer, length] = arguments_;
       latestRequest = new Uint8Array(exports.memory.buffer, pointer, length).slice();
-      return update(...arguments_);
+      const resultPointer = update(...arguments_);
+      if (resultPointer !== 0) {
+        const header = new DataView(exports.memory.buffer, resultPointer, abi.layouts.engineResult.size);
+        latestUpdateFlags = header.getUint32(abi.layouts.engineResult.flags, true);
+        latestUpdateGeneration = header.getUint32(abi.layouts.engineResult.publicationGeneration, true);
+      }
+      return resultPointer;
     };
+    const measure = exports[abi.functions.measureParagraph];
+    if (typeof measure === 'function') {
+      exports[abi.functions.measureParagraph] = (...arguments_) => {
+        measureCrossings += 1;
+        return measure(...arguments_);
+      };
+    }
     return { exports };
   };
   try {
@@ -711,8 +727,18 @@ async function createInstrumentedRuntime(registry) {
       get crossings() {
         return crossings;
       },
+      get measureCrossings() {
+        return measureCrossings;
+      },
+      get latestUpdateFlags() {
+        return latestUpdateFlags;
+      },
+      get latestUpdateGeneration() {
+        return latestUpdateGeneration;
+      },
       reset() {
         crossings = 0;
+        measureCrossings = 0;
       },
       latestTextMutations() {
         assert.ok(latestRequest, 'a text update request must have been captured');
@@ -860,7 +886,12 @@ test('Rust ellipsis reshapes only the narrowed unsafe line boundary', async () =
   assert.equal(inspection.clusters.at(-1), 3, 'the ellipsis is anchored at the truncation boundary');
   assert.deepEqual([...inspection.glyphIds], [61, 2613, 2598, 6597]);
   assert.deepEqual([...inspection.clusters], [2, 1, 0, 3]);
-  assert.deepEqual([...inspection.x], [0.23199999332427979, 10.807999610900879, 18.375999450683594, 23.91200065612793]);
+  // Re-pinned under the F26.6 layout-unit contract (integer-units slice 2b): the
+  // RTL line's alignment offset derives from the quantized line advance, shifting
+  // every glyph by one uniform sub-unit amount (+0.0134 px < 1/64). Deterministic
+  // exactness holds under the new contract; the full-corpus re-derivation is the
+  // plan's slice 5.
+  assert.deepEqual([...inspection.x], [0.24537500739097595, 10.821374893188477, 18.389375686645508, 23.92537498474121]);
 
   label.dispose();
   font.dispose();
@@ -939,6 +970,113 @@ test('TextGroup grows aggregate glyph storage without reserving one aggregate-si
   group.dispose();
   for (const label of labels) label.dispose();
   font.dispose();
+  runtime.dispose();
+});
+
+/**
+ * Roadmap 11.17 layer 4: measureLayout under a geometry-only change routes to the
+ * paragraph-scoped synchronous engine query — no full session updates, no
+ * publication flips, no revision burn — and the following ordinary frame adopts the
+ * speculative work without a checkpoint rebuild.
+ */
+test('repeated measureLayout under changing constraints stays on the paragraph query path', async () => {
+  const abi = JSON.parse(await readFile(new URL('../../dist/text-shaper-abi-v0.json', import.meta.url), 'utf8'));
+  const registry = new FontRegistry();
+  const instrumented = await createInstrumentedRuntime(registry);
+  const font = await instrumented.runtime.loadFont({
+    input: { baked: dataUrl(await readFile(fontUrl)) },
+    raster: { technique: bitmap, options: { strikes: [16] } },
+  });
+  const scene = new THREE.Scene();
+  const label = new Text({
+    font,
+    text: 'alpha beta gamma delta',
+    contentBox: { width: { mode: 'exact', size: 300 } },
+  });
+  scene.add(label);
+  scene.updateMatrixWorld(true);
+  assert.equal(label.error, undefined);
+  const committedGeneration = instrumented.latestUpdateGeneration;
+  instrumented.reset();
+
+  const widths = [90, 150, 90, 240];
+  for (const width of widths) {
+    label.set({ contentBox: { width: { mode: 'exact', size: width } } });
+    const measurement = label.measureLayout();
+    assert.ok(measurement, `width ${width} measures synchronously`);
+    assert.ok(
+      measurement.contentWidth <= width + 1e-3,
+      `content width ${measurement.contentWidth} respects the queried width ${width}`,
+    );
+    assert.ok(measurement.lineCount >= 1, 'the measure reports laid-out lines');
+  }
+  assert.equal(instrumented.crossings, 0, 'measurement never drives a full engine update');
+  assert.equal(instrumented.measureCrossings, widths.length, 'each constraint change measures through one query');
+  assert.equal(
+    instrumented.latestUpdateGeneration,
+    committedGeneration,
+    'queries never flip the publication generation',
+  );
+
+  scene.updateMatrixWorld(true);
+  assert.equal(label.error, undefined);
+  assert.equal(instrumented.crossings, 1, 'one ordinary frame commits the final constraint');
+  assert.equal(
+    instrumented.latestUpdateFlags & abi.engine.resultFlags.checkpoint,
+    0,
+    'the committing frame proceeds from pre-measure revisions without a checkpoint rebuild',
+  );
+  assert.equal(label.measureLayout()?.contentWidth <= 240 + 1e-3, true);
+  label.dispose();
+});
+
+test('a standard ligature that absorbs a grapheme publishes and keeps typing', async () => {
+  // A ligature reports one glyph at the first grapheme of the pair, so the trailing
+  // grapheme's cluster owns no glyph. It still belongs to the shaped run and positioning
+  // still derives a scale for it, so the cluster arena must record the owning font's
+  // units-per-em for it as well. Amiri applies `liga` to Latin f-pairs; Inter as baked
+  // does not, which is why every existing Latin fixture missed this.
+  const runtime = await createTextRuntime({
+    registry: new FontRegistry(),
+    wasm: await readFile(new URL('../../dist/text_shaper.wasm', import.meta.url)),
+  });
+  const font = await runtime.loadFont({
+    input: { baked: dataUrl(await readFile(amiriFontUrl)) },
+    raster: { technique: bitmap, options: { strikes: [16] } },
+  });
+  const scene = new THREE.Scene();
+  const group = new TextGroup({ batching: 'group' });
+  scene.add(group);
+  const text = new Text({
+    font,
+    text: '',
+    style: { fontSize: 20, lineHeight: 1.25 },
+    contentBox: { width: { mode: 'exact', size: 600 }, wrap: 'word' },
+  });
+  group.add(text);
+
+  const typed = 'meet office';
+  for (let length = 1; length <= typed.length; length += 1) {
+    text.text = typed.slice(0, length);
+    scene.updateMatrixWorld(true);
+    assert.equal(text.error, undefined, `typing "${typed.slice(0, length)}" must publish`);
+  }
+  const ligated = text.measureLayout();
+  assert.equal(ligated?.missingGlyphCount, 0, 'the ligature resolves to a real glyph');
+
+  // The ligature genuinely absorbs graphemes: with `liga` off the same text needs more
+  // glyphs, which is what makes the glyph-less trailing cluster reachable at all.
+  text.style = { fontSize: 20, lineHeight: 1.25, features: [{ tag: 'liga', value: 0 }] };
+  scene.updateMatrixWorld(true);
+  assert.equal(text.error, undefined);
+  const unligated = text.measureLayout();
+  assert.ok(
+    unligated !== undefined && ligated !== undefined && unligated.glyphCount > ligated.glyphCount,
+    `disabling liga must add glyphs (ligated ${ligated?.glyphCount}, unligated ${unligated?.glyphCount})`,
+  );
+
+  group.dispose();
+  text.dispose();
   runtime.dispose();
 });
 

@@ -581,6 +581,35 @@ impl<'a> TextMutationBatch<'a> {
         })
     }
 
+    /// Identity of the speculative text input: 0 when no mutations ride the request,
+    /// otherwise a content hash over each mutation's target range and insert payload
+    /// (request-buffer offsets do not participate, so equal edits fingerprint equally
+    /// regardless of request layout). The mutation count and every insertion length
+    /// are mixed as explicit delimiters: concatenated FNV streams alias otherwise —
+    /// one replace whose payload bytes spell a second mutation's fields hashes
+    /// identically to that two-mutation batch.
+    pub(crate) fn fingerprint(self) -> u64 {
+        if self.records.is_empty() {
+            return 0;
+        }
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        mix_bytes(&mut hash, &(self.len() as u64).to_le_bytes());
+        for index in 0..self.len() {
+            let Some(mutation) = self.get(index) else {
+                continue;
+            };
+            mix_bytes(&mut hash, &mutation.paragraph_id.to_le_bytes());
+            mix_bytes(&mut hash, &mutation.text_start.to_le_bytes());
+            mix_bytes(&mut hash, &mutation.delete_count.to_le_bytes());
+            mix_bytes(
+                &mut hash,
+                &(mutation.insert_utf16_le.len() as u64).to_le_bytes(),
+            );
+            mix_bytes(&mut hash, mutation.insert_utf16_le);
+        }
+        hash
+    }
+
     pub(crate) fn validate_disjoint_geometry(self, geometry: GeometryBatch<'_>) -> Result<(), u32> {
         if !self.records.is_empty()
             && geometry.overlaps_range(byte_range(self.request, self.records)?)?
@@ -720,6 +749,25 @@ impl<'a> StyleMutationBatch<'a> {
                 cursor,
             )?,
         })
+    }
+
+    /// Identity of the speculative style input: 0 when no mutations ride the request,
+    /// otherwise a hash over the mutation records plus each upsert's language and
+    /// feature payloads. Record bytes include request-buffer payload offsets, so this
+    /// is layout-sensitive: equal content at different offsets rebuilds conservatively.
+    pub(crate) fn fingerprint(self) -> u64 {
+        if self.records.is_empty() {
+            return 0;
+        }
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        mix_bytes(&mut hash, self.records);
+        for index in 0..self.len() {
+            if let Some(StyleMutation::Upsert(value)) = self.get(index) {
+                mix_bytes(&mut hash, value.language);
+                mix_bytes(&mut hash, value.features);
+            }
+        }
+        hash
     }
 
     pub(crate) fn feature(value: StyleValue<'_>, index: usize) -> Option<FeatureRecord> {
@@ -1008,8 +1056,11 @@ fn validate_style_payload(
     for feature in features.chunks_exact(abi::FEATURE_RECORD_SIZE as usize) {
         let start = read_u32(feature, abi::FEATURE_START)?;
         let end = read_u32(feature, abi::FEATURE_END)?;
+        // An empty feature range is inert, not malformed: it is exactly what the empty
+        // root style permitted above spans, so it admits the same start == end the
+        // enclosing style range does. Only an inverted range is rejected here.
         if !valid_tag(read_u32(feature, abi::FEATURE_TAG)?)
-            || start >= end
+            || start > end
             || start < text_start
             || end > text_end
         {
@@ -2012,6 +2063,42 @@ mod tests {
         assert!(parse_style_mutations(&removal, STYLE_OFFSET as u32, 1).is_ok());
         removal[STYLE_OFFSET + abi::ENGINE_STYLE_MUTATION_DIRECTION] = DIRECTION_LTR;
         assert!(parse_style_mutations(&removal, STYLE_OFFSET as u32, 1).is_err());
+    }
+
+    #[test]
+    fn an_empty_root_style_carries_features_over_its_empty_range() {
+        // A paragraph with no text still carries a root style spanning [0, 0), and the
+        // public API attaches every declared feature to that root span. Rejecting the
+        // empty range would fail every `Text` that declares features before its content
+        // arrives (or after it is cleared), so the range check must admit start == end
+        // exactly where the enclosing style range check already does.
+        let mut empty = valid_style_bytes();
+        write_u32(
+            &mut empty,
+            STYLE_OFFSET + abi::ENGINE_STYLE_MUTATION_TEXT_END,
+            0,
+        );
+        let features_offset = {
+            let language_offset = STYLE_OFFSET + abi::ENGINE_STYLE_MUTATION_RECORD_SIZE as usize;
+            (language_offset + 2 + 3) & !3
+        };
+        write_u32(&mut empty, features_offset + abi::FEATURE_END, 0);
+        let batch = parse_style_mutations(&empty, STYLE_OFFSET as u32, 1).unwrap();
+        let StyleMutation::Upsert(style) = batch.get(0).unwrap() else {
+            panic!("upsert");
+        };
+        let feature = StyleMutationBatch::feature(style, 0).unwrap();
+        assert_eq!((feature.start, feature.end), (0, 0));
+
+        // An inverted range remains malformed, and bounds still bind.
+        let mut inverted = valid_style_bytes();
+        write_u32(&mut inverted, features_offset + abi::FEATURE_START, 3);
+        write_u32(&mut inverted, features_offset + abi::FEATURE_END, 2);
+        assert!(parse_style_mutations(&inverted, STYLE_OFFSET as u32, 1).is_err());
+
+        let mut past_end = valid_style_bytes();
+        write_u32(&mut past_end, features_offset + abi::FEATURE_END, 5);
+        assert!(parse_style_mutations(&past_end, STYLE_OFFSET as u32, 1).is_err());
     }
 
     #[test]

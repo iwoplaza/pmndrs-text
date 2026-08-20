@@ -1,5 +1,55 @@
 # pmndrs/glyph documentation update log
 
+## 2026-08-18
+
+- **Line breaking is linear again, and CJK paid for it** — `BreakState::class_after_spaces` scanned
+  `source` from index 0 on every call, and LB16/LB17 consult it on every `CL`/`CP`/`B2`. Latin prose reaches
+  those rules rarely; CJK reaches them on most characters, so the whole analysis was O(n^2) on exactly the
+  scripts the repository treats as first-class. `numeric_prefix_before` carried the same shape in reverse for
+  LB25. Both are now `partition_point` over an array that is built in one forward pass and therefore already
+  sorted, which makes the rewrite provably equivalent rather than empirically equal. All 19,338 official
+  Unicode 17 line-break vectors and both bidi conformance suites are unchanged, positions and required flags
+  alike. Measured through the shipped Wasm at 22,000 glyphs over an interleaved three-round A/B: the CJK
+  corpus improves 1.58x cold, 1.69x suffix-edit, 1.85x localized-edit, and 1.61x localized-splice, while the
+  Latin corpus holds flat within noise (a first-pass +9.6% on `measure-query` did not survive 20 warmup /
+  101 measured, landing at -1.0%). The artifact grows 121 raw / 81 gzip bytes. The regression hid because
+  every layout benchmark ran Latin only; `glyph:rust-layout-benchmark` now takes `--corpus latin|cjk` against
+  the pinned CJK showcase strike, so the lane that would have caught this exists.
+
+## 2026-08-17
+
+- **Engine correctness pass: three status-6 defects, the hanging word space, and the flag lattice** —
+  A live stall in the Advanced-shaping workload was reproduced headlessly and root-caused to three
+  independent rejections of valid public-API input, none of them the state machine the investigation
+  expected: an empty feature range on an empty root style, style payloads allocated all-languages-then-all-
+  features against a validator that requires per-record order, and a ligature-absorbed cluster left without
+  its owning font's units-per-em. Each is fixed at the point that made the valid state unrepresentable
+  (D-255 covers the lifecycle half). A sequence-level property gate now drives randomized-but-seeded
+  interactive sequences through the public Three surface and asserts per step that valid input publishes
+  and that committed metrics never disagree with themselves; reverting the three fixes turns it red.
+  Separately, the line-terminating word space now hangs (D-257) — it was charged against the measure by the
+  fit and assumed absent by justification, which made flush unreachable on every justified line and made
+  the breaker discard break opportunities outright. Finally the prepared/pending flag lattice is retired
+  (D-258): every stage is one `Staged<T>`, and stale positioning over a re-run flow is unrepresentable
+  rather than repaired. Lanes unchanged across an interleaved three-round A/B at 22,000 glyphs.
+
+- **Commit-time digest hook** — Contributors editing package sources repeatedly shipped stale
+  `source_digest` pins, failing the knowledge-base gate one round-trip later. A committed, dependency-free
+  hook (`.githooks/okf-digests`, enabled per clone through Git 2.54 config-based hooks documented in the
+  README) now re-pins affected digests automatically at commit time, refuses when a package's working tree
+  diverges from the staged commit, and runs the full OKF validation as the gate. A fallback dispatcher
+  covers `core.hooksPath` clones on older Git. The setup pass also removed the last tracked file under the
+  pre-rename `packages/text/` path, a byte-identical duplicate of the relocated policy fixture.
+
+## 2026-08-16
+
+- **Integer-pen and state-machine follow-ups recorded (slice 6)** — The closing number-system audit found
+  one deliberate seam (layout decisions in F26.6, the intra-line pen on the f64 advance lane) and one
+  implicit state machine (the prepared/pending flag lattice, source of a live regression and a review
+  finding during slices 3–5). Both are now slice 6 of the
+  [integer layout-units plan](planning/integer-layout-units.md) with the re-pin cascade costed and the
+  maintainability-review pass named, referenced from the package evidence and the D-254 register row.
+
 ## 2026-08-15
 
 - **Canary publishing** — Made `@pmndrs/glyph` publicly publishable and added a `main`-branch release workflow that
@@ -10,6 +60,17 @@
   namespaces, discovery manifest, runtime diagnostics, repository paths, imports, examples, and canonical documentation
   from text to Glyph. Typography concepts such as `Text`, formatted text, and the text-shaper artifact retain their
   domain names. Regenerated authenticated font artifacts and reviewed package-size evidence under the new identity.
+
+## 2026-08-14
+
+- **Integer layout units complete (D-254)** — The scale-late F26.6 migration closed across five stacked slices:
+  dense font registry, integer line fit with chunk-64 admission, the retained adjacency glyph stream with
+  change-scoped invalidation (re-shape scatters, metric restyles re-scale, geometry reuses), and euclidean
+  integer justification sharing the fit's Q16 expressions. Interleaved lane evidence — column-resize −7.2%,
+  measure-query −5.5%, font-size −12.2% after the scale-refresh layer closed the stream's own regression —
+  plus the corpus re-derivation statement, the exact-f32-extent ABI pinning harness, and the still-open
+  measure-query and resize-p95 stretch targets are recorded in the
+  [package evidence](packages/glyph.md) and the decision register row.
 
 ## 2026-08-13
 
