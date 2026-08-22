@@ -15,12 +15,12 @@
     "dev": "vite",
     "format:check": "oxfmt --check .",
     "lint": "oxlint --deny-warnings .",
-    "live:check": "vitexec --gpu ./scripts/live-check.probe.ts",
+    "live:check": "node ./scripts/live-check.mts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@pmndrs/glyph": "workspace:*",
-    "@react-three/fiber": "10.0.0-alpha.2",
+    "@react-three/fiber": "10.0.0-alpha.3",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "three": "0.185.1"
