@@ -21,6 +21,7 @@ import type {
   ParagraphProperties,
   ParagraphStyle,
 } from '../text-properties.js';
+import type { FontFeature } from '../font-feature.js';
 import type { AnyRasterTechnique } from '../raster-technique.js';
 import type { TextRuntime } from '../text-runtime.js';
 import {
@@ -31,14 +32,11 @@ import {
   TextEngineStatusError,
   textShaperAbi,
   type TextEngineConstraint,
-  type TextEngineDecoration,
   type TextEngineFault,
-  type TextEngineFrameLimits,
   type TextEnginePublication,
   type TextEngineRegion,
   type TextEngineSession,
   type TextEngineStyleMutation,
-  type TextEngineStyleValue,
   type TextEngineTextMutation,
 } from '../core.js';
 import type { LayoutBox, ParagraphLayoutInspection, ParagraphLayoutSummary } from '../layout.js';
@@ -48,6 +46,15 @@ import {
   type GlyphCaret,
   type GlyphPlacements,
 } from '../glyph-placement.js';
+import {
+  compileEngineGeometry,
+  engineLimits,
+  engineStyleValue,
+  minimalTextMutation,
+  normalizedColumns,
+  replacedContent,
+  styledSpans,
+} from '../engine-encoding.js';
 import { textFrameError, type TextFrameSubject } from './frame-error.js';
 import { ThreeTextRenderPlanExecutor } from './engine-plan-target.js';
 import {
@@ -58,6 +65,9 @@ import {
 } from './engine-runtime.js';
 import type { ThreeTextMaterial } from './material.js';
 
+// The scoped import lint denies `/three` any reach into `internal/`, so the guard is written here as
+// the same ecosystem-standard comparison a bundler strips in a production build.
+const DEV = process.env.NODE_ENV !== 'production';
 const MAX_TEXT_ENGINE_OUTPUT_BYTES = 64 * 1024 * 1024;
 const TEXT_CHANGE = 1 << 0;
 const STYLE_CHANGE = 1 << 1;
@@ -143,13 +153,6 @@ interface TextReconciler {
   needsApply(text: Text<AnyRasterTechnique>): boolean;
   semanticChanges(text: Text<AnyRasterTechnique>): number;
   textMutations(text: Text<AnyRasterTechnique>): readonly PendingTextMutation[];
-  /**
-   * Monotonic counter bumped by every `set()` that changes desired state. It is the batch's
-   * evidence that a rejected frame's input actually moved. `needsApply` cannot serve: a rejection
-   * never reaches `markApplied`, so it stays true forever and says nothing about whether the
-   * caller changed anything.
-   */
-  revision(text: Text<AnyRasterTechnique>): number;
   markApplied(text: Text<AnyRasterTechnique>): void;
   bind(text: Text<AnyRasterTechnique>, binding: ThreeTextBatchBinding, group: TextGroup | undefined): void;
   unbindFrom(text: Text<AnyRasterTechnique>, binding: ThreeTextBatchBinding): void;
@@ -165,7 +168,6 @@ export class Text<Technique extends AnyRasterTechnique> extends THREE.Object3D {
       needsApply: (text) => text.#desiredRevision !== text.#appliedRevision,
       semanticChanges: (text) => text.#semanticChanges,
       textMutations: (text) => text.#textMutations,
-      revision: (text) => text.#desiredRevision,
       markApplied: (text) => text.#markApplied(),
       bind: (text, binding, group) => text.#bind(binding, group),
       unbindFrom: (text, binding) => text.#unbindFrom(binding),
@@ -393,7 +395,7 @@ export class Text<Technique extends AnyRasterTechnique> extends THREE.Object3D {
         this.#binding.synchronize();
         // A latched batch published nothing this frame, so the rejection `.error` already holds is
         // still the current state. Clearing it here would erase the only signal a rejected frame has.
-        if (!this.#binding.latched) this.#error = undefined;
+        if (!this.#binding.failed) this.#error = undefined;
       } catch (error) {
         this.#error = error;
         this.onError?.(error);
@@ -534,7 +536,7 @@ export class TextGroup extends THREE.Object3D {
           this.#binding.synchronize();
           // A latched batch published nothing this frame, so the rejection `.error` already holds
           // is still the current state; clearing it would erase the only signal it has.
-          if (!this.#binding.latched) this.#error = undefined;
+          if (!this.#binding.failed) this.#error = undefined;
         } catch (error) {
           this.#error = error;
           this.onError?.(error);
@@ -543,7 +545,7 @@ export class TextGroup extends THREE.Object3D {
         this.#binding.reconcile([]);
         try {
           this.#binding.synchronize();
-          if (!this.#binding.latched) this.#error = undefined;
+          if (!this.#binding.failed) this.#error = undefined;
         } catch (error) {
           this.#error = error;
           this.onError?.(error);
@@ -564,24 +566,6 @@ export class TextGroup extends THREE.Object3D {
 }
 
 /** One paragraph of a rejected frame, in render order: what it was and which desired state it held. */
-interface LatchedParagraph {
-  readonly id: number;
-  readonly revision: number;
-}
-
-/**
- * A frame the batch refused to keep recompiling.
- *
- * A rejected frame never reaches `markApplied()`, so every text in it still reports `needsApply()`
- * and the identical frame would be recompiled and rejected on every subsequent `updateMatrixWorld`.
- * The latch records the exact input that was rejected; the batch stays silent until that input
- * moves, and then compiles once more.
- */
-interface LatchedRejection {
-  readonly error: unknown;
-  readonly frame: readonly LatchedParagraph[];
-}
-
 interface RetainedEngineParagraph {
   readonly id: number;
   textLength: number;
@@ -618,7 +602,8 @@ class ThreeTextBatchBinding {
   #textCapacity = 0;
   #capacity: GlyphBufferCapacity;
   #materialInvalidated = false;
-  #rejection: LatchedRejection | undefined;
+  #rejection: unknown;
+  #capacityExceeded: { readonly required: number; readonly size: number } | undefined;
   #disposed = false;
 
   constructor(runtime: TextRuntime, capacity: GlyphBufferCapacity, group: TextGroup | undefined) {
@@ -703,7 +688,13 @@ class ThreeTextBatchBinding {
     }
     const properties = reconciler.properties(text);
     const content = properties.text as string;
-    const geometry = compileEngineGeometry(paragraph, properties.contentBox, 0, content.length);
+    const geometry = compileEngineGeometry(
+      paragraph.id,
+      paragraph.geometryRevision + 1,
+      properties.contentBox,
+      0,
+      content.length,
+    );
     const result = this.#session.measureParagraph(
       compileTextEngineFrameUpdate({
         sessionId: this.#session.handle,
@@ -787,35 +778,24 @@ class ThreeTextBatchBinding {
    * is what the query threw before the latch existed.
    */
   #assertNotLatched(): void {
-    if (this.#rejection !== undefined) throw this.#rejection.error;
+    if (this.#rejection !== undefined) throw this.#rejection;
   }
   /**
-   * True while a rejected frame is latched.
+   * True once a frame was refused, which means this package broke one of its own invariants.
    *
-   * Most causes are unreachable from the public API -- span offsets are validated at `set()` and every surviving boundary is snapped onto the cluster grid before it reaches the engine -- but adversarial review found four that are not. Disjoint-or-nested spans are deliberately forwarded; feature ranges inside a span are copied unchanged while only the outer range is checked; lone surrogates are explicitly left for the engine; and `capacity.policy: 'fixed'` rejects by caller request. The first three are gaps to close at the `set()` boundary, and until they are, a rejection is *usually* an invariant this package broke rather than always. The latch still exists so that one such defect is reported once instead of recompiling and failing silently at frame rate, and there is still no `retry()`: every reachable cause is corrected by a `set()`, which releases the latch on its own.
+   * Shaping, layout, and measurement cannot fail with the data they need, and every input a caller
+   * controls -- span ranges and nesting, feature ranges, surrogate pairing, cluster alignment -- is
+   * refused at `set()` before it reaches the engine. A refusal here is therefore a defect to report,
+   * not a condition to recover from, and there is deliberately nothing that clears it: the batch
+   * reports once and stops compiling instead of failing silently at frame rate behind the last good
+   * picture.
    */
-  get latched(): boolean {
+  /** What a fixed budget could not hold, while it cannot hold it. Cleared when the content fits again. */
+  get capacityExceeded(): { readonly required: number; readonly size: number } | undefined {
+    return this.#capacityExceeded;
+  }
+  get failed(): boolean {
     return this.#rejection !== undefined;
-  }
-  /**
-   * Whether the frame about to be compiled is byte-for-byte the one already rejected.
-   *
-   * Runs only while latched, so the accepted path pays one boolean test per frame. Every input a
-   * frame is compiled from is covered: the paragraph set and its render order, each paragraph's
-   * desired revision, pending removals, and a material swap. Capacity changes clear the latch at
-   * `setCapacity`, since a capacity rejection is the one cause a caller corrects without touching
-   * any `Text`.
-   */
-  #frameUnchangedSince(
-    rejection: LatchedRejection,
-    ordered: readonly (readonly [Text<AnyRasterTechnique>, RetainedEngineParagraph])[],
-  ): boolean {
-    if (this.#removed.length !== 0 || this.#materialInvalidated) return false;
-    if (rejection.frame.length !== ordered.length) return false;
-    return rejection.frame.every((latched, order) => {
-      const entry = ordered[order];
-      return entry !== undefined && entry[1].id === latched.id && reconciler.revision(entry[0]) === latched.revision;
-    });
   }
   synchronize(semanticViewMask = 0): void {
     if (this.#disposed) return;
@@ -825,16 +805,17 @@ class ThreeTextBatchBinding {
       ([leftText, left], [rightText, right]) => leftText.renderOrder - rightText.renderOrder || left.id - right.id,
     );
     if (this.#rejection !== undefined) {
-      if (this.#frameUnchangedSince(this.#rejection, ordered)) {
-        // A latched paragraph must not freeze the scene around it. Transforms, visibility, and
-        // render order are applied to the last accepted publication and never enter the frame the
-        // engine refused, so withholding them would turn one rejected paragraph into a whole group
-        // that stops responding to the camera.
-        this.#target.syncTransforms(this.#dirtyTransformIds, this.#group !== undefined);
-        this.#dirtyTransformIds.clear();
-        return;
-      }
-      this.#rejection = undefined;
+      // A rejection is a defect in this package, not a state to recover from: shaping and layout
+      // cannot fail once the data they need is present, and every input a caller controls is
+      // refused at `set()` before it reaches here. So there is nothing to try again for, and the
+      // batch stops compiling for good rather than deciding when the input has moved enough.
+      //
+      // Transforms still run. They are applied to the last accepted publication and never entered
+      // the frame the engine refused, so withholding them would turn one broken paragraph into a
+      // whole group that stops responding to the camera.
+      this.#target.syncTransforms(this.#dirtyTransformIds, this.#group !== undefined);
+      this.#dirtyTransformIds.clear();
+      return;
     }
     const changed = ordered.flatMap(([text, paragraph], order) => {
       const semanticChanges =
@@ -901,7 +882,13 @@ class ThreeTextBatchBinding {
           }
         }
         if (semanticChanges & GEOMETRY_CHANGE) {
-          const geometry = compileEngineGeometry(paragraph, properties.contentBox, regions.length, content.length);
+          const geometry = compileEngineGeometry(
+            paragraph.id,
+            paragraph.geometryRevision + 1,
+            properties.contentBox,
+            regions.length,
+            content.length,
+          );
           constraints.push(geometry.constraint);
           regions.push(...geometry.regions);
         }
@@ -911,6 +898,14 @@ class ThreeTextBatchBinding {
       for (const text of this.#paragraphs.keys()) {
         totalTextLength += text.text.length;
         maximumParagraphTextLength = Math.max(maximumParagraphTextLength, text.text.length);
+      }
+      if (!this.#withinFixedCapacity(totalTextLength)) {
+        // The caller asked for a hard cap, so honouring it is the correct outcome rather than a
+        // failure: keep the last complete revision, keep the scene running, and keep transforms
+        // live so the paragraph still follows the camera.
+        this.#target.syncTransforms(this.#dirtyTransformIds, this.#group !== undefined);
+        this.#dirtyTransformIds.clear();
+        return;
       }
       this.#ensureCapacity(totalTextLength, maximumParagraphTextLength);
       const limits = engineLimits(
@@ -995,10 +990,7 @@ class ThreeTextBatchBinding {
         // A committed frame whose GPU application failed is retried from `#lastPublication` on the
         // next frame, so latching it would suppress the retry that is meant to recover it. Only an
         // uncommitted frame -- one the engine or the compiler refused -- is latched.
-        this.#rejection = {
-          error: rejected,
-          frame: ordered.map(([text, paragraph]) => ({ id: paragraph.id, revision: reconciler.revision(text) })),
-        };
+        this.#rejection = rejected;
       }
       throw rejected;
     }
@@ -1023,18 +1015,41 @@ class ThreeTextBatchBinding {
     return { kind: 'paragraph', text };
   }
   setCapacity(value: GlyphBufferCapacity): void {
-    // Capacity is the one frame input no `Text` revision covers, so a capacity change drops the
-    // latch itself rather than being detected by `#frameUnchangedSince`.
-    this.#rejection = undefined;
     this.#capacity = value;
     this.#requestCapacity = Math.max(this.#requestCapacity, value.size * 32);
     this.#resultCapacity = Math.max(this.#resultCapacity, value.size * 160);
     this.#session.reserve(this.#requestCapacity, this.#resultCapacity);
   }
-  #ensureCapacity(required: number, requiredParagraphText: number): void {
-    if (required > this.#capacity.size && this.#capacity.policy === 'fixed') {
-      throw new RangeError(`text requires ${required} glyph slots but fixed capacity is ${this.#capacity.size}`);
+  /**
+   * Whether a fixed budget can hold what the paragraphs now need.
+   *
+   * `fixed` is a caller declaring a hard glyph budget, which is a real thing to want in a
+   * memory-constrained scene, so exceeding it is neither a defect nor an error: it is the policy
+   * doing what it was asked to do. The defined behaviour is that the update does not apply and the
+   * last complete revision stays on screen. The requirement is a text-length upper bound computed
+   * before shaping, so the answer never depends on work the budget was supposed to bound.
+   *
+   * It self-heals: shortening the text or raising the capacity clears it on the next frame, because
+   * the comparison is recomputed rather than latched.
+   */
+  #withinFixedCapacity(required: number): boolean {
+    if (this.#capacity.policy !== 'fixed' || required <= this.#capacity.size) {
+      this.#capacityExceeded = undefined;
+      return true;
     }
+    const exceeded = { required, size: this.#capacity.size };
+    const changed = this.#capacityExceeded?.required !== required || this.#capacityExceeded.size !== exceeded.size;
+    this.#capacityExceeded = exceeded;
+    if (changed && DEV) {
+      console.warn(
+        `[@pmndrs/glyph] fixed capacity ${exceeded.size} cannot hold ${required} glyph slots; the last complete ` +
+          `revision stays visible and this update is not applied. Raise the capacity, shorten the text, or use ` +
+          `the 'grow' or 'chunk' policy.`,
+      );
+    }
+    return false;
+  }
+  #ensureCapacity(required: number, requiredParagraphText: number): void {
     const target =
       this.#capacity.policy === 'chunk' ? Math.ceil(required / this.#capacity.size) * this.#capacity.size : required;
     const requestCapacity = Math.max(this.#requestCapacity, target * 32);
@@ -1250,27 +1265,6 @@ function compileEngineStyles<Technique extends AnyRasterTechnique>(
   return styles;
 }
 
-/**
- * The spans that state a style over text, in authored order.
- *
- * An empty span covers no cluster and so states nothing, but the engine's style resolution walks
- * the text offset by offset and cannot advance across a zero-width scope, so one reaching it fails
- * the whole frame (`style_state.rs`, `resolve`). Cluster resolution produces an empty span whenever
- * an edit hands a span's last cluster to the span before it, and keeps it in `Text.spans` so the
- * loss is visible and later indices do not shift; dropping it here is what keeps that record from
- * costing the paragraph. Style ids stay contiguous from the emitted order because the removal pass
- * that trims a shrunken style list counts on it.
- */
-function styledSpans<Technique extends AnyRasterTechnique>(
-  spans: readonly ParagraphSpan<Technique>[] | undefined,
-): readonly ParagraphSpan<Technique>[] {
-  // Only a collapsed span is dropped, and COMPILE TIME is where that belongs: the drop is a
-  // property of the engine style list, not of the caller's array, and doing it at `set()` would
-  // renumber every later span behind the caller's back. An INVERTED span never reaches here --
-  // `assertSpanRanges` throws it back at `set()`, where the stack still names the caller.
-  return spans === undefined ? [] : spans.filter((span) => span.start !== span.end);
-}
-
 function acquireEngineMaterial(
   coordinator: ThreeTextEngineCoordinator,
   material: ThreeTextMaterial | undefined,
@@ -1296,216 +1290,6 @@ function acquireEngineStack<Technique extends AnyRasterTechnique>(
   return lease.handle;
 }
 
-function engineStyleValue(
-  style: ParagraphStyle,
-  paint: GlyphPaintInput | undefined,
-  start: number,
-  end: number,
-  base: TextEngineStyleValue,
-): TextEngineStyleValue {
-  return {
-    ...base,
-    ...(style.fontSize === undefined ? {} : { fontSize: style.fontSize }),
-    ...(style.lineHeight === undefined ? {} : { lineHeight: style.lineHeight }),
-    ...(style.letterSpacing === undefined ? {} : { letterSpacing: style.letterSpacing }),
-    ...(style.wordSpacing === undefined ? {} : { wordSpacing: style.wordSpacing }),
-    ...(style.language === undefined ? {} : { language: style.language }),
-    ...(style.direction === undefined ? {} : { direction: style.direction }),
-    ...(style.features === undefined
-      ? {}
-      : {
-          features: style.features.map((feature) => ({
-            tag: feature.tag,
-            value: feature.value ?? 1,
-            start: feature.start ?? start,
-            end: feature.end ?? end,
-          })),
-        }),
-    ...(paint === undefined ? {} : { foregroundRgba: packedForeground(paint) }),
-    ...(style.decoration === undefined ? {} : { decoration: engineDecoration(style.decoration, paint) }),
-  };
-}
-
-function engineDecoration(
-  decoration: NonNullable<ParagraphStyle['decoration']>,
-  paint: GlyphPaintInput | undefined,
-): TextEngineDecoration {
-  if (decoration.style !== undefined && decoration.style !== 'solid') {
-    throw new TypeError(`'${decoration.style}' decoration lines are not implemented yet; only 'solid' is supported`);
-  }
-  return {
-    style: decoration.style ?? 'solid',
-    rgba: packedForeground(decoration.color === undefined ? (paint ?? {}) : { color: decoration.color }),
-    ...(decoration.underline === undefined ? {} : { underline: decoration.underline }),
-    ...(decoration.overline === undefined ? {} : { overline: decoration.overline }),
-    ...(decoration.lineThrough === undefined ? {} : { lineThrough: decoration.lineThrough }),
-    thickness: decoration.thickness ?? 0,
-    offset: decoration.offset ?? 0,
-  };
-}
-
-/**
- * Column region ids stride the high byte so every paragraph's extra columns
- * stay unique in the frame's region table while column zero keeps the
- * paragraph id itself — the single-column request bytes are unchanged.
- */
-const COLUMN_REGION_ID_STRIDE = 0x01_00_00_00;
-
-function normalizedColumns(contentBox: ParagraphContentBox | undefined): { count: number; gap: number } {
-  const columns = contentBox?.columns;
-  if (columns === undefined) return { count: 1, gap: 0 };
-  const gap = columns.gap ?? 0;
-  if (!Number.isSafeInteger(columns.count) || columns.count < 1 || columns.count > 16) {
-    throw new RangeError('contentBox columns count must be an integer between 1 and 16');
-  }
-  if (!Number.isFinite(gap) || gap < 0) {
-    throw new RangeError('contentBox columns gap must be a nonnegative finite number');
-  }
-  if (columns.count > 1 && contentBox?.width?.mode !== 'exact') {
-    throw new TypeError('contentBox columns require an exact width to derive the column measure');
-  }
-  // Ordered columns fill without balancing, so the column height is the only
-  // signal that advances flow into the next region: unbounded height would
-  // keep every line in the first column forever.
-  if (columns.count > 1 && contentBox?.height === undefined) {
-    throw new TypeError('contentBox columns require a bounded height to fill columns in order');
-  }
-  return { count: columns.count, gap };
-}
-
-function compileEngineGeometry(
-  paragraph: RetainedEngineParagraph,
-  contentBox: ParagraphContentBox | undefined,
-  regionStart: number,
-  textLength: number,
-): { readonly constraint: TextEngineConstraint; readonly regions: readonly TextEngineRegion[] } {
-  const width = axis(contentBox?.width);
-  const height = axis(contentBox?.height);
-  const columns = normalizedColumns(contentBox);
-  const inlineEnd = width.mode === 'unconstrained' ? 0x01_00_00_00 : width.size;
-  const blockEnd = height.mode === 'unconstrained' ? 0x01_00_00_00 : height.size;
-  const maxLines = contentBox?.maxLines ?? Math.max(1, textLength);
-  const geometryRevision = paragraph.geometryRevision + 1;
-  const columnWidth = (inlineEnd - columns.gap * (columns.count - 1)) / columns.count;
-  if (columns.count > 1 && columnWidth <= 0) {
-    throw new RangeError('contentBox columns and gap leave no positive column measure');
-  }
-  return {
-    constraint: {
-      paragraphId: paragraph.id,
-      flowThreadId: paragraph.id,
-      geometryRevision,
-      width: width.size,
-      height: height.size,
-      viewportBlockStart: 0,
-      viewportBlockEnd: blockEnd,
-      resumeBlockOffset: 0,
-      maxLines,
-      regionStart,
-      resumeCluster: 0,
-      regionCount: columns.count,
-      resumeRegion: 0,
-      widthMode: width.mode,
-      heightMode: height.mode,
-      wrap: contentBox?.wrap ?? 'word',
-      align: contentBox?.align ?? 'start',
-      overflow: contentBox?.overflow ?? 'visible',
-      blockAlign: 'start',
-      ...(contentBox?.firstLineIndent === undefined ? {} : { firstLineIndent: contentBox.firstLineIndent }),
-      ...(contentBox?.spaceBefore === undefined ? {} : { spaceBefore: contentBox.spaceBefore }),
-      ...(contentBox?.spaceAfter === undefined ? {} : { spaceAfter: contentBox.spaceAfter }),
-      ...(contentBox?.justify === undefined ? {} : { justify: contentBox.justify }),
-      ...(contentBox?.lastLine === undefined ? {} : { lastLine: contentBox.lastLine }),
-    },
-    regions: Array.from({ length: columns.count }, (_, column) => {
-      const inlineStart = column * (columnWidth + columns.gap);
-      const columnInlineEnd = column === columns.count - 1 ? inlineEnd : inlineStart + columnWidth;
-      return {
-        id: paragraph.id + COLUMN_REGION_ID_STRIDE * column,
-        geometryRevision,
-        transformIndex: paragraph.id,
-        shape: 'rectangle' as const,
-        exclusionStart: 0,
-        exclusionCount: 0,
-        writingMode: 'horizontal-tb' as const,
-        textOrientation: 'mixed' as const,
-        inlineStart,
-        blockStart: 0,
-        inlineEnd: columnInlineEnd,
-        blockEnd,
-        clipInlineStart: inlineStart,
-        clipBlockStart: 0,
-        clipInlineEnd: columnInlineEnd,
-        clipBlockEnd: blockEnd,
-      };
-    }),
-  };
-}
-
-function axis(value: ParagraphContentBox['width'] | undefined): {
-  readonly mode: 'unconstrained' | 'at-most' | 'exact';
-  readonly size: number;
-} {
-  if (value === undefined || value.mode === 'unconstrained') return { mode: 'unconstrained', size: 0 };
-  return { mode: value.mode, size: value.size };
-}
-
-function engineLimits(
-  paragraphCount: number,
-  textLength: number,
-  maximumParagraphTextLength: number,
-  regionCount: number,
-  maxOutputBytes: number,
-  mutationRecordCount = 0,
-): TextEngineFrameLimits {
-  return {
-    maxParagraphs: Math.max(1, paragraphCount),
-    maxClusters: Math.max(1, textLength * 2, mutationRecordCount),
-    // Rust applies this limit while composing each paragraph. Using aggregate batch text here makes every paragraph
-    // reserve enough line scratch for the whole TextGroup, multiplying retained memory by paragraph count.
-    maxLines: Math.max(1, maximumParagraphTextLength),
-    maxRegions: Math.max(1, regionCount),
-    maxExclusions: 1,
-    maxInlineObjects: 1,
-    maxSlotsPerBand: 8,
-    maxOutputBytes,
-  };
-}
-
-function packedForeground(paint: GlyphPaintInput): number {
-  const opacity = paint.opacity ?? 1;
-  if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) {
-    throw new RangeError('opacity must be in [0, 1]');
-  }
-  const input = paint.color ?? '#ffffff';
-  const rgba = typeof input === 'string' ? parseHexColorBytes(input) : linearColorBytes(input);
-  const alpha = Math.round(rgba[3] * opacity);
-  return (rgba[0] | (rgba[1] << 8) | (rgba[2] << 16) | (alpha << 24)) >>> 0;
-}
-
-function parseHexColorBytes(value: string): readonly [number, number, number, number] {
-  const match = /^#([0-9a-f]{6}|[0-9a-f]{8})$/iu.exec(value);
-  if (match === null) throw new TypeError('colors must be #rrggbb, #rrggbbaa, or linear RGBA');
-  const hex = match[1]!;
-  return [
-    Number.parseInt(hex.slice(0, 2), 16),
-    Number.parseInt(hex.slice(2, 4), 16),
-    Number.parseInt(hex.slice(4, 6), 16),
-    hex.length === 8 ? Number.parseInt(hex.slice(6), 16) : 255,
-  ];
-}
-
-function linearColorBytes(color: readonly number[]): readonly [number, number, number, number] {
-  if (color.length !== 4 || color.some((value) => !Number.isFinite(value) || value < 0 || value > 1)) {
-    throw new TypeError('linear RGBA colors must contain four finite channels in [0, 1]');
-  }
-  const srgbByte = (value: number): number => {
-    const srgb = value <= 0.003_130_8 ? value * 12.92 : 1.055 * value ** (1 / 2.4) - 0.055;
-    return Math.round(srgb * 255);
-  };
-  return [srgbByte(color[0]!), srgbByte(color[1]!), srgbByte(color[2]!), Math.round(color[3]! * 255)];
-}
-
 function releaseStackLeases(leases: readonly ThreeTextEngineStackLease[]): void {
   for (const lease of leases) lease.release();
 }
@@ -1517,49 +1301,6 @@ function releaseMaterialLeases(leases: readonly ThreeTextMaterialLease[]): void 
 function ownPublication(publication: TextEnginePublication): TextEnginePublication {
   const bytes = publication.bytes.slice();
   return { ...publication, bytes, memoryBuffer: bytes.buffer, memoryGrew: false };
-}
-
-/**
- * Replacement text carries its own formatting: a literal brings its spans and a
- * plain string brings none. Retaining the previous spans would reinterpret them
- * against unrelated text, so an update that replaces text without stating spans
- * clears the ones it replaced.
- */
-function replacedContent<Technique extends AnyRasterTechnique>(update: TextUpdate<Technique>): TextUpdate<Technique> {
-  if (!('text' in update) || 'spans' in update) return update;
-  return { ...update, spans: [] } as TextUpdate<Technique>;
-}
-
-function minimalTextMutation(previous: string, next: string): PendingTextMutation | undefined {
-  if (previous === next) return undefined;
-  const shared = Math.min(previous.length, next.length);
-  let start = 0;
-  while (start < shared) {
-    const previousCodePoint = previous.codePointAt(start)!;
-    if (previousCodePoint !== next.codePointAt(start)) break;
-    start += previousCodePoint > 0xffff ? 2 : 1;
-  }
-  let previousEnd = previous.length;
-  let nextEnd = next.length;
-  while (previousEnd > start && nextEnd > start) {
-    const previousStart = previousScalarStart(previous, previousEnd);
-    const nextStart = previousScalarStart(next, nextEnd);
-    if (previous.codePointAt(previousStart) !== next.codePointAt(nextStart)) break;
-    previousEnd = previousStart;
-    nextEnd = nextStart;
-  }
-  return {
-    start,
-    deleteCount: previousEnd - start,
-    insert: next.slice(start, nextEnd),
-  };
-}
-
-function previousScalarStart(value: string, end: number): number {
-  const last = end - 1;
-  const unit = value.charCodeAt(last);
-  const previous = value.charCodeAt(last - 1);
-  return unit >= 0xdc00 && unit <= 0xdfff && last > 0 && previous >= 0xd800 && previous <= 0xdbff ? last - 1 : last;
 }
 
 function classifySemanticChanges<Technique extends AnyRasterTechnique>(update: TextUpdate<Technique>): number {
@@ -1643,22 +1384,108 @@ function normalizeDesired<Technique extends AnyRasterTechnique>(
  * The argument array is returned by identity so the caller-side fast path in `normalizeDesired` is
  * unaffected: an unchanged `spans` identity skips this walk entirely.
  */
+/**
+ * Rejects, at the call site, every span shape the engine would refuse a whole frame for.
+ *
+ * The engine's rejections are meant to be invariants this package broke, not caller mistakes. Each
+ * check below closes a path a caller could otherwise reach: the offending value is named here, with
+ * the caller still on the stack, instead of surfacing a frame later as a status with no subject.
+ */
 function assertSpanRanges<Technique extends AnyRasterTechnique>(
   text: string,
   spans: readonly ParagraphSpan<Technique>[],
 ): readonly ParagraphSpan<Technique>[] {
+  assertPairedSurrogates(text);
   for (const [index, span] of spans.entries()) {
-    if (!Number.isSafeInteger(span.start) || !Number.isSafeInteger(span.end)) {
-      throw new RangeError(`span ${index} offsets must be integers, received (${span.start}, ${span.end})`);
-    }
-    if (span.start > span.end) {
-      throw new RangeError(`span ${index} is inverted: start ${span.start} is after end ${span.end}`);
-    }
-    if (span.start < 0 || span.end > text.length) {
-      throw new RangeError(`span ${index} covers [${span.start}, ${span.end}) outside text of length ${text.length}`);
-    }
+    assertRange(`span ${index}`, span.start, span.end, text.length);
+    assertFeatureRanges(`span ${index}`, span.style?.features, text.length);
   }
+  assertSpansNest(spans);
   return spans;
+}
+
+/**
+ * A feature range is optional and defaults to the span it rides, so only a stated one is checked.
+ * Before this, the outer span range was validated and the feature range inside it was copied
+ * through, so a malformed one was refused by the engine naming neither the span nor the feature.
+ */
+function assertFeatureRanges(subject: string, features: readonly FontFeature[] | undefined, length: number): void {
+  for (const [position, feature] of (features ?? []).entries()) {
+    if (feature.start === undefined && feature.end === undefined) continue;
+    assertRange(`${subject} feature ${position} (${feature.tag})`, feature.start ?? 0, feature.end ?? length, length);
+  }
+}
+
+function assertRange(subject: string, start: number, end: number, length: number): void {
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) {
+    throw new RangeError(`${subject} offsets must be integers, received (${start}, ${end})`);
+  }
+  if (start > end) throw new RangeError(`${subject} is inverted: start ${start} is after end ${end}`);
+  if (start < 0 || end > length) {
+    throw new RangeError(`${subject} covers [${start}, ${end}) outside text of length ${length}`);
+  }
+}
+
+/**
+ * A style scope is a stack, so two spans must nest or be disjoint; a partial overlap has no
+ * well-defined resolution and the engine refuses the frame for it (`style_state.rs`, `resolve`).
+ *
+ * Overlapping ranges are a natural way to author rich text, and refusing them is a real limitation
+ * rather than a virtue -- resolving them per cluster by cascade order would be the better surface.
+ * Until that exists, the refusal belongs here, where both offending spans can be named, rather than
+ * arriving as a frame status that identifies neither.
+ */
+function assertSpansNest<Technique extends AnyRasterTechnique>(spans: readonly ParagraphSpan<Technique>[]): void {
+  const order = spans
+    .map((span, index) => ({ span, index }))
+    .filter((entry) => entry.span.start !== entry.span.end)
+    .sort((left, right) => left.span.start - right.span.start || right.span.end - left.span.end);
+  const open: { end: number; index: number }[] = [];
+  for (const { span, index } of order) {
+    while (open.length !== 0 && span.start >= open[open.length - 1]!.end) open.pop();
+    const enclosing = open[open.length - 1];
+    if (enclosing !== undefined && span.end > enclosing.end) {
+      throw new RangeError(
+        `span ${index} [${span.start}, ${span.end}) partially overlaps span ${enclosing.index}: ` +
+          `spans must nest or be disjoint, so end it at or before ${enclosing.end}, or start it at or after it`,
+      );
+    }
+    open.push({ end: span.end, index });
+  }
+  const seen = new Map<string, number>();
+  for (const [index, span] of spans.entries()) {
+    if (span.start === span.end) continue;
+    // Cascade order is the authored array index, so an identical range at a different index is a
+    // legitimate re-statement; only a genuine duplicate of both is refused.
+    const key = `${span.start}:${span.end}`;
+    const first = seen.get(key);
+    if (first !== undefined) {
+      throw new RangeError(
+        `span ${index} duplicates span ${first}: two spans over [${span.start}, ${span.end}) cannot both be resolved`,
+      );
+    }
+    seen.set(key, index);
+  }
+}
+
+/**
+ * A lone surrogate is not a character, and shaping refuses the frame that carries one. It was
+ * deliberately left for the engine; naming the offset here is what a caller can act on.
+ */
+function assertPairedSurrogates(text: string): void {
+  for (let index = 0; index < text.length; index += 1) {
+    const unit = text.charCodeAt(index);
+    if (unit < 0xd800 || unit > 0xdfff) continue;
+    const isHigh = unit <= 0xdbff;
+    const next = isHigh ? text.charCodeAt(index + 1) : Number.NaN;
+    if (isHigh && next >= 0xdc00 && next <= 0xdfff) {
+      index += 1;
+      continue;
+    }
+    throw new RangeError(
+      `text offset ${index} is an unpaired ${isHigh ? 'high' : 'low'} surrogate (0x${unit.toString(16)})`,
+    );
+  }
 }
 function selectedFonts<Technique extends AnyRasterTechnique>(
   state: DesiredTextState<Technique>,

@@ -5,7 +5,7 @@ description: Implements portable font loading, retained Rust shaping and layout,
 resource: ../../packages/glyph
 workspace_package: '@pmndrs/glyph'
 documentation_type: reference
-source_digest: 'sha256:f38711a4d7def41cfd0e27f24ac386146e59f19a8d1c8941f045782056e0126e'
+source_digest: 'sha256:953c8b6551ccd3be89bf1a2e164608961ea644d9f00e0c8be5ee3fb18249364f'
 tags: [package, public-api, rust, wasm, threejs, typography]
 sources:
   - id: manifest

@@ -499,8 +499,10 @@ export const textShaperAbi = {
       "itemCount": 24,
       "itemStart": 20,
       "kind": 4,
+      "maxContentWidth": 72,
+      "minContentWidth": 68,
       "parentId": 8,
-      "size": 68,
+      "size": 76,
       "textEnd": 16,
       "textStart": 12
     },
