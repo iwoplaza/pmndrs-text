@@ -40,6 +40,24 @@ test('the published contract is ESM-only', async () => {
     assert.ok(!(removed in manifest.exports), `${removed} was replaced by a typed subpath and must stay removed`);
   }
 
+  // The typed ABI subpaths published struct offsets for pointer arithmetic and the validator subpaths
+  // published bake-time artifact checks; neither had a consumer outside this package. The modules are still built
+  // and packed — only the entry points are withdrawn, so a re-added name is a decision to make, not an
+  // accident to ship. `/core` and `/tsl` stay published: they are the engine-integration surface a custom
+  // renderer builds on, and `@pmndrs/glyph/three` is itself one of their consumers.
+  for (const removed of [
+    './text-shaper-abi',
+    './bitmap-baker-abi',
+    './mtsdf-baker-abi',
+    './slug-baker-abi',
+    './font-baker-abi',
+    './bakers/bitmap/validate',
+    './bakers/msdf/validate',
+    './bakers/slug/validate',
+  ]) {
+    assert.ok(!(removed in manifest.exports), `${removed} is deliberately unpublished and must stay unpublished`);
+  }
+
   for (const [subpath, target] of Object.entries(manifest.exports)) {
     if (typeof target === 'string') {
       assert.ok(
