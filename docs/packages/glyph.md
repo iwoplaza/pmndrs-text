@@ -5,7 +5,7 @@ description: Implements portable font loading, retained Rust shaping and layout,
 resource: ../../packages/glyph
 workspace_package: '@pmndrs/glyph'
 documentation_type: reference
-source_digest: 'sha256:a611577e60c5763ae600b4174688cb165d99091c733326237855a60645087b5b'
+source_digest: 'sha256:f38711a4d7def41cfd0e27f24ac386146e59f19a8d1c8941f045782056e0126e'
 tags: [package, public-api, rust, wasm, threejs, typography]
 sources:
   - id: manifest
@@ -114,6 +114,7 @@ TypeScript does not independently shape, lay out, or pack paragraphs.
 | `@pmndrs/glyph/raster/*`     | Renderer-neutral Bitmap, MSDF, and Slug decoding and raster-technique contracts.                                                 |
 | `@pmndrs/glyph/core`         | Renderer-neutral engine host, frame wire, plan/layout-query views, technique schemas, policy-program DSL, and binding compiler.  |
 | `@pmndrs/glyph/tsl`          | Canonical TSL shader realizations of the first-party technique interfaces; no scene integration.                                 |
+| `@pmndrs/glyph/typegpu`      | Canonical TypeGPU shader realizations of the first-party technique interfaces; no scene integration, no engine driving.           |
 | `@pmndrs/glyph/bakers/*`     | Optional portable raster bakers.                                                                                                 |
 
 The font-baker Rust source, direct-memory wrapper, schemas, tests, build pipeline, optimized Wasm, and generated ABI are
@@ -121,9 +122,11 @@ owned by this package. There is no separately published font-baker package. The 
 baker, its `std`-enabled dependencies, Ajv, glTF Validator, or the baker Wasm; only explicit bake/runtime-bake surfaces can
 load those bytes.
 
-`@pmndrs/glyph/typegpu`, the TypeScript paragraph engine, paragraph batches/attachments, direct shaping exports, and the
-text-preparation Worker are removed. TypeGPU is a later adapter stack built against the Rust render plan; it is not a
-compatibility wrapper over the removed batch model.
+The TypeScript paragraph engine, paragraph batches/attachments, direct shaping exports, and the text-preparation Worker
+are removed. TypeGPU is a later adapter stack built against the Rust render plan; it is not a compatibility wrapper over
+the removed batch model. The exception is the `@pmndrs/glyph/typegpu` shader library, which publishes the same technique
+realizations as `/tsl` as typed TypeGPU functions for any WebGPU host; `typegpu` is an optional peer and the root entry
+has no static edge to it.
 
 The package-owned `glyph` executable is available through `pnpm exec`; its `bake` command supports both project discovery
 and a direct known-font mode. Its stable packaged shim delegates to the built Node CLI, so workspace installs can link the
