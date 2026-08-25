@@ -33,14 +33,37 @@ export interface TextEnginePublication {
   readonly drawCount: number;
 }
 
+/**
+ * The paragraph and style a rejected frame names, read out of the result header.
+ *
+ * Both are the identifiers the REQUEST used, so a host maps them straight back to what it authored.
+ * Zero means the status names none: an engine-internal invariant, a capacity watermark, or a
+ * session-level conflict attributes nothing.
+ */
+export interface TextEngineFault {
+  readonly paragraphId: number;
+  readonly styleId: number;
+}
+
+const NO_FAULT: TextEngineFault = Object.freeze({ paragraphId: 0, styleId: 0 });
+
 export class TextEngineStatusError extends Error {
   readonly status: number;
   readonly requiredRequestCapacity: number;
   readonly requiredResultCapacity: number;
+  readonly fault: TextEngineFault;
 
-  constructor(operation: string, status: number, requiredRequestCapacity = 0, requiredResultCapacity = 0) {
+  constructor(
+    operation: string,
+    status: number,
+    requiredRequestCapacity = 0,
+    requiredResultCapacity = 0,
+    fault: TextEngineFault = NO_FAULT,
+  ) {
     super(
       `${operation} failed with text-engine status ${status}` +
+        (fault.paragraphId === 0 ? '' : ` (paragraph ${fault.paragraphId}`) +
+        (fault.paragraphId === 0 ? '' : fault.styleId === 0 ? ')' : `, style ${fault.styleId})`) +
         (requiredRequestCapacity === 0 && requiredResultCapacity === 0
           ? ''
           : ` (required request=${requiredRequestCapacity}, result=${requiredResultCapacity})`),
@@ -49,7 +72,15 @@ export class TextEngineStatusError extends Error {
     this.status = status;
     this.requiredRequestCapacity = requiredRequestCapacity;
     this.requiredResultCapacity = requiredResultCapacity;
+    this.fault = fault;
   }
+}
+
+function headerFault(header: DataView): TextEngineFault {
+  const layout = textShaperAbi.layouts.engineResult;
+  const paragraphId = header.getUint32(layout.faultParagraphId, true);
+  const styleId = header.getUint32(layout.faultStyleId, true);
+  return paragraphId === 0 && styleId === 0 ? NO_FAULT : Object.freeze({ paragraphId, styleId });
 }
 
 /** Lifecycle owner for retained policy, font-stack, and session state in a RuntimeShaper's Wasm instance. */
@@ -240,7 +271,13 @@ export class TextEngineSession {
         continue;
       }
       if (status !== textShaperAbi.status.ok) {
-        throw new TextEngineStatusError('publish text update', status, requiredRequestCapacity, requiredResultCapacity);
+        throw new TextEngineStatusError(
+          'publish text update',
+          status,
+          requiredRequestCapacity,
+          requiredResultCapacity,
+          headerFault(header),
+        );
       }
       return this.#decodeResult(header, resultPointer, memoryBuffer, initialMemoryBuffer);
     }
@@ -296,6 +333,7 @@ export class TextEngineSession {
           status,
           header.getUint32(layout.requiredRequestCapacity, true),
           requiredResultCapacity,
+          headerFault(header),
         );
       }
       return this.#decodeResult(header, resultPointer, memoryBuffer, initialMemoryBuffer);

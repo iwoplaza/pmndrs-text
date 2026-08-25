@@ -41,7 +41,7 @@ import { createElement } from 'react';
 import '../support/browser-globals.mjs';
 import { bitmap } from '@pmndrs/glyph/three/bitmap';
 import { alignSpansToClusters, span, txt } from '@pmndrs/glyph/three';
-import { Text as R3fText } from '@pmndrs/glyph/react';
+import { Text as R3fText, TextSpan as R3fTextSpan } from '@pmndrs/glyph/react';
 
 import { createFontCache, mount, seededRandom, timeout, unmount } from '../support/text-mutation-lanes.mjs';
 import { findGraphemeBoundaries } from '../../dist/internal/unicode.js';
@@ -228,19 +228,15 @@ test('a cluster-aligned span keeps its range, and what it retains cannot be muta
   });
 });
 
-test('an inverted authored range is not laundered into an empty span', { timeout }, async () => {
+test('an inverted authored range is rejected where the caller wrote it', { timeout }, async () => {
   // Resolution moves boundaries forward and clamps a well-formed range so it cannot invert. An
-  // ALREADY inverted range is a caller arithmetic error, and range validity has its own owner.
-  // Clamping it here would produce an empty span that the empty-span filter then discards, so the
-  // fault would vanish instead of being reported.
+  // ALREADY inverted range is a caller arithmetic error: there is no range the caller meant, so
+  // nothing can repair it. Clamping it would produce an empty span the empty-span filter discards
+  // and the fault would vanish; forwarding it produced a frame the engine refused every frame with
+  // a numeric status naming nothing. It throws from construction instead, where the stack points
+  // at the caller (D-268).
   const font = await fonts.load('inter');
-  const mounted = mount(font, [authored('abc', [styled(2, 1)])]);
-  try {
-    mounted.scene.updateMatrixWorld(true);
-    assert.notEqual(mounted.nodes[0].error, undefined, 'an inverted span must not publish silently');
-  } finally {
-    unmount(mounted);
-  }
+  assert.throws(() => mount(font, [authored('abc', [styled(2, 1)])]), /span 0 is inverted/);
 });
 
 test('an update that changes neither text nor spans re-resolves nothing', { timeout }, async () => {
@@ -531,7 +527,7 @@ test('a nested React Text whose flattened span splits a cluster mounts and publi
         onError: (error) => void errors.push(error),
         ref: (node) => void (node !== undefined && nodes.push(node)),
       },
-      createElement(R3fText, { paint: { color: '#ff2f00' } }, 'a'),
+      createElement(R3fTextSpan, { paint: { color: '#ff2f00' } }, 'a'),
       `${ACUTE}bc`,
     ),
   );
@@ -572,7 +568,7 @@ test('a nested React Text opening with a combining mark compiles onto its base c
         ref: (node) => void (node !== undefined && nodes.push(node)),
       },
       'a',
-      createElement(R3fText, { paint: { color: '#ff2f00' } }, `${ACUTE}b`),
+      createElement(R3fTextSpan, { paint: { color: '#ff2f00' } }, `${ACUTE}b`),
     ),
   );
   try {

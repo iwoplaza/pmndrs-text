@@ -417,6 +417,11 @@ struct EngineResultHeader {
     retirement_count: u32,
     diagnostics_offset: u32,
     diagnostic_count: u32,
+    /// Paragraph a rejection is attributed to, or zero when the status names none. Occupies the
+    /// tail padding this 16-byte-aligned header already carried, so the header size is unchanged.
+    fault_paragraph_id: u32,
+    /// Style the rejection is attributed to, under the request's own `styleId`, or zero.
+    fault_style_id: u32,
 }
 
 #[repr(C)]
@@ -1692,6 +1697,16 @@ field_offset!(
     EngineResultHeader,
     diagnostic_count
 );
+field_offset!(
+    ENGINE_RESULT_FAULT_PARAGRAPH_ID,
+    EngineResultHeader,
+    fault_paragraph_id
+);
+field_offset!(
+    ENGINE_RESULT_FAULT_STYLE_ID,
+    EngineResultHeader,
+    fault_style_id
+);
 field_offset!(SEMANTIC_ID, SemanticRecord, id);
 field_offset!(SEMANTIC_KIND, SemanticRecord, kind);
 field_offset!(SEMANTIC_FLAGS, SemanticRecord, flags);
@@ -1704,6 +1719,16 @@ field_offset!(SEMANTIC_INLINE_START, SemanticRecord, inline_start);
 field_offset!(SEMANTIC_BLOCK_START, SemanticRecord, block_start);
 field_offset!(SEMANTIC_INLINE_EXTENT, SemanticRecord, inline_extent);
 field_offset!(SEMANTIC_BLOCK_EXTENT, SemanticRecord, block_extent);
+field_offset!(SEMANTIC_INLINE_ADVANCE, SemanticRecord, inline_advance);
+field_offset!(SEMANTIC_INK_INLINE_START, SemanticRecord, ink_inline_start);
+field_offset!(SEMANTIC_INK_BLOCK_START, SemanticRecord, ink_block_start);
+field_offset!(
+    SEMANTIC_INK_INLINE_EXTENT,
+    SemanticRecord,
+    ink_inline_extent
+);
+field_offset!(SEMANTIC_INK_BLOCK_EXTENT, SemanticRecord, ink_block_extent);
+field_offset!(SEMANTIC_ASCENT, SemanticRecord, ascent);
 field_offset!(RESOURCE_ID, ResourceRecord, id);
 field_offset!(RESOURCE_GENERATION, ResourceRecord, generation);
 field_offset!(RESOURCE_TECHNIQUE_ID, ResourceRecord, technique_id);
@@ -2206,7 +2231,9 @@ pub fn json() -> String {
                 "retirementsOffset": ENGINE_RESULT_RETIREMENTS_OFFSET,
                 "retirementCount": ENGINE_RESULT_RETIREMENT_COUNT,
                 "diagnosticsOffset": ENGINE_RESULT_DIAGNOSTICS_OFFSET,
-                "diagnosticCount": ENGINE_RESULT_DIAGNOSTIC_COUNT
+                "diagnosticCount": ENGINE_RESULT_DIAGNOSTIC_COUNT,
+                "faultParagraphId": ENGINE_RESULT_FAULT_PARAGRAPH_ID,
+                "faultStyleId": ENGINE_RESULT_FAULT_STYLE_ID
             },
             "engineSemanticView": {
                 "size": SEMANTIC_RECORD_SIZE,
@@ -2222,7 +2249,13 @@ pub fn json() -> String {
                 "inlineStart": SEMANTIC_INLINE_START,
                 "blockStart": SEMANTIC_BLOCK_START,
                 "inlineExtent": SEMANTIC_INLINE_EXTENT,
-                "blockExtent": SEMANTIC_BLOCK_EXTENT
+                "blockExtent": SEMANTIC_BLOCK_EXTENT,
+                "inlineAdvance": SEMANTIC_INLINE_ADVANCE,
+                "inkInlineStart": SEMANTIC_INK_INLINE_START,
+                "inkBlockStart": SEMANTIC_INK_BLOCK_START,
+                "inkInlineExtent": SEMANTIC_INK_INLINE_EXTENT,
+                "inkBlockExtent": SEMANTIC_INK_BLOCK_EXTENT,
+                "ascent": SEMANTIC_ASCENT
             },
             "engineResource": {
                 "size": RESOURCE_RECORD_SIZE,
@@ -2540,7 +2573,13 @@ pub fn json() -> String {
                 "layoutInspection": SEMANTIC_VIEW_LAYOUT_INSPECTION
             },
             "measurementFlags": {
-                "overflowed": crate::engine::layout_query::MEASUREMENT_FLAG_OVERFLOWED
+                "overflowed": crate::engine::layout_query::MEASUREMENT_FLAG_OVERFLOWED,
+                "inkBounds": crate::engine::layout_query::MEASUREMENT_FLAG_INK_BOUNDS
+            },
+            "glyphFlags": {
+                "unsafeToBreak": crate::engine::shaping_state::GLYPH_FLAG_UNSAFE_TO_BREAK,
+                "unsafeToConcat": crate::engine::shaping_state::GLYPH_FLAG_UNSAFE_TO_CONCAT,
+                "produced": crate::engine::shaping_state::GLYPH_FLAGS_PRODUCED
             },
             "semanticKinds": {
                 "line": SEMANTIC_LINE,
@@ -2601,7 +2640,12 @@ pub fn json() -> String {
             "sessionMissing": 11,
             "revisionConflict": 12,
             "fontStackMissing": 13,
-            "fontInUse": 14
+            "fontInUse": 14,
+            "styleRangeInvalid": 15,
+            "styleSplitsCluster": 16,
+            "styleNestingInvalid": 17,
+            "styleRootInvalid": 18,
+            "fontMetricsMissing": 19
         }
     })
     .to_string()

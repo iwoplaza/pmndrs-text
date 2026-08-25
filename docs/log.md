@@ -1,5 +1,58 @@
 # pmndrs/glyph documentation update log
 
+## 2026-08-23
+
+- **A refused frame now says what is wrong, whose fault it is, and says it once** — Three failure modes a
+  caller actually hits shared one shape: the caller was told nothing useful, and told it forever.
+  `EngineError::InvalidRequest` stood for more than twenty causes and reached JavaScript as `status 6`, an
+  integer naming no paragraph, no span, and no offset, from a `/three` surface that did not export
+  `textShaperAbi.status` to turn it back into a word. Six caller-actionable causes are now separated from it
+  and carry the offending paragraph and style in two u32s of the result header's existing tail padding, so the
+  header size and every prior field offset are unchanged (D-267); `/three` re-raises them as `TextFrameError`
+  with a discriminated `rejection` resolved onto the `Text` and, where one span owns the cause, that span and
+  its index in `Text.spans`. A rejected frame never reached `markApplied()`, so the identical frame was
+  recompiled and rejected on every `updateMatrixWorld` for the life of the scene; it now latches on the
+  desired revision of every paragraph in render order and resumes only when what it would compile actually
+  changes (D-269). An inverted or out-of-range span — the one span invariant with no correct answer — throws
+  from `set()` beside `normalizedColumns` and `normalizeCapacity` instead of travelling to Rust (D-268), while
+  cluster resolution stays silent and collapsed spans stay in the array. A `registerThreeRasterPlanProgram`
+  call that arrives after a runtime has read the registry is refused by name rather than applying to nothing
+  (D-270), and `/three` re-exports the layout types `measureLayout()` and `inspectLayout()` return.
+
+  **Breaking**: `textShaperAbi.status` gains `styleRangeInvalid` (15), `styleSplitsCluster` (16),
+  `styleNestingInvalid` (17), `styleRootInvalid` (18), and `fontMetricsMissing` (19); frames that previously
+  reported `invalidRequest` (6) for those causes now report the new value, and `invalidRequest` no longer
+  covers them. `textShaperAbi.layouts.engineResult` gains `faultParagraphId` and `faultStyleId` (size
+  unchanged at 144 bytes). `TextEngineStatusError` gains a `fault`, and `/three` failures that were bare
+  `TextEngineStatusError` instances are now `TextFrameError`. `Text` construction and `Text.set()` throw
+  `RangeError` for a span whose offsets are non-integer, negative, inverted, or past the end of the text,
+  where the frame was previously rejected at synchronize time. `registerThreeRasterPlanProgram` throws for a
+  new technique once any runtime has read the registry.
+
+- **The animation API is a snapshot you can hold, and the extents were already computed** —
+  `snapshotGlyphOrigins`/`setGlyphOrigins`/`clearGlyphOriginOverrides` is replaced by
+  `snapshotGlyphs`/`applyGlyphs`/`restoreGlyphs` over one `GlyphPlacements` structure that addresses
+  glyphs, words, and lines directly, names its coordinate space in the type, owns the identity that survives
+  reflow, reports every glyph it could not read, and applies totally or returns what it did not reach
+  (D-270). Two defects surfaced while porting the one real consumer, and both were invisible before.
+  First, the retained per-glyph lane holds a different thing in each technique — MSDF and Slug store the ink
+  box's corner, Bitmap stores the origin plus the baked strike's raster bearing — so it is now addressed as
+  displacement from the plan's own rest value, which is technique-free and needs no schema declaration
+  (D-267); a declared coordinate space was built first and rejected because it could not name Bitmap's case.
+  Second, `write_semantic` names every field it serializes, so the five new record fields shipped as silent
+  zeros until a round-trip test demanded that no four-byte window of a fully-populated record stay unwritten.
+  Per-glyph advance and ink extents, per-line ascent, and the paragraph ink union are carried out of
+  `positioning.rs`, which already computed all of them for its render records and dropped them (D-268);
+  advance and ink extents ship side by side under names that cannot be confused, because a flex host needs
+  one and visual centring needs the other (D-269). On top of the extents, `caretAt` and `selectionRects`
+  resolve to clusters rather than to JavaScript characters. `glyphFlags` bit names are exported from the
+  generated ABI, pinned to HarfRust by a test; the unreachable tatweel bit is deliberately unnamed. The React
+  inline props type is split into `TextSpan` (D-271), so a transform or a `ref` on a run is a type error
+  instead of a silently discarded prop. `commitState()` is the positive commit signal (D-272). The port lost
+  its hand-written identity builder, its parallel-array assertion over six public arrays, and its
+  double-snapshot staleness re-check: 271 lines to 204, with the three things it was compensating for now
+  guaranteed by construction.
+
 ## 2026-08-18
 
 - **Line breaking is linear again, and CJK paid for it** — `BreakState::class_after_spaces` scanned

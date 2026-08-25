@@ -32,6 +32,7 @@ import {
   textShaperAbi,
   type TextEngineConstraint,
   type TextEngineDecoration,
+  type TextEngineFault,
   type TextEngineFrameLimits,
   type TextEnginePublication,
   type TextEngineRegion,
@@ -40,7 +41,14 @@ import {
   type TextEngineStyleValue,
   type TextEngineTextMutation,
 } from '../core.js';
-import type { ParagraphLayoutInspection, ParagraphLayoutSummary } from '../layout.js';
+import type { LayoutBox, ParagraphLayoutInspection, ParagraphLayoutSummary } from '../layout.js';
+import {
+  createGlyphPlacements,
+  type GlyphApplication,
+  type GlyphCaret,
+  type GlyphPlacements,
+} from '../glyph-placement.js';
+import { textFrameError, type TextFrameSubject } from './frame-error.js';
 import { ThreeTextRenderPlanExecutor } from './engine-plan-target.js';
 import {
   threeTextEngineCoordinator,
@@ -88,19 +96,19 @@ export interface TextGroupOptions {
   readonly pixelSnapping?: boolean;
 }
 
-export interface TextGlyphOriginSnapshot {
-  readonly layout: ParagraphLayoutInspection;
-  readonly shapedX: Float32Array;
-  readonly shapedY: Float32Array;
-  readonly displayedX: Float32Array;
-  readonly displayedY: Float32Array;
-}
-
-export interface TextGlyphOriginUpdate {
-  readonly layout: ParagraphLayoutInspection;
-  readonly x: Float32Array;
-  readonly y: Float32Array;
-}
+/**
+ * What the paragraph has published, as a value rather than as the absence of an error.
+ *
+ * `'unbound'` and `'pending'` are distinguished because they need different responses: an unbound
+ * paragraph is not in the scene graph and never will commit on its own, while a pending one commits
+ * on the next world-matrix update. The previous surface collapsed both into `undefined` from
+ * `measureLayout()`, and the only positive signal available was that `.error` was still unset.
+ */
+export type TextCommitState =
+  | Readonly<{ status: 'unbound' }>
+  | Readonly<{ status: 'pending' }>
+  | Readonly<{ status: 'committed'; revision: number }>
+  | Readonly<{ status: 'failed'; error: unknown }>;
 
 interface DesiredTextState<Technique extends AnyRasterTechnique> {
   readonly font: FontSelection<Technique>;
@@ -135,6 +143,13 @@ interface TextReconciler {
   needsApply(text: Text<AnyRasterTechnique>): boolean;
   semanticChanges(text: Text<AnyRasterTechnique>): number;
   textMutations(text: Text<AnyRasterTechnique>): readonly PendingTextMutation[];
+  /**
+   * Monotonic counter bumped by every `set()` that changes desired state. It is the batch's
+   * evidence that a rejected frame's input actually moved. `needsApply` cannot serve: a rejection
+   * never reaches `markApplied`, so it stays true forever and says nothing about whether the
+   * caller changed anything.
+   */
+  revision(text: Text<AnyRasterTechnique>): number;
   markApplied(text: Text<AnyRasterTechnique>): void;
   bind(text: Text<AnyRasterTechnique>, binding: ThreeTextBatchBinding, group: TextGroup | undefined): void;
   unbindFrom(text: Text<AnyRasterTechnique>, binding: ThreeTextBatchBinding): void;
@@ -150,6 +165,7 @@ export class Text<Technique extends AnyRasterTechnique> extends THREE.Object3D {
       needsApply: (text) => text.#desiredRevision !== text.#appliedRevision,
       semanticChanges: (text) => text.#semanticChanges,
       textMutations: (text) => text.#textMutations,
+      revision: (text) => text.#desiredRevision,
       markApplied: (text) => text.#markApplied(),
       bind: (text, binding, group) => text.#bind(binding, group),
       unbindFrom: (text, binding) => text.#unbindFrom(binding),
@@ -285,18 +301,74 @@ export class Text<Technique extends AnyRasterTechnique> extends THREE.Object3D {
     this.#assertActive();
     return this.#binding?.layoutInspection(eraseTextTechnique(this));
   }
-  snapshotGlyphOrigins(): TextGlyphOriginSnapshot | undefined {
-    this.#assertActive();
-    return this.#binding?.glyphOriginSnapshot(eraseTextTechnique(this));
+  /**
+   * Has this paragraph published a layout, and did it succeed.
+   *
+   * This is the positive signal. A caller that needed to know a layout committed previously had to
+   * force `updateMatrixWorld(true)` and then infer success from `error` still being `undefined`.
+   */
+  commitState(): TextCommitState {
+    if (this.#disposed) return { status: 'unbound' };
+    const error = this.error;
+    if (error !== undefined) return { status: 'failed', error };
+    // A paragraph outside the scene graph will never commit on its own, which is a different
+    // answer from one that commits on the next world-matrix update. Parenthood, not the batch
+    // binding, is what separates them: binding happens during that update.
+    if (this.parent === null) return { status: 'unbound' };
+    if (this.#binding === undefined || this.#desiredRevision !== this.#appliedRevision) {
+      return { status: 'pending' };
+    }
+    return { status: 'committed', revision: this.#appliedRevision };
   }
-  setGlyphOrigins(update: TextGlyphOriginUpdate): void {
+
+  /**
+   * Copies this paragraph's glyphs into a structure that can be manipulated and applied back.
+   *
+   * Step one of **snapshot, manipulate, restore**. The snapshot retains no renderer or engine
+   * resource, states its own coordinate space, addresses glyphs, words, and lines directly, and
+   * names any glyph whose drawn position it could not read.
+   *
+   * Returns `undefined` when the paragraph has no committed layout, which `commitState()`
+   * distinguishes from being unbound.
+   */
+  snapshotGlyphs(): GlyphPlacements | undefined {
     this.#assertActive();
-    if (this.#binding === undefined) throw new Error('glyph origins require a bound Text');
-    this.#binding.setGlyphOrigins(eraseTextTechnique(this), update);
+    return this.#binding?.glyphPlacements(eraseTextTechnique(this));
   }
-  clearGlyphOriginOverrides(): void {
+
+  /**
+   * Writes a manipulated snapshot to the retained GPU buffer: no reshape, no CPU re-upload.
+   *
+   * Step two. Applies to every glyph or reports exactly which it did not reach — a partial write is
+   * a value the caller receives, never a silence. Throws when `placements` describes a layout this
+   * paragraph has since replaced, because the identities in it no longer address the same glyphs.
+   */
+  applyGlyphs(placements: GlyphPlacements): GlyphApplication {
+    this.#assertActive();
+    if (this.#binding === undefined) throw new Error('glyph placements require a bound Text');
+    return this.#binding.applyGlyphPlacements(eraseTextTechnique(this), placements);
+  }
+
+  /**
+   * Returns every glyph to where the layout put it, and hands authority back to the layout.
+   *
+   * Step three, and a first-class one. An override left pinned at its target outlives the motion
+   * that set it and shadows the next committed origins; the previous surface made a caller discover
+   * that by observing the corruption.
+   */
+  restoreGlyphs(): void {
     this.#assertActive();
     this.#binding?.clearGlyphOrigins(eraseTextTechnique(this));
+  }
+
+  /** Nearest cluster boundary to a paragraph-local point. `undefined` without a committed layout. */
+  caretAt(x: number, y: number): GlyphCaret | undefined {
+    return this.snapshotGlyphs()?.caretAt(x, y);
+  }
+
+  /** Line-clipped rectangles covering a UTF-16 range. `undefined` without a committed layout. */
+  selectionRects(start: number, end: number): readonly LayoutBox[] | undefined {
+    return this.snapshotGlyphs()?.selectionRects(start, end);
   }
 
   override updateMatrixWorld(force?: boolean): void {
@@ -319,7 +391,9 @@ export class Text<Technique extends AnyRasterTechnique> extends THREE.Object3D {
       this.#binding.reconcileStandalone(eraseTextTechnique(this));
       try {
         this.#binding.synchronize();
-        this.#error = undefined;
+        // A latched batch published nothing this frame, so the rejection `.error` already holds is
+        // still the current state. Clearing it here would erase the only signal a rejected frame has.
+        if (!this.#binding.latched) this.#error = undefined;
       } catch (error) {
         this.#error = error;
         this.onError?.(error);
@@ -458,7 +532,9 @@ export class TextGroup extends THREE.Object3D {
             if (this.#transformTracker.pathChanged(text, this)) this.#binding.markTransformDirty(text);
           }
           this.#binding.synchronize();
-          this.#error = undefined;
+          // A latched batch published nothing this frame, so the rejection `.error` already holds
+          // is still the current state; clearing it would erase the only signal it has.
+          if (!this.#binding.latched) this.#error = undefined;
         } catch (error) {
           this.#error = error;
           this.onError?.(error);
@@ -467,7 +543,7 @@ export class TextGroup extends THREE.Object3D {
         this.#binding.reconcile([]);
         try {
           this.#binding.synchronize();
-          this.#error = undefined;
+          if (!this.#binding.latched) this.#error = undefined;
         } catch (error) {
           this.#error = error;
           this.onError?.(error);
@@ -485,6 +561,25 @@ export class TextGroup extends THREE.Object3D {
   #assertActive(): void {
     if (this.#disposed) throw new Error('TextGroup has been disposed');
   }
+}
+
+/** One paragraph of a rejected frame, in render order: what it was and which desired state it held. */
+interface LatchedParagraph {
+  readonly id: number;
+  readonly revision: number;
+}
+
+/**
+ * A frame the batch refused to keep recompiling.
+ *
+ * A rejected frame never reaches `markApplied()`, so every text in it still reports `needsApply()`
+ * and the identical frame would be recompiled and rejected on every subsequent `updateMatrixWorld`.
+ * The latch records the exact input that was rejected; the batch stays silent until that input
+ * moves, and then compiles once more.
+ */
+interface LatchedRejection {
+  readonly error: unknown;
+  readonly frame: readonly LatchedParagraph[];
 }
 
 interface RetainedEngineParagraph {
@@ -523,6 +618,7 @@ class ThreeTextBatchBinding {
   #textCapacity = 0;
   #capacity: GlyphBufferCapacity;
   #materialInvalidated = false;
+  #rejection: LatchedRejection | undefined;
   #disposed = false;
 
   constructor(runtime: TextRuntime, capacity: GlyphBufferCapacity, group: TextGroup | undefined) {
@@ -568,6 +664,7 @@ class ThreeTextBatchBinding {
   }
   measurement(text: Text<AnyRasterTechnique>): ParagraphLayoutSummary | undefined {
     if (!this.#paragraphs.has(text)) return undefined;
+    this.#assertNotLatched();
     if (this.#measureThroughParagraphQuery(text)) return this.#measurements.get(text);
     this.synchronize(textShaperAbi.engine.semanticViewMasks.measurement);
     return this.#measurements.get(text);
@@ -635,23 +732,37 @@ class ThreeTextBatchBinding {
   }
   layoutInspection(text: Text<AnyRasterTechnique>): ParagraphLayoutInspection | undefined {
     if (!this.#paragraphs.has(text)) return undefined;
+    this.#assertNotLatched();
     this.synchronize(textShaperAbi.engine.semanticViewMasks.layoutInspection);
     return this.#layoutInspections.get(text);
   }
-  glyphOriginSnapshot(text: Text<AnyRasterTechnique>): TextGlyphOriginSnapshot | undefined {
+  glyphPlacements(text: Text<AnyRasterTechnique>): GlyphPlacements | undefined {
     const layout = this.layoutInspection(text);
     if (layout === undefined) return undefined;
-    return { layout, ...this.#target.snapshotGlyphOrigins(layout.glyphStableIds, layout.x, layout.y) };
+    const drawn = this.#target.snapshotGlyphOrigins(layout.glyphStableIds, layout.x, layout.y);
+    return createGlyphPlacements(layout, text.text, drawn.drawnX, drawn.drawnY, drawn.incomplete);
   }
-  setGlyphOrigins(text: Text<AnyRasterTechnique>, update: TextGlyphOriginUpdate): void {
+  applyGlyphPlacements(text: Text<AnyRasterTechnique>, placements: GlyphPlacements): GlyphApplication {
     const layout = this.layoutInspection(text);
-    if (layout === undefined || update.layout !== layout) {
-      throw new TypeError('glyph origins do not match the committed layout inspection');
+    if (layout === undefined || placements.layout !== layout) {
+      throw new TypeError('glyph placements do not match the committed layout inspection');
     }
-    if (update.x.length !== layout.glyphStableIds.length || update.y.length !== layout.glyphStableIds.length) {
-      throw new RangeError('glyph origin arrays do not match the inspected glyph count');
+    const glyphs = placements.glyphs;
+    if (glyphs.length !== layout.glyphCount) {
+      throw new RangeError('glyph placements do not match the inspected glyph count');
     }
-    this.#target.setGlyphOriginOverrides(layout.glyphStableIds, update.x, update.y);
+    const x = new Float32Array(glyphs.length);
+    const y = new Float32Array(glyphs.length);
+    for (let index = 0; index < glyphs.length; index += 1) {
+      x[index] = glyphs[index]!.x;
+      y[index] = glyphs[index]!.y;
+    }
+    const unapplied = this.#target.setGlyphOriginOverrides(layout.glyphStableIds, layout.x, layout.y, x, y);
+    return Object.freeze({
+      requested: glyphs.length,
+      applied: glyphs.length - unapplied.length,
+      unapplied: Object.freeze(unapplied),
+    });
   }
   clearGlyphOrigins(text: Text<AnyRasterTechnique>): void {
     const layout = this.#layoutInspections.get(text);
@@ -670,6 +781,42 @@ class ThreeTextBatchBinding {
     const paragraph = this.#paragraphs.get(text);
     if (paragraph !== undefined) this.#dirtyTransformIds.add(paragraph.id);
   }
+  /**
+   * A caller-invoked query cannot answer from a latched batch, and must not answer `undefined` as if
+   * the paragraph merely had no layout yet. It raises the rejection the frame path is holding, which
+   * is what the query threw before the latch existed.
+   */
+  #assertNotLatched(): void {
+    if (this.#rejection !== undefined) throw this.#rejection.error;
+  }
+  /**
+   * True while a rejected frame is latched.
+   *
+   * Most causes are unreachable from the public API -- span offsets are validated at `set()` and every surviving boundary is snapped onto the cluster grid before it reaches the engine -- but adversarial review found four that are not. Disjoint-or-nested spans are deliberately forwarded; feature ranges inside a span are copied unchanged while only the outer range is checked; lone surrogates are explicitly left for the engine; and `capacity.policy: 'fixed'` rejects by caller request. The first three are gaps to close at the `set()` boundary, and until they are, a rejection is *usually* an invariant this package broke rather than always. The latch still exists so that one such defect is reported once instead of recompiling and failing silently at frame rate, and there is still no `retry()`: every reachable cause is corrected by a `set()`, which releases the latch on its own.
+   */
+  get latched(): boolean {
+    return this.#rejection !== undefined;
+  }
+  /**
+   * Whether the frame about to be compiled is byte-for-byte the one already rejected.
+   *
+   * Runs only while latched, so the accepted path pays one boolean test per frame. Every input a
+   * frame is compiled from is covered: the paragraph set and its render order, each paragraph's
+   * desired revision, pending removals, and a material swap. Capacity changes clear the latch at
+   * `setCapacity`, since a capacity rejection is the one cause a caller corrects without touching
+   * any `Text`.
+   */
+  #frameUnchangedSince(
+    rejection: LatchedRejection,
+    ordered: readonly (readonly [Text<AnyRasterTechnique>, RetainedEngineParagraph])[],
+  ): boolean {
+    if (this.#removed.length !== 0 || this.#materialInvalidated) return false;
+    if (rejection.frame.length !== ordered.length) return false;
+    return rejection.frame.every((latched, order) => {
+      const entry = ordered[order];
+      return entry !== undefined && entry[1].id === latched.id && reconciler.revision(entry[0]) === latched.revision;
+    });
+  }
   synchronize(semanticViewMask = 0): void {
     if (this.#disposed) return;
     this.#coordinator.assertFrameUpdateAllowed();
@@ -677,6 +824,18 @@ class ThreeTextBatchBinding {
     const ordered = [...this.#paragraphs.entries()].sort(
       ([leftText, left], [rightText, right]) => leftText.renderOrder - rightText.renderOrder || left.id - right.id,
     );
+    if (this.#rejection !== undefined) {
+      if (this.#frameUnchangedSince(this.#rejection, ordered)) {
+        // A latched paragraph must not freeze the scene around it. Transforms, visibility, and
+        // render order are applied to the last accepted publication and never enter the frame the
+        // engine refused, so withholding them would turn one rejected paragraph into a whole group
+        // that stops responding to the camera.
+        this.#target.syncTransforms(this.#dirtyTransformIds, this.#group !== undefined);
+        this.#dirtyTransformIds.clear();
+        return;
+      }
+      this.#rejection = undefined;
+    }
     const changed = ordered.flatMap(([text, paragraph], order) => {
       const semanticChanges =
         (paragraph.created ? ALL_SEMANTIC_CHANGES : reconciler.semanticChanges(text)) |
@@ -829,14 +988,44 @@ class ThreeTextBatchBinding {
       this.#acknowledgedPublicationGeneration = publication.publicationGeneration;
       this.#retainSemanticViews(publication, semanticViewMask);
     } catch (error) {
+      const rejected = textFrameError(error, (fault) => this.#faultSubject(fault));
       if (!committed) {
         for (const leases of pendingLeases.values()) releaseStackLeases(leases);
         for (const leases of pendingMaterials.values()) releaseMaterialLeases(leases);
+        // A committed frame whose GPU application failed is retried from `#lastPublication` on the
+        // next frame, so latching it would suppress the retry that is meant to recover it. Only an
+        // uncommitted frame -- one the engine or the compiler refused -- is latched.
+        this.#rejection = {
+          error: rejected,
+          frame: ordered.map(([text, paragraph]) => ({ id: paragraph.id, revision: reconciler.revision(text) })),
+        };
       }
-      throw error;
+      throw rejected;
     }
   }
+  /**
+   * Resolves an engine fault onto the objects the caller wrote.
+   *
+   * `compileEngineStyles` numbers the root style 1 and then the COMPILED spans from 2. A collapsed
+   * span is not compiled, so the authored index is recovered by walking the same filter rather than
+   * by subtracting a constant.
+   */
+  #faultSubject(fault: TextEngineFault): TextFrameSubject {
+    const text = this.#textsByParagraph.get(fault.paragraphId);
+    if (text === undefined) return { kind: 'unattributed' };
+    if (fault.styleId < 2) return { kind: 'paragraph', text };
+    let styleId = 1;
+    for (const [index, span] of text.spans.entries()) {
+      if (span.start === span.end) continue;
+      styleId += 1;
+      if (styleId === fault.styleId) return { kind: 'span', text, index, span };
+    }
+    return { kind: 'paragraph', text };
+  }
   setCapacity(value: GlyphBufferCapacity): void {
+    // Capacity is the one frame input no `Text` revision covers, so a capacity change drops the
+    // latch itself rather than being detected by `#frameUnchangedSince`.
+    this.#rejection = undefined;
     this.#capacity = value;
     this.#requestCapacity = Math.max(this.#requestCapacity, value.size * 32);
     this.#resultCapacity = Math.max(this.#resultCapacity, value.size * 160);
@@ -1075,9 +1264,10 @@ function compileEngineStyles<Technique extends AnyRasterTechnique>(
 function styledSpans<Technique extends AnyRasterTechnique>(
   spans: readonly ParagraphSpan<Technique>[] | undefined,
 ): readonly ParagraphSpan<Technique>[] {
-  // Only a collapsed span is dropped. An INVERTED span is a caller arithmetic error whose owner
-  // is range validation, so it is forwarded and rejected rather than filtered away -- swallowing
-  // it here would make an impossible range publish as if it had been honoured.
+  // Only a collapsed span is dropped, and COMPILE TIME is where that belongs: the drop is a
+  // property of the engine style list, not of the caller's array, and doing it at `set()` would
+  // renumber every later span behind the caller's back. An INVERTED span never reaches here --
+  // `assertSpanRanges` throws it back at `set()`, where the stack still names the caller.
   return spans === undefined ? [] : spans.filter((span) => span.start !== span.end);
 }
 
@@ -1413,7 +1603,7 @@ function normalizeDesired<Technique extends AnyRasterTechnique>(
   const resolved =
     previous !== undefined && previous.text === text && previous.spans === stated
       ? stated
-      : alignSpansToClusters(text, stated);
+      : alignSpansToClusters(text, assertSpanRanges(text, stated));
   // Each retained span is frozen, not just the array holding them. `Text.spans` hands these
   // objects to the caller, and the identity short-circuit above trusts that an unchanged array
   // still describes cluster-aligned ranges; a mutable span record would let `spans[0].end = 1`
@@ -1430,6 +1620,45 @@ function normalizeDesired<Technique extends AnyRasterTechnique>(
     ...(properties.rasterPixelRatio === undefined ? {} : { rasterPixelRatio: properties.rasterPixelRatio }),
     ...(properties.material === undefined ? {} : { material: properties.material }),
   });
+}
+/**
+ * The two span invariants the caller owns, checked where the stack still points at the caller.
+ *
+ * A span carries four invariants and they are NOT alike:
+ *
+ * - INVERTED and OUT-OF-RANGE offsets are arithmetic errors. Nothing can repair them -- there is no
+ *   range the caller meant -- and forwarding one only produced a rejected frame with a numeric
+ *   status naming nothing, recompiled every frame. They throw here for the same reason
+ *   `normalizedColumns` and `normalizeCapacity` throw here: `set()` is where the caller is.
+ * - CLUSTER ALIGNMENT is not an error at all. A boundary inside an extended grapheme cluster has a
+ *   correct answer -- the cluster takes the style of its base, CSSOM View's normative rule -- so it
+ *   resolves silently through `alignSpansToClusters` (D-265).
+ * - COLLAPSED spans stay in the array and are dropped where styles are COMPILED (`styledSpans`).
+ *   Dropping them here would renumber every later span behind the caller's back, and `Text.spans`
+ *   would stop reporting a span the caller wrote.
+ * - DISJOINT-OR-NESTED is not checked here. It is a relation over the whole array rather than one
+ *   span's own arithmetic, and the engine already answers it exactly, now as a named rejection
+ *   (`styleNestingInvalid`) that resolves back to the offending span.
+ *
+ * The argument array is returned by identity so the caller-side fast path in `normalizeDesired` is
+ * unaffected: an unchanged `spans` identity skips this walk entirely.
+ */
+function assertSpanRanges<Technique extends AnyRasterTechnique>(
+  text: string,
+  spans: readonly ParagraphSpan<Technique>[],
+): readonly ParagraphSpan<Technique>[] {
+  for (const [index, span] of spans.entries()) {
+    if (!Number.isSafeInteger(span.start) || !Number.isSafeInteger(span.end)) {
+      throw new RangeError(`span ${index} offsets must be integers, received (${span.start}, ${span.end})`);
+    }
+    if (span.start > span.end) {
+      throw new RangeError(`span ${index} is inverted: start ${span.start} is after end ${span.end}`);
+    }
+    if (span.start < 0 || span.end > text.length) {
+      throw new RangeError(`span ${index} covers [${span.start}, ${span.end}) outside text of length ${text.length}`);
+    }
+  }
+  return spans;
 }
 function selectedFonts<Technique extends AnyRasterTechnique>(
   state: DesiredTextState<Technique>,

@@ -5,7 +5,7 @@ description: Implements portable font loading, retained Rust shaping and layout,
 resource: ../../packages/glyph
 workspace_package: '@pmndrs/glyph'
 documentation_type: reference
-source_digest: 'sha256:2bea7b3e51c8594905b93a9cbe286991d9c72164a661bbf5aa5be8b58c0b6c24'
+source_digest: 'sha256:a611577e60c5763ae600b4174688cb165d99091c733326237855a60645087b5b'
 tags: [package, public-api, rust, wasm, threejs, typography]
 sources:
   - id: manifest
@@ -140,9 +140,13 @@ compressed `--unicode-set` accepted by `glyph bake --unicodes`. Fonts without au
 than invented semantic labels. Rich vendor labels and aliases remain external catalog data.
 
 The R3F `Text` component infers the technique union from a required outer font selection, including a font stack chosen
-from runtime state. Callers do not widen dynamic selections to `AnyRasterTechnique`. A nested `Text` may omit `font`
-because it is flattened into an inline span and inherits from its outer text; a rendered outer `Text` without a font is
-invalid. `TextGroup` owns batching and compositing policy, never font inheritance. Both components register their Three
+from runtime state. Callers do not widen dynamic selections to `AnyRasterTechnique`. An inline `TextSpan` may omit
+`font` because it is flattened into a styled run and inherits from its enclosing paragraph; a rendered `Text` without a
+font is invalid. The two are separate components because they are separate kinds of thing: `Text` is a paragraph box and
+a Three `Object3D`, while `TextSpan` is never mounted and its props are exactly the five the flattener reads. Every
+box-level prop is a type error on a span rather than a value silently discarded, and a `ref` on a span — which could
+never fire, because no object exists — no longer type-checks. Flutter separates `RichText` from `TextSpan` on the same
+line. `TextGroup` owns batching and compositing policy, never font inheritance. Both components register their Three
 objects with the R3F host and are constructed during its commit rather than in a layout effect. React `Activity` can
 therefore pre-render a hidden text or whole text group, while R3F retains visibility and eventual disposal ownership.
 
@@ -153,11 +157,36 @@ end of the cluster containing it. One rule covers both entry points: offsets a c
 array, and boundaries the tree compilers derive. `txt`/`span` and nested React `<Text>` compile a document that states
 no offsets at all, and each resolves the boundaries it derives at its own concatenation joins, where concatenation can
 fuse the tail of one fragment with the head of the next into one cluster; `alignSpansToClusters` remains the backstop
-for the untyped array rather than the discoverer of a compiler-authored split. Nothing throws, so no span fault can
-escape a React mount before `onError` exists. A
+for the untyped array rather than the discoverer of a compiler-authored split. Cluster resolution never throws, so no
+span fault the compilers derive can escape a React mount before `onError` exists; the React tree states no offsets at
+all, so nothing a `<Text>` compiles can reach the range check below either. A
 span left holding no cluster becomes an empty range and stays in `Text.spans` rather than vanishing, and empty spans
 compile to no engine style. `alignSpansToClusters` is exported so a caller can resolve or check its own offsets against
 the same segmentation, which is this package's `findGraphemeBoundaries` rather than the host's `Intl.Segmenter`.
+
+An INVERTED or out-of-range span is separated from that resolution because it has no correct answer (D-268). It throws
+from `Text` construction and `set()`, beside `normalizedColumns` and `normalizeCapacity`, where the stack still names the
+caller; `set()` normalizes before it commits, so a rejected update leaves the paragraph exactly as it was. Collapsed
+spans stay in `Text.spans` and are dropped where engine styles are compiled, and disjoint-or-nested stays with the engine.
+
+A frame the engine refuses names its cause and the input that caused it (D-267). Six caller-actionable statuses --
+`styleRangeInvalid`, `styleSplitsCluster`, `styleNestingInvalid`, `styleRootInvalid`, `fontStackMissing`,
+`fontMetricsMissing` -- are separated from `invalidRequest`, which keeps every internal invariant violation and names
+nothing. Each carries the offending paragraph and style in two u32s of the result header's existing tail padding, so the
+header size and every prior field offset are unchanged. `/three` re-raises them as `TextFrameError`, whose `rejection` is
+a discriminated union over the cause plus a second union over the subject: the `Text` object and, where one span owns it,
+that span and its index in `Text.spans`.
+
+A rejected frame latches (D-269). Compilation stops, `.error` keeps the rejection, `onError` fires once, and the batch
+resumes only when what it would compile actually changes -- a `set()`, a paragraph added or removed, a material swap,
+or `setCapacity`. There is no public `retry()`: a rejection is an invariant this package broke, not a caller mistake, so
+there is nothing to retry. A frame the engine accepted whose GPU application failed is deliberately not
+latched, because it is retried from the retained publication on the next frame. The accepted path pays one boolean test.
+
+`registerThreeRasterPlanProgram` refuses a technique registered after a runtime has read the registry (D-270), naming the
+technique instead of applying to nothing. `/three` also re-exports `ParagraphLayoutSummary`, `ParagraphLayoutInspection`,
+`ParagraphLayout`, `ParagraphMeasurement`, and `FontFeature`, so a `/three` importer can name what
+`Text.measureLayout()`, `Text.inspectLayout()`, and `ParagraphStyle.features` give it.
 
 One baked GLB may expose several raster techniques without repeating its input identity. `TextRuntime.loadFont()` and
 R3F `useFont()` accept a nonempty `rasters` tuple and return a position-preserving tuple of `LoadedFont` values. The

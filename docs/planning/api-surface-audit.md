@@ -86,15 +86,19 @@ One stale decision to reconcile: D-118 accepted a renderer-neutral `stageBatch(p
 
 ## Fix
 
-1. **Distinguish frame-rejection causes.** `EngineError::InvalidRequest` collapses more than twenty distinct failures — style splits a cluster, missing style index, missing run, missing font metrics, every arithmetic overflow — into `status 6`. It names no span, paragraph, or offset. Give the engine distinct variants for at least the caller-actionable cases, carry the offending paragraph and style id in the result header, and re-raise as a typed error from `/three` so a consumer never sees a bare integer. `textShaperAbi.status` is exported from `/core` but not `/three`, so a `/three` consumer cannot even map the number to a name without a second import.
-2. **Stop the per-frame rejection loop.** A permanently invalid frame is recompiled and rejected every frame forever, with the last good publication left on screen and no visual signal. `markApplied()` is only reached after a successful update, so `needsApply()` stays true. Latch after repeated identical rejections: stop recompiling, keep `.error`, report once. Reachable today with a type-legal inverted span.
-3. **Validate `spans` at `set()`, not at `synchronize()`.** The array carries four invariants enforced at three different times by three different policies: cluster alignment is silently repaired at `set()`, inverted ranges are forwarded and rejected every frame, collapsed ranges are silently dropped at `synchronize()`, and disjoint-or-nested is not enforced at all. Inverted and out-of-range spans are caller arithmetic errors and should throw from `set()` where the stack points at the caller, as `normalizedColumns` and `normalizeCapacity` already do. Cluster resolution stays silent — it is correct and matches CSSOM View.
-4. **Report partial application in the origin lane.** `setGlyphOriginOverrides` and `snapshotGlyphOrigins` both `continue` past a stable id with no record, so an animation frame writing two hundred origins may apply forty with no error and no count. `snapshotGlyphOrigins` additionally seeds `displayed` from the caller's shaped-space fallback, returning one `Float32Array` holding two coordinate spaces with nothing marking the boundary.
-5. **Guarantee the parallel-array invariant.** The one real consumer hand-wrote `assertParallelGlyphIdentity` over six public arrays. Construct `ParagraphLayoutInspection` behind a factory that cannot produce a ragged one, or make `glyphCount` the single authority and document every array as sliced to it.
-6. **Make late `registerThreeRasterPlanProgram` an error.** The registry is module-global and each `TextRuntime` snapshots it once at first coordinator creation, so a later registration is a legal call that silently does nothing and surfaces later as a missing technique. A doc comment is not enforcement.
-7. **Export the `glyphFlags` bit names or drop the field.** Sixteen bits whose meaning lives only in a planning document, which a consumer would have to find and then hardcode indices from.
-8. **Split the React inline props type.** `R3fTextChild` is typed as the full outer props, but `flattenText` honours only `font`, `style`, `paint`, `material`, and `children`. `contentBox`, `capacity`, `pixelSnapping`, `rasterPixelRatio`, `onError`, `ref`, and every `Object3D` prop are silently discarded, and a `ref` on a nested `Text` never fires. Flutter's split of `RichText` (box-level) from `TextSpan` (inline-level) is the precedent.
-9. **Re-export `ParagraphLayoutSummary` and `ParagraphLayoutInspection` from `/three`.** `Text.measureLayout()` and `inspectLayout()` return types a `/three` importer cannot name.
+These are lettered `F1`-`F9` because the requirement lists elsewhere in this document number from 1 independently. A reference to "item 6" means the numbered requirement; "F6" means the fix below.
+
+F1. **Distinguish frame-rejection causes.** `EngineError::InvalidRequest` collapses more than twenty distinct failures — style splits a cluster, missing style index, missing run, missing font metrics, every arithmetic overflow — into `status 6`. It names no span, paragraph, or offset. Give the engine distinct variants for at least the caller-actionable cases, carry the offending paragraph and style id in the result header, and re-raise as a typed error from `/three` so a consumer never sees a bare integer. `textShaperAbi.status` is exported from `/core` but not `/three`, so a `/three` consumer cannot even map the number to a name without a second import.
+F2. **Stop the per-frame rejection loop.** A permanently invalid frame is recompiled and rejected every frame forever, with the last good publication left on screen and no visual signal. `markApplied()` is only reached after a successful update, so `needsApply()` stays true. Latch after repeated identical rejections: stop recompiling, keep `.error`, report once. Reachable today with a type-legal inverted span.
+**A rejection is usually our defect, not a caller mistake.** Most causes are unreachable from the public API -- span offsets are validated at `set()` and every surviving boundary is snapped onto the cluster grid before it reaches the engine -- but adversarial review found four that are not. Disjoint-or-nested spans are deliberately forwarded; feature ranges inside a span are copied unchanged while only the outer range is checked; lone surrogates are explicitly left for the engine; and `capacity.policy: 'fixed'` rejects by caller request. The first three are gaps to close at the `set()` boundary, and until they are, a rejection is *usually* an invariant this package broke rather than always. The latch still exists so that one such defect is reported once instead of recompiling and failing silently at frame rate, and there is still no `retry()`: every reachable cause is corrected by a `set()`, which releases the latch on its own. F1 is therefore diagnostics naming which invariant broke, not a caller-actionable error taxonomy, and F2's latch is defect containment rather than a recovery protocol.
+
+F3. **Validate `spans` at `set()`, not at `synchronize()`.** The array carries four invariants enforced at three different times by three different policies: cluster alignment is silently repaired at `set()`, inverted ranges are forwarded and rejected every frame, collapsed ranges are silently dropped at `synchronize()`, and disjoint-or-nested is not enforced at all. Inverted and out-of-range spans are caller arithmetic errors and should throw from `set()` where the stack points at the caller, as `normalizedColumns` and `normalizeCapacity` already do. Cluster resolution stays silent — it is correct and matches CSSOM View.
+F4. **Report partial application in the origin lane.** `setGlyphOriginOverrides` and `snapshotGlyphOrigins` both `continue` past a stable id with no record, so an animation frame writing two hundred origins may apply forty with no error and no count. `snapshotGlyphOrigins` additionally seeds `displayed` from the caller's shaped-space fallback, returning one `Float32Array` holding two coordinate spaces with nothing marking the boundary.
+F5. **Guarantee the parallel-array invariant.** The one real consumer hand-wrote `assertParallelGlyphIdentity` over six public arrays. Construct `ParagraphLayoutInspection` behind a factory that cannot produce a ragged one, or make `glyphCount` the single authority and document every array as sliced to it.
+F6. **Make late `registerThreeRasterPlanProgram` an error.** The registry is module-global and each `TextRuntime` snapshots it once at first coordinator creation, so a later registration is a legal call that silently does nothing and surfaces later as a missing technique. A doc comment is not enforcement.
+F7. **Export the `glyphFlags` bit names or drop the field.** Sixteen bits whose meaning lives only in a planning document, which a consumer would have to find and then hardcode indices from.
+F8. **Split the React inline props type.** `R3fTextChild` is typed as the full outer props, but `flattenText` honours only `font`, `style`, `paint`, `material`, and `children`. `contentBox`, `capacity`, `pixelSnapping`, `rasterPixelRatio`, `onError`, `ref`, and every `Object3D` prop are silently discarded, and a `ref` on a nested `Text` never fires. Flutter's split of `RichText` (box-level) from `TextSpan` (inline-level) is the precedent.
+F9. **Re-export `ParagraphLayoutSummary` and `ParagraphLayoutInspection` from `/three`.** `Text.measureLayout()` and `inspectLayout()` return types a `/three` importer cannot name.
 
 ## Reshape
 
@@ -107,30 +111,49 @@ One stale decision to reconcile: D-118 accepted a renderer-neutral `stageBatch(p
 
 ## Goal and current state
 
-**Goal.** Every item in this document implemented, landed as a GitHub Stack of pull requests, each one green in CI, each one adversarially reviewed by an external model with every review comment either addressed or answered, and the stack ready to merge. The pmndrs/uikit fork is documented here but is **not** part of this goal; only the package-side API it needs is.
+**Goal.** Every item in this document implemented, **and every open decision entry it depends on resolved**, landed as a GitHub Stack of pull requests, each one green in CI, each one adversarially reviewed by an external model with every review comment either addressed or answered, and the stack ready to merge. The pmndrs/uikit fork is documented here but is **not** part of this goal; only the package-side API it needs is.
+
+Three `Proposed` decisions in [the register](decision-register.md) are in scope and must reach `Accepted` or be withdrawn with a reason:
+
+- **D-262** — stable-indirect allocation is either reachable from the public API and covered by the D-261 oracle, or removed. The render plan carries `indirectBufferId` and `indirectOffset` on every draw, so an unreachable strategy is currently shipping as dead surface. The example renderer decodes both, which makes the question answerable rather than theoretical.
+- **D-155** — a TypeGPU raster program owns an exact `createTarget()` factory. Item 24 cannot ship a coherent `/typegpu` without settling it.
+- **D-152 through D-154** — portable raster identity construction without casts, and `select()` returning `undefined` for a glyph with no renderable record. These bear directly on the rule this audit codifies, since a cast is a caller keeping state consistent by hand.
+
+D-015 and D-033 are `Deferred` by intent and are not in scope.
 
 This section is the handoff. Keep it current as work lands, so anyone can resume from it.
 
 | # | Item | State | Where |
 | --- | --- | :--: | --- |
-| -- | Un-publish the reconciler protocol, delete-list surgery | ✅ landed | `worktree-agent-a8f83a2041d346932` |
-| -- | Keep `/core` and `/tsl` published, correct the false "no consumers" finding | ✅ landed | same branch |
-| -- | `packages/glyph-example-renderer`, a second engine consumer on `/core` alone | ✅ stubbed, 4 tests green | same branch |
-| 1-3, 5 | Line and font metrics, ink bounds, per-line metrics on the summary, shared coordinate space with glyph extents | 🚧 in flight | animation-api agent |
-| 4 | Non-circular measure ordering, readiness signal | ⬜ not started | -- |
-| 6-7 | Framework-neutral `Paragraph`; split per-call constraints from stable policy | ⬜ not started | -- |
-| 8-10 | Intrinsic widths from one pass; failure returned from the measure call; re-point the uikit fixture | ⬜ not started | -- |
-| 11 | Retention and ownership protocol for the render plan | ⬜ not started | -- |
-| 12-15 | Host font path, published size delta, uikit parity gate, correct `uikit-integration.md` | ⬜ not started | -- |
-| 16-17 | Paragraph-scoped layout revision; change notification | ⬜ not started | -- |
-| 18-23 | Font readiness, measurement purity, constraint model, direction, baseline contract, revision primitive | ⬜ not started | -- |
-| 24 | `@pmndrs/glyph/typegpu` shader subpath | ⬜ not started | -- |
+| -- | Un-publish the reconciler protocol, delete-list surgery | ✅ | [#104](https://github.com/pmndrs/glyph/pull/104) |
+| -- | Keep `/core` and `/tsl` published; correct the false "no consumers" finding | ✅ | #104 |
+| -- | `packages/glyph-example-renderer`, a second engine consumer on `/core` alone | ✅ stub | #104 |
+| -- | Adversarial review of #104 addressed: broken `mtsdf-baker-abi` import, `capacity.policy: 'fixed'` restored, four stale docs, vacuous ownership test, missing indirect draw fields | ✅ | #104 |
+| F1-F3, F6, F9 | Rejection diagnostics, latch, span validation at `set()`, late registration, layout re-exports | ✅ | [#106](https://github.com/pmndrs/glyph/pull/106) |
+| F4-F5, F7-F8 | Origin-lane partial application, parallel-array invariant, `glyphFlags` names, React inline props split | ✅ | [#107](https://github.com/pmndrs/glyph/pull/107) |
+| 1-3, 5 | Ascent/descent/line height per line and paragraph, ink bounds beside advance extents, per-line metrics on the summary, shared space with glyph extents | ✅ | #107 |
+| -- | Animation API: snapshot to manipulate to restore, over glyphs/words/lines, with extents | ✅ | #107 |
+| -- | Reshape: `commitState()` readiness signal, cluster-first `caretAt`/`selectionRects` | ✅ | #107 |
+| 4 | Non-circular measure ordering | 🚧 | folded into item 6 |
+| 6-10, 16 | Framework-neutral `Paragraph`, constraint/policy split, intrinsic widths, failure from the measure call, re-point the uikit fixture, paragraph-scoped revision | 🚧 | `feat/paragraph-api` |
+| 24 | `@pmndrs/glyph/typegpu` shader subpath | 🚧 | `feat/typegpu-subpath` |
+| 11 | Retention and ownership protocol for the render plan | ⬜ | -- |
+| 12-15 | Host font path, published size delta, uikit parity gate, correct `uikit-integration.md` | ⬜ | -- |
+| 17-23 | Change notification, font readiness, measurement purity, constraint model, direction, baseline contract, revision primitive | ⬜ | -- |
+| -- | `anchorX`/`anchorY` (needs the resolved box; own change, D-272) | ⬜ | -- |
+
 
 24. Publish `@pmndrs/glyph/typegpu`, a sibling of `/tsl`: the same technique shaders realized as TypeGPU functions, reusable by any TypeGPU host without adopting our renderer. No scene integration and no engine driving, exactly as `/tsl` carries none. A TSL realization can be rendered to WGSL and GLSL in a browser probe and its final source extracted, rather than translated by inspection. An old pull request from TypeGPU's author carries a partial slug port; assume it needs reimplementation rather than resumption, but read it closely first, because it is authoritative on TypeGPU idiom. See [example renderer](example-renderer.md) for how this divides from the engine-consumer work.
 
 Two findings that de-risk the list. `TextEngineSession.measureParagraph(request, paragraphId)` already exists, so item 6 is largely a JavaScript-side wrapper rather than a Rust change. And the render plan already models `clipId`, `depthKey`, `orderToken`, `materialId`, and `transformId` across seven tables, so item 11 is a contract over an existing surface rather than a new one.
 
 Corrections this document has already absorbed, recorded so they are not re-derived: `/core` has consumers and stays published; ascent and descent exist per font on `FontMetrics` and are missing only from paragraph measurement; the revisions are published on `/core` and are missing only as paragraph-scoped state; `stageBatch` from D-118 was never implemented and was superseded; `FontLoadError` and `createFontStack` were wrongly listed for deletion; and the uikit shadow-adapter stage is not downstream of this cleanup.
+
+### Open question: an unexplained thirty-kilobyte graph delta
+
+Every runtime graph -- `three-runtime-js`, `bitmap-runtime-js`, `mtsdf-runtime-js`, `slug-runtime-js` -- grew by a near-identical ~30 KB raw across this stack. The semantic record widening from 44 to 68 bytes explains the shaper Wasm and the `/core` subpath, but it does not explain four independent graphs moving by the same amount; that shape points at a single shared module entering each graph.
+
+Reviewed ceilings were raised to the measured values so CI is not blocked on an unanswered question, and the raise is annotated as such in `apps/benchmarks/src/benchmark/package-size-budgets.ts`. Before release, find what entered the graph and either justify it or remove it. Do not treat the current ceilings as reviewed in the normal sense until that is answered.
 
 ## Measurement and positioning
 

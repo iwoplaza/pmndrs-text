@@ -43,7 +43,7 @@ pub mod render_plan_compiler;
 pub(crate) mod render_plan_wire;
 pub(crate) mod semantic_view;
 mod semantic_wire;
-mod shaping_state;
+pub(crate) mod shaping_state;
 pub(crate) mod sort;
 #[cfg_attr(not(test), allow(dead_code))]
 mod stable_order;
@@ -55,4 +55,4 @@ mod style_state;
 #[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
 pub(crate) mod wire;
 
-pub use state::{EngineError, TextEngine};
+pub use state::{EngineError, FrameFault, TextEngine};
