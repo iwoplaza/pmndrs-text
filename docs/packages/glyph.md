@@ -5,7 +5,7 @@ description: Implements portable font loading, retained Rust shaping and layout,
 resource: ../../packages/glyph
 workspace_package: '@pmndrs/glyph'
 documentation_type: reference
-source_digest: 'sha256:03f24285a7c5763345002f8f84a36a0d6c1c348db53f8e13b3f7e4cc1d429414'
+source_digest: 'sha256:1fdf94054d31ff29938954766953d38dcbe7e79ac5a805a8e2f2d150bba5d44f'
 tags: [package, public-api, rust, wasm, threejs, typography]
 sources:
   - id: manifest
@@ -146,6 +146,19 @@ because it is flattened into an inline span and inherits from its outer text; a 
 invalid. `TextGroup` owns batching and compositing policy, never font inheritance. Both components register their Three
 objects with the R3F host and are constructed during its commit rather than in a layout effect. React `Activity` can
 therefore pre-render a hidden text or whole text group, while R3F retains visibility and eventual disposal ownership.
+
+Span offsets are resolved onto the extended grapheme cluster grid before any frame is built (D-265). The engine
+resolves one style per cluster and refuses a frame whose styles split one, so `Text` settles the question at its own
+boundary and settles it constructively: a cluster takes the style of its base, and every boundary moves forward to the
+end of the cluster containing it. One rule covers both entry points: offsets a caller authored through the `spans`
+array, and boundaries the tree compilers derive. `txt`/`span` and nested React `<Text>` compile a document that states
+no offsets at all, and each resolves the boundaries it derives at its own concatenation joins, where concatenation can
+fuse the tail of one fragment with the head of the next into one cluster; `alignSpansToClusters` remains the backstop
+for the untyped array rather than the discoverer of a compiler-authored split. Nothing throws, so no span fault can
+escape a React mount before `onError` exists. A
+span left holding no cluster becomes an empty range and stays in `Text.spans` rather than vanishing, and empty spans
+compile to no engine style. `alignSpansToClusters` is exported so a caller can resolve or check its own offsets against
+the same segmentation, which is this package's `findGraphemeBoundaries` rather than the host's `Intl.Segmenter`.
 
 One baked GLB may expose several raster techniques without repeating its input identity. `TextRuntime.loadFont()` and
 R3F `useFont()` accept a nonempty `rasters` tuple and return a position-preserving tuple of `LoadedFont` values. The

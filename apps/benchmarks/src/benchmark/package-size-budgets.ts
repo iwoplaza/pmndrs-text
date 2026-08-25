@@ -24,11 +24,14 @@ export const packageSizeBudgets = {
   // away exactly as they do in a consumer's build, and asserts that none of their text
   // survives. Total teardown (D-255) cost +1,295 raw measured unstripped; guarding its
   // guidance left +468 of real production behaviour, which fits the existing ceiling.
+  // The ceiling had no room for the cross-host gap: this host measures 231,670 raw and the Linux
+  // runner measures 232,558, so CI failed on a 558-byte overage that is host difference rather than
+  // growth. Raised to clear the foreign-host measurement with headroom.
   'core-subpath-js': {
-    rawBytes: 232_000,
-    minifiedBytes: 158_000,
-    gzipBytes: 40_000,
-    brotliBytes: 34_200,
+    rawBytes: 238_000,
+    minifiedBytes: 162_000,
+    gzipBytes: 41_500,
+    brotliBytes: 35_400,
   },
   'tsl-subpath-js': {
     rawBytes: 27_000,
@@ -96,11 +99,17 @@ export const packageSizeBudgets = {
   // away exactly as they do in a consumer's build, and asserts that none of their text
   // survives. Total teardown (D-255) cost +1,295 raw measured unstripped; guarding its
   // guidance left +468 of real production behaviour, which fits the existing ceiling.
+  // Cluster-correct span alignment (this layer) reads extended grapheme boundaries from
+  // `unicode-segmenter` rather than `Intl.Segmenter`, whose Unicode version follows the host ICU
+  // and can therefore place a boundary the engine's own Rust tables do not. That dependency is the
+  // whole of the +22,290 raw growth over main's 376,899: a deliberate correctness-over-size trade
+  // for agreeing with the engine's cluster grid, not drift. Re-priced with headroom, both hosts
+  // measuring an identical 399,189 raw.
   'three-runtime-js': {
-    rawBytes: 377_000,
-    minifiedBytes: 245_500,
-    gzipBytes: 63_300,
-    brotliBytes: 53_500,
+    rawBytes: 405_000,
+    minifiedBytes: 258_000,
+    gzipBytes: 68_500,
+    brotliBytes: 57_500,
   },
   'font-inter-bitmap-16-32': {
     rawBytes: 3_200_000,

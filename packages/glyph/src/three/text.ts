@@ -1,6 +1,12 @@
 import * as THREE from 'three/webgpu';
 
-import type { FormattedText, GlyphPaintInput, ParagraphSpan, TextInput } from '../formatted-text.js';
+import {
+  alignSpansToClusters,
+  type FormattedText,
+  type GlyphPaintInput,
+  type ParagraphSpan,
+  type TextInput,
+} from '../formatted-text.js';
 import {
   acquireFontSelectionForRuntime,
   assertFontSelectionForRuntime,
@@ -213,7 +219,10 @@ export class Text<Technique extends AnyRasterTechnique> extends THREE.Object3D {
     const normalizedUpdate = replacedContent(update);
     const changes = classifySemanticChanges(normalizedUpdate);
     if (changes === 0) return;
-    const next = normalizeDesired({ ...this.#desired, ...normalizedUpdate } as TextProperties<Technique>);
+    const next = normalizeDesired(
+      { ...this.#desired, ...normalizedUpdate } as TextProperties<Technique>,
+      this.#desired,
+    );
     const textMutation = minimalTextMutation(this.#desired.text, next.text);
     const fonts = selectedFonts(next);
     acquireFonts(fonts, this.#runtime);
@@ -223,40 +232,6 @@ export class Text<Technique extends AnyRasterTechnique> extends THREE.Object3D {
     if (textMutation !== undefined) this.#textMutations.push(textMutation);
     this.#desiredRevision += 1;
     this.#semanticChanges |= changes;
-  }
-
-  insertText(offset: number, value: string): void {
-    this.replaceText(offset, offset, value);
-  }
-
-  deleteText(start: number, end: number): void {
-    this.replaceText(start, end, '');
-  }
-
-  replaceText(start: number, end: number, value: string): void {
-    this.#assertActive();
-    assertTextRange(this.#desired.text, start, end);
-    if (typeof value !== 'string') throw new TypeError('replacement text must be a string');
-    if (start === end && value.length === 0) return;
-    const text = this.#desired.text.slice(0, start) + value + this.#desired.text.slice(end);
-    const spans = editSpans(this.#desired.spans, start, end, value.length);
-    this.set({ text, spans } as TextUpdate<Technique>);
-  }
-
-  setSpan(index: number, span: TextSpan<Technique>): void {
-    const spans = [...this.spans];
-    if (!Number.isSafeInteger(index) || index < 0 || index >= spans.length)
-      throw new RangeError('span index is outside the text');
-    spans[index] = span;
-    this.spans = spans;
-  }
-
-  removeSpan(index: number): void {
-    const spans = [...this.spans];
-    if (!Number.isSafeInteger(index) || index < 0 || index >= spans.length)
-      throw new RangeError('span index is outside the text');
-    spans.splice(index, 1);
-    this.spans = spans;
   }
 
   setCapacity(capacity: GlyphBufferCapacity): void {
@@ -814,7 +789,7 @@ class ThreeTextBatchBinding {
           releaseMaterialLeases(paragraph.materialLeases);
           paragraph.stackLeases = nextLeases;
           paragraph.materialLeases = pendingMaterials.get(paragraph) ?? [];
-          paragraph.styleCount = 1 + text.spans.length;
+          paragraph.styleCount = 1 + styledSpans(text.spans).length;
         }
         if (semanticChanges & TEXT_CHANGE) paragraph.textLength = text.text.length;
         if (semanticChanges & GEOMETRY_CHANGE) paragraph.geometryRevision += 1;
@@ -1051,7 +1026,7 @@ function compileEngineStyles<Technique extends AnyRasterTechnique>(
       }),
     },
   ];
-  for (const [index, span] of (properties.spans ?? []).entries()) {
+  for (const [index, span] of styledSpans(properties.spans).entries()) {
     const fontStackHandle = span.font === undefined ? undefined : acquireEngineStack(coordinator, span.font, leases);
     const materialId = acquireEngineMaterial(coordinator, (span as TextSpan<Technique>).material, materialLeases);
     styles.push({
@@ -1068,6 +1043,26 @@ function compileEngineStyles<Technique extends AnyRasterTechnique>(
     });
   }
   return styles;
+}
+
+/**
+ * The spans that state a style over text, in authored order.
+ *
+ * An empty span covers no cluster and so states nothing, but the engine's style resolution walks
+ * the text offset by offset and cannot advance across a zero-width scope, so one reaching it fails
+ * the whole frame (`style_state.rs`, `resolve`). Cluster resolution produces an empty span whenever
+ * an edit hands a span's last cluster to the span before it, and keeps it in `Text.spans` so the
+ * loss is visible and later indices do not shift; dropping it here is what keeps that record from
+ * costing the paragraph. Style ids stay contiguous from the emitted order because the removal pass
+ * that trims a shrunken style list counts on it.
+ */
+function styledSpans<Technique extends AnyRasterTechnique>(
+  spans: readonly ParagraphSpan<Technique>[] | undefined,
+): readonly ParagraphSpan<Technique>[] {
+  // Only a collapsed span is dropped. An INVERTED span is a caller arithmetic error whose owner
+  // is range validation, so it is forwarded and rejected rather than filtered away -- swallowing
+  // it here would make an impossible range publish as if it had been honoured.
+  return spans === undefined ? [] : spans.filter((span) => span.start !== span.end);
 }
 
 function acquireEngineMaterial(
@@ -1361,43 +1356,6 @@ function previousScalarStart(value: string, end: number): number {
   return unit >= 0xdc00 && unit <= 0xdfff && last > 0 && previous >= 0xd800 && previous <= 0xdbff ? last - 1 : last;
 }
 
-function assertTextRange(text: string, start: number, end: number): void {
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start > end || end > text.length) {
-    throw new RangeError('text edit range is outside the text');
-  }
-  if (splitsSurrogatePair(text, start) || splitsSurrogatePair(text, end)) {
-    throw new RangeError('text edit range must not split a Unicode scalar');
-  }
-}
-
-function splitsSurrogatePair(text: string, offset: number): boolean {
-  if (offset <= 0 || offset >= text.length) return false;
-  const previous = text.charCodeAt(offset - 1);
-  const next = text.charCodeAt(offset);
-  return previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff;
-}
-
-function editSpans<Technique extends AnyRasterTechnique>(
-  spans: readonly TextSpan<Technique>[],
-  start: number,
-  end: number,
-  insertLength: number,
-): readonly TextSpan<Technique>[] {
-  const delta = insertLength - (end - start);
-  return spans.flatMap((span) => {
-    if (span.end <= start) return [span];
-    if (span.start >= end) return [{ ...span, start: span.start + delta, end: span.end + delta }];
-    const retainsLeft = span.start < start;
-    const retainsRight = span.end > end;
-    if (retainsLeft && retainsRight) return [{ ...span, end: span.end + delta }];
-    if (retainsLeft) return [{ ...span, end: start }];
-    if (retainsRight) {
-      return [{ ...span, start: start + insertLength, end: span.end + delta }];
-    }
-    return [];
-  });
-}
-
 function classifySemanticChanges<Technique extends AnyRasterTechnique>(update: TextUpdate<Technique>): number {
   let changes = 0;
   if (Object.hasOwn(update, 'text')) changes |= TEXT_CHANGE | STYLE_CHANGE | GEOMETRY_CHANGE;
@@ -1415,18 +1373,41 @@ function classifySemanticChanges<Technique extends AnyRasterTechnique>(update: T
   return changes;
 }
 
+/**
+ * The single place span offsets are resolved onto the cluster grid, and the only place they are
+ * segmented.
+ *
+ * `previous` is the state this one supersedes, when there is one. Its `text` and `spans` are
+ * already resolved, so when the update carries neither of them forward by a new identity the grid
+ * cannot have moved and no segmentation is performed: a `set({ paint })` on a styled paragraph
+ * costs nothing. `set()` merges over `#desired`, so an unstated `spans` arrives as the very array
+ * stored on `previous` and this comparison is exact rather than approximate.
+ */
 function normalizeDesired<Technique extends AnyRasterTechnique>(
   properties: TextProperties<Technique>,
+  previous?: DesiredTextState<Technique>,
 ): DesiredTextState<Technique> {
   if (properties === undefined) throw new TypeError('Text properties are required');
   // Column geometry is validated here so an impossible combination fails at
   // construction or set() instead of surfacing later as a bind-time error.
   normalizedColumns(properties.contentBox);
   const formatted = typeof properties.text === 'string' ? undefined : (properties.text as FormattedText<Technique>);
+  const text = formatted?.text ?? (properties.text as string);
+  const stated = (formatted?.spans as readonly TextSpan<Technique>[]) ?? properties.spans ?? [];
+  const resolved =
+    previous !== undefined && previous.text === text && previous.spans === stated
+      ? stated
+      : alignSpansToClusters(text, stated);
+  // Each retained span is frozen, not just the array holding them. `Text.spans` hands these
+  // objects to the caller, and the identity short-circuit above trusts that an unchanged array
+  // still describes cluster-aligned ranges; a mutable span record would let `spans[0].end = 1`
+  // skip alignment and reinstate the split this resolution exists to prevent.
+  const spans =
+    resolved === previous?.spans ? previous.spans : Object.freeze(resolved.map((span) => Object.freeze({ ...span })));
   return Object.freeze({
     font: properties.font,
-    text: formatted?.text ?? (properties.text as string),
-    spans: Object.freeze([...((formatted?.spans as readonly TextSpan<Technique>[]) ?? properties.spans ?? [])]),
+    text,
+    spans,
     contentBox: Object.freeze({ ...(properties.contentBox ?? {}) }),
     style: Object.freeze({ ...(properties.style ?? {}) }),
     paint: Object.freeze({ ...(properties.paint ?? {}) }),
