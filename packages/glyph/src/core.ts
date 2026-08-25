@@ -43,6 +43,21 @@ export {
   type TextEngineTextMutation,
 } from './core/frame-wire.js';
 export { TextEngineRenderPlanView, type RenderPlanTable } from './core/plan-view.js';
+export {
+  readTextEngineBuffer,
+  readTextEnginePatch,
+  readTextEngineResource,
+  readTextEngineRetirement,
+  type TextEngineBufferRecord,
+  type TextEnginePatchRecord,
+  type TextEngineResourceRecord,
+  type TextEngineRetirementRecord,
+} from './core/plan-view.js';
+export {
+  TextEnginePublicationExpiredError,
+  retainedPublicationBrand,
+  type RetainedTextEnginePublication,
+} from './core/retention.js';
 export { readTextEngineLayouts, readTextEngineMeasurements } from './core/layout-query-view.js';
 export {
   compileFontBinding,
@@ -106,11 +121,5 @@ export {
   type PolicyU32Value,
 } from './core/policy-program.js';
 export { textShaperAbi } from './generated/text-shaper-abi.js';
-export type {
-  ParagraphLayoutResult,
-  ParagraphMeasureResult,
-  ParagraphOptions,
-  ParagraphQueryError,
-  ParagraphUpdate,
-} from './paragraph.js';
+export type { ParagraphOptions, ParagraphUpdate } from './paragraph.js';
 export { Paragraph } from './paragraph.js';

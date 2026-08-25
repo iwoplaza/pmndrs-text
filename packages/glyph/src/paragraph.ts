@@ -69,26 +69,16 @@ const PARAGRAPH_POLICY_HANDLE = 0x8000_0001;
 const PARAGRAPH_HANDLE_BASE = 0x8000_0000;
 
 /**
- * Why a query failed, returned by `measure()` and `layout()` instead of surfacing out of band.
+ * A query answers, or this package is broken.
  *
- * `status` is the raw text-engine status number (`textShaperAbi.status`) and `message` the
- * human-readable form. Boundary violations -- a negative constraint size, an impossible column
- * policy -- are caller arithmetic errors and throw synchronously instead; this record is
- * reserved for the engine rejecting otherwise legal input.
+ * Measurement and layout are synchronous and take no resource that could be missing: the font is
+ * required at construction, the text and spans are validated there, and a constraint that is not
+ * finite and nonnegative throws from the call itself. Nothing is left that a caller could get wrong
+ * and nothing is left to wait for, so there is no failure to hand back. These used to return a
+ * result union, which made every caller write `if (result.ok)` on every probe -- inside a flexbox
+ * measure callback, many times per layout -- to guard a branch that only means the engine broke its
+ * own invariant. That is a defect to report, not a state to handle, so it throws.
  */
-export interface ParagraphQueryError {
-  readonly operation: 'measure' | 'layout';
-  readonly status: number;
-  readonly message: string;
-}
-
-export type ParagraphMeasureResult =
-  | { readonly ok: true; readonly metrics: ParagraphMetrics }
-  | { readonly ok: false; readonly error: ParagraphQueryError };
-
-export type ParagraphLayoutResult =
-  | { readonly ok: true; readonly layout: ParagraphLayoutInspection; readonly layoutRevision: number }
-  | { readonly ok: false; readonly error: ParagraphQueryError };
 
 export interface ParagraphOptions<Technique extends AnyRasterTechnique> {
   readonly font: FontSelection<Technique>;
@@ -114,8 +104,8 @@ interface ResolvedParagraphState<Technique extends AnyRasterTechnique> {
 }
 
 /**
- * A framework-neutral retained paragraph: synchronous `measure(constraints)` and
- * `layout(constraints)` that need no scene, no renderer, and no committed frame,
+ * A framework-neutral retained paragraph: synchronous `layout(constraints)` and
+ * `glyphs(constraints)` that need no scene, no renderer, and no committed frame,
  * and that leave authored state untouched.
  *
  * Each paragraph owns one engine session on its runtime's Wasm shaper and answers every
@@ -144,8 +134,8 @@ export class Paragraph<Technique extends AnyRasterTechnique = AnyRasterTechnique
   #engineRevision = 0;
   #planRevision = 0;
   #acknowledgedGeneration = 0;
-  readonly #measurements = new Map<string, ParagraphMeasureResult>();
-  readonly #layouts = new Map<string, ParagraphLayoutResult>();
+  readonly #measurements = new Map<string, ParagraphMetrics>();
+  readonly #layouts = new Map<string, ParagraphLayoutInspection>();
   #lastLayoutDigest: string | undefined;
   #layoutRevision = 0;
   #disposed = false;
@@ -188,7 +178,7 @@ export class Paragraph<Technique extends AnyRasterTechnique = AnyRasterTechnique
    * Monotonic paragraph-scoped revision of the positioned output.
    *
    * It starts at 0 (no positioned output yet) and advances by exactly one each time a
-   * successful `layout()` produces output whose content differs from the previous layout's.
+   * successful `glyphs()` produces output whose content differs from the previous positioned output.
    * "Positioned output" is everything a renderer or interaction layer consumes: the box and
    * content extents, both baselines, the overflow flag, glyph/line/missing-glyph counts, every
    * per-glyph record in order (glyph id, cluster, font slot, em size, x, y, flags), and every
@@ -205,73 +195,67 @@ export class Paragraph<Technique extends AnyRasterTechnique = AnyRasterTechnique
   }
 
   /**
-   * Synchronously measures the paragraph at `constraints`, without materializing per-glyph
-   * arrays and without touching authored state.
+   * Measures the paragraph at `constraints`, synchronously, with no scene, no renderer, no world
+   * matrix, and no committed frame. Every value is paragraph-local: the origin is the box's
+   * top-left corner, positive X is right, positive Y is down. Scale and placement are the host's,
+   * applied afterwards.
    *
-   * Returns `{ ok: true, metrics }`, where `metrics` carries the constrained measurement plus
-   * intrinsic `minContentWidth`/`maxContentWidth`; the intrinsics are content-only and ride
-   * the same measurement pass. Repeated measurement at the same constraints answers from a
-   * cached result with no engine call; different constraints ride the engine's retained
-   * speculative transaction, so only geometry, flow, and positioning re-run over the retained
-   * shaping. Equal inputs answer with the identical cached object.
+   * This is the paragraph-scoped measurement view: sizes, both baselines, ascent and descent, the
+   * intrinsic widths, and the glyph, line, and missing-glyph counts. It runs no positioned query —
+   * no publication flip, no per-glyph records, no revision advance — so a flexbox host probing
+   * twenty widths pays for none of that.
    *
-   * Engine rejection resolves as `{ ok: false, error }`. Boundary violations -- nonfinite or
-   * negative sizes, an impossible column policy -- throw synchronously instead: they are caller
-   * arithmetic errors, not measurement outcomes.
+   * Repeated measurement at equal constraints answers from cache with the identical object;
+   * different constraints ride the engine's retained speculative transaction, so only geometry,
+   * flow, and positioning re-run over the retained shaping. The positioned columns are a second
+   * call: see `glyphs()`.
+   *
+   * A constraint that is not finite and nonnegative, or an impossible column policy, throws from
+   * here — caller arithmetic, reported where it was written.
    */
-  measure(constraints?: ParagraphConstraints): ParagraphMeasureResult {
+  layout(constraints?: ParagraphConstraints): ParagraphMetrics {
     this.#assertActive();
     const resolved = resolveConstraints(constraints);
     const key = axisKey(resolved);
     const cached = this.#measurements.get(key);
     if (cached !== undefined) return cached;
-    try {
-      // Intrinsic widths ride the same measurement record: the engine derives them from
-      // one cluster-arena scan mirroring the breaker's wrap decisions, so a host never
-      // pays a second query at zero width.
-      const { summary } = this.#query(this.#fullBox(resolved), false);
-      const result: ParagraphMeasureResult = Object.freeze({ ok: true, metrics: summary });
-      this.#measurements.set(key, result);
-      return result;
-    } catch (error) {
-      return { ok: false, error: queryFailure('measure', error) };
-    }
+    const { summary } = this.#query(this.#fullBox(resolved), false);
+    this.#measurements.set(key, summary);
+    return summary;
   }
 
   /**
-   * Produces the final positioned glyph arrays for `constraints`.
+   * The positioned columns for `constraints`: per-glyph ids, positions, advances, ink boxes, and
+   * the per-line spans over them.
    *
-   * Like {@link Paragraph.measure}, this is synchronous, scene-free, and leaves authored state
-   * untouched; it additionally materializes the per-line and per-glyph arrays out of Wasm. The
-   * returned `layoutRevision` advances exactly when the positioned output differs from the
-   * previous layout's (see the property's contract), so a layout host can gate array readback
-   * on `paragraph.layoutRevision !== lastSeenRevision` instead of copying arrays to compare them.
+   * This is a second call because it is a second query, not a second copy. `layout()` asks the
+   * engine for the measurement view, which is paragraph-scoped and synchronous: no publication
+   * flip, no revision advance, no checkpoint. Asking for the positioned view makes the engine emit
+   * a record per glyph and per line and copies those arrays out of Wasm. A flexbox host probing
+   * twenty widths wants the first and never the second, so merging them would make every probe pay
+   * for arrays it does not read.
+   *
+   * Skia and Flutter separate these the same way, for the same reason: `getRectsForRange` and
+   * `getBoxesForSelection` are on-demand rather than part of laying out.
+   *
+   * `layoutRevision` advances here, when positioned output actually differs, so a host gates
+   * readback on it rather than copying arrays to compare them.
    */
-  layout(constraints?: ParagraphConstraints): ParagraphLayoutResult {
+  glyphs(constraints?: ParagraphConstraints): ParagraphLayoutInspection {
     this.#assertActive();
     const resolved = resolveConstraints(constraints);
     const key = axisKey(resolved);
     const cached = this.#layouts.get(key);
     if (cached !== undefined) return cached;
-    try {
-      const query = this.#query(this.#fullBox(resolved), true);
-      const inspection = query.inspection;
-      if (inspection === undefined) throw new Error('paragraph layout query returned no layout inspection');
-      const digest = layoutDigest(inspection);
-      if (digest !== this.#lastLayoutDigest) {
-        this.#lastLayoutDigest = digest;
-        this.#layoutRevision += 1;
-      }
-      const result: ParagraphLayoutResult = Object.freeze({
-        ok: true,
-        layout: inspection,
-        layoutRevision: this.#layoutRevision,
-      });
-      this.#layouts.set(key, result);
-      return result;
-    } catch (error) {
-      return { ok: false, error: queryFailure('layout', error) };
+    const { inspection } = this.#query(this.#fullBox(resolved), true);
+    if (inspection === undefined) throw new Error('paragraph glyph query returned no layout inspection');
+    const digest = layoutDigest(inspection);
+    if (digest !== this.#lastLayoutDigest) {
+      this.#lastLayoutDigest = digest;
+      this.#layoutRevision += 1;
     }
+    this.#layouts.set(key, inspection);
+    return inspection;
   }
 
   /**
@@ -475,11 +459,6 @@ function flowBox(
   };
 }
 
-function queryFailure(operation: 'measure' | 'layout', error: unknown): ParagraphQueryError {
-  if (!(error instanceof TextEngineStatusError)) throw error;
-  return Object.freeze({ operation, status: error.status, message: error.message });
-}
-
 function classifyChanges<Technique extends AnyRasterTechnique>(update: ParagraphUpdate<Technique>): number {
   let changes = 0;
   if (Object.hasOwn(update, 'text')) changes |= TEXT_CHANGE | STYLE_CHANGE | GEOMETRY_CHANGE;
@@ -522,17 +501,7 @@ function axisKey(constraints: ResolvedConstraints): string {
   return `${key(constraints.width)}|${key(constraints.height)}`;
 }
 
-/**
- * Copies an authored value and everything reachable from it, then freezes the copy.
- *
- * A one-level freeze leaves nested authored structure -- `style.features` and its records,
- * `policy.justify`, `policy.columns`, per-span styles and paints -- shared with the caller, so
- * mutating a record after `update()` changes the shaping input the cache was keyed on while the
- * cache still answers from the value it stored. Freezing the caller's own objects in place would
- * fix that by making their arrays immutable underneath them, which is a side effect on memory they
- * own; copying first keeps the snapshot ours and their input untouched. Authored state is small and
- * normalization already copies its top level.
- */
+/** Copies an authored value and freezes the copy, so a caller mutating what they passed cannot change cached shaping input. */
 function frozenDeep<Value>(value: Value): Value {
   if (value === null || typeof value !== 'object') return value;
   if (ArrayBuffer.isView(value)) return value;

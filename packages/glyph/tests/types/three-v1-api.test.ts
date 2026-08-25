@@ -1,7 +1,7 @@
-import type { LoadedFont } from '../../src/index.js';
+import { txt, type LoadedFont } from '../../src/index.js';
 import { bitmap } from '../../src/raster/bitmap-technique.js';
 import { msdf } from '../../src/raster/msdf.js';
-import { FontLoader, span, Text, TextGroup, txt } from '../../src/three.js';
+import { FontLoader, span, Text, TextGroup } from '../../src/three.js';
 
 declare const bitmapFont: LoadedFont<typeof bitmap>;
 declare const mtsdfFont: LoadedFont<typeof msdf>;
@@ -15,7 +15,7 @@ label.text = 'Updated';
 label.text = 'Updated!';
 label.spans = [{ start: 0, end: 7, paint: { color: '#00ff00' } }];
 label.setCapacity({ size: 64, policy: 'grow' });
-const measurement = label.measureLayout();
+const measurement = label.layout();
 void measurement?.contentWidth;
 labels.setCapacity({ size: 4_096, policy: 'chunk' });
 

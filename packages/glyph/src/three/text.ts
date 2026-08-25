@@ -18,7 +18,6 @@ import type {
   GlyphBufferCapacity,
   ParagraphBaseProperties,
   ParagraphContentBox,
-  ParagraphProperties,
   ParagraphStyle,
 } from '../text-properties.js';
 import type { FontFeature } from '../font-feature.js';
@@ -112,7 +111,7 @@ export interface TextGroupOptions {
  * `'unbound'` and `'pending'` are distinguished because they need different responses: an unbound
  * paragraph is not in the scene graph and never will commit on its own, while a pending one commits
  * on the next world-matrix update. The previous surface collapsed both into `undefined` from
- * `measureLayout()`, and the only positive signal available was that `.error` was still unset.
+ * `layout()`, and the only positive signal available was that `.error` was still unset.
  */
 export type TextCommitState =
   | Readonly<{ status: 'unbound' }>
@@ -149,7 +148,7 @@ type PendingTextMutation = Readonly<{
  */
 interface TextReconciler {
   runtime(text: Text<AnyRasterTechnique>): TextRuntime;
-  properties<Technique extends AnyRasterTechnique>(text: Text<Technique>): ParagraphProperties<Technique>;
+  properties<Technique extends AnyRasterTechnique>(text: Text<Technique>): TextProperties<Technique>;
   needsApply(text: Text<AnyRasterTechnique>): boolean;
   semanticChanges(text: Text<AnyRasterTechnique>): number;
   textMutations(text: Text<AnyRasterTechnique>): readonly PendingTextMutation[];
@@ -293,13 +292,28 @@ export class Text<Technique extends AnyRasterTechnique> extends THREE.Object3D {
     this.#standaloneCapacity = normalizeCapacity(capacity);
     if (this.#textGroup === undefined) this.#binding?.setCapacity(this.#standaloneCapacity);
   }
-  /** Performs one explicit Rust query when this committed layout has not already been measured. */
-  measureLayout(): ParagraphLayoutSummary | undefined {
+  /**
+   * The committed measurement, or `undefined` when this paragraph has not published one yet.
+   *
+   * Sizes, baselines, ascent, descent, and the glyph and line counts. This takes the
+   * paragraph-scoped engine query: no publication flip, no per-glyph records, no array copies,
+   * so a scene that measures every frame stays on the cheap path.
+   *
+   * `undefined` means no committed layout, not a failure. `commitState()` is the positive signal.
+   */
+  layout(): ParagraphLayoutSummary | undefined {
     this.#assertActive();
     return this.#binding?.measurement(eraseTextTechnique(this));
   }
-  /** Copies the committed per-line and per-glyph Rust layout only when explicitly requested. */
-  inspectLayout(): ParagraphLayoutInspection | undefined {
+  /**
+   * The positioned columns of the committed layout, or `undefined` when none is committed.
+   *
+   * Separate from `layout()` because it is a separate engine query: `layout()` takes the
+   * paragraph-scoped measurement path with no publication flip, while this asks the engine to emit
+   * a record per glyph and copies those arrays out of Wasm. Reading a width should not pay for
+   * that, and a scene that measures every frame would.
+   */
+  glyphs(): ParagraphLayoutInspection | undefined {
     this.#assertActive();
     return this.#binding?.layoutInspection(eraseTextTechnique(this));
   }
@@ -414,7 +428,16 @@ export class Text<Technique extends AnyRasterTechnique> extends THREE.Object3D {
     this.#leasedFonts = [];
   }
 
-  #coreProperties(): ParagraphProperties<Technique> {
+  /**
+   * The paragraph as this integration states it, materials included.
+   *
+   * It used to narrow to `ParagraphProperties`, the renderer-agnostic vocabulary, which silently
+   * dropped the two things only this integration has -- the paragraph's material and the material on
+   * each span -- and the compiler then cast them back to reach the values it had just discarded. A
+   * material is how Three.js renders a run; the engine only ever sees the `materialId` this module
+   * resolves it to, so the renderer-facing type belongs here rather than in the shared vocabulary.
+   */
+  #coreProperties(): TextProperties<Technique> {
     return {
       ...this.#desired,
       order: this.renderOrder,
@@ -1220,14 +1243,14 @@ class ThreeTextBatchBinding {
 function compileEngineStyles<Technique extends AnyRasterTechnique>(
   coordinator: ThreeTextEngineCoordinator,
   paragraphId: number,
-  properties: ParagraphProperties<Technique>,
+  properties: TextProperties<Technique>,
   groupMaterial: ThreeTextMaterial | undefined,
   leases: ThreeTextEngineStackLease[],
   materialLeases: ThreeTextMaterialLease[],
 ): TextEngineStyleMutation[] {
   const text = properties.text as string;
   const rootStack = acquireEngineStack(coordinator, properties.font, leases);
-  const rootMaterial = (properties as TextProperties<Technique>).material ?? groupMaterial;
+  const rootMaterial = properties.material ?? groupMaterial;
   const rootMaterialId = acquireEngineMaterial(coordinator, rootMaterial, materialLeases);
   const styles: TextEngineStyleMutation[] = [
     {
@@ -1248,7 +1271,7 @@ function compileEngineStyles<Technique extends AnyRasterTechnique>(
   ];
   for (const [index, span] of styledSpans(properties.spans).entries()) {
     const fontStackHandle = span.font === undefined ? undefined : acquireEngineStack(coordinator, span.font, leases);
-    const materialId = acquireEngineMaterial(coordinator, (span as TextSpan<Technique>).material, materialLeases);
+    const materialId = acquireEngineMaterial(coordinator, span.material, materialLeases);
     styles.push({
       opcode: 'upsert',
       paragraphId,

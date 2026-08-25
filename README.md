@@ -4,6 +4,20 @@ Portable font baking, Unicode shaping, paragraph layout, and batched text render
 
 `@pmndrs/glyph` shapes and lays out text in Rust/Wasm, then publishes a retained render plan for the active renderer. The maintained Three.js integration supports Bitmap, MSDF, and Slug through WebGPU and Three's WebGL fallback.
 
+## Where to import from
+
+The root is the vocabulary of text — fonts, authoring, layout and measurement types, technique definition — and
+every consumer speaks it. `@pmndrs/glyph/three` and `@pmndrs/glyph/react` are integrations, and they publish only
+their own surface. `@pmndrs/glyph/core` is for implementing an integration: the render policy, the render plan, the
+frame wire and its handoff. It is additive to the root rather than parallel to it, so a custom renderer imports both.
+The [renderer integration guide](docs/guides/renderer-integration.md) walks that path end to end: declaring a
+technique schema, authoring and registering a policy, driving a session, reading all seven plan tables, and
+implementing the retention and patch protocols.
+
+The rule, if you are deciding where something belongs: **a type an application can encounter lives at the root; a
+thing only an integrator constructs lives in `/core`.** That is why `ParagraphMeasurement` is at the root and
+`Paragraph` is not.
+
 ## Render text with React Three Fiber
 
 ```tsx
@@ -44,7 +58,8 @@ function Labels() {
 ## Render text with Three.js
 
 ```ts
-import { FontLoader, Text, TextGroup, span, txt } from '@pmndrs/glyph/three';
+import { span, txt } from '@pmndrs/glyph';
+import { FontLoader, Text, TextGroup } from '@pmndrs/glyph/three';
 import { msdf } from '@pmndrs/glyph/three/msdf';
 
 const loader = new FontLoader();
@@ -83,7 +98,36 @@ label.position.x += 1;
 
 Assigning `text` queues the narrowest UTF-16 edit between the previous string and the new one, so an editor sends one
 narrow update per keystroke without describing the edit itself.
-`measureLayout()` returns a compact committed paragraph summary; `inspectLayout()` explicitly requests line and glyph details.
+`layout()` returns a compact committed paragraph summary; `glyphs()` explicitly requests line and glyph
+details. Both read a layout the scene has already committed.
+
+## Measure before you render
+
+To place text correctly on the very first frame you need its metrics before a scene exists. `Paragraph` measures
+synchronously with no scene, no renderer, no world matrix, and no committed frame — which is also what a flexbox
+engine needs from inside its measure callback.
+
+```ts
+import { createTextRuntime, txt } from '@pmndrs/glyph';
+import { Paragraph } from '@pmndrs/glyph/core';
+
+const paragraph = new Paragraph({ font: inter, text: txt`Hello world`, policy: { wrap: 'word' } });
+const measured = paragraph.layout({ width: { mode: 'at-most', size: 360 } });
+
+measured.contentWidth; // advance extent
+measured.firstBaseline; // from the box top edge
+measured.ascent; // per paragraph; per line on measured.lines
+measured.minContentWidth; // longest unbreakable run, from the same pass
+```
+
+Every value is paragraph-local: the origin is the box's top-left corner, positive X is right, positive Y is down.
+Scale and placement are yours to apply afterwards.
+
+`layout()` is one cheap engine query: sizes, baselines, counts, and intrinsic widths — no per-glyph records, no
+array copies. When you need the positioned output (`x`, `y`, `glyphIds`, ink boxes), call `glyphs()` for it; that is
+a second query because it is a second piece of work. A host that probes many widths for sizes alone never pays for
+arrays it never touches. A query answers or throws: a constraint that is not finite and nonnegative throws from the
+call, naming the axis.
 
 ## Font Stacks - fallback fonts for missing glyphs
 
@@ -286,6 +330,33 @@ flowchart LR
   plan --> render["Renderer resources, uploads, materials, and draws"]
 ```
 
+Who supplies each piece matters more than the order, because it decides what you write once and what
+you write again for every engine:
+
+```mermaid
+flowchart TD
+  baker["Baker<br/><i>RasterBakerModule</i>"] -->|"baked GLB: strikes, atlases, curves"| artifact["Font artifact"]
+  artifact --> technique
+  subgraph portable["Written once — works in every engine"]
+    technique["Technique<br/><i>decode, dispose, descriptor</i>"]
+    policy["Render policy<br/><i>numeric bytecode</i>"]
+    binding["Font binding<br/><i>Rust wire bytes</i>"]
+  end
+  technique --> policy --> plan["Render plan<br/><i>fixed-record data</i>"]
+  technique --> binding --> plan
+  subgraph engine["Written once per engine"]
+    gpu["Bind buffers and textures<br/><i>from the baked bytes</i>"]
+    material["Realize material"]
+  end
+  plan --> gpu --> draw["Draws"]
+  plan --> material --> draw
+```
+
+The policy and the font binding contain no renderer types — the policy is numbers, the binding is Rust wire
+bytes, and plan resources are handles into the baked payload. Only buffer/texture binding and material
+realization are engine-specific, because only those are engine objects. A technique is therefore authored
+once and consumed by any renderer that can execute the plan.
+
 The policy declares:
 
 - supported raster techniques and paint/compositing capabilities;
@@ -318,7 +389,19 @@ A renderer integration has five responsibilities:
 
 Three is the maintained reference executor. `@pmndrs/glyph/three/bitmap`, `/msdf`, and `/slug` export each technique's raster contract; the Three runtime resolves the matching policy program and TSL material when a loaded font requests that technique. A custom Three technique can use the public `registerThreeRasterPlanProgram` and `threePolicyAbi` exports to provide its declarative policy, cold font binding, and material realization.
 
-The renderer-neutral host, frame wire, policy authoring toolkit, and plan view publish as `@pmndrs/glyph/core`, and the technique shader library as `@pmndrs/glyph/tsl` — the [Core API](#core-api) section shows the four moves. A new engine integration can follow the [Rust layout engine contract](docs/planning/rust-layout-engine.md#render-plan-policy) and the [Three executor](docs/planning/three-api.md) as its reference; Three itself consumes only these public surfaces, enforced by lint. TypeGPU support will be built against the same contract.
+The renderer-neutral host, frame wire, policy authoring toolkit, and plan view publish as `@pmndrs/glyph/core`, and the technique shaders as `@pmndrs/glyph/tsl` and `@pmndrs/glyph/typegpu` — the [Core API](#core-api) section shows the four moves. A new engine integration should start from the [renderer integration guide](docs/guides/renderer-integration.md), which walks all five responsibilities above with working code, then use the [Rust layout engine contract](docs/planning/rust-layout-engine.md#render-plan-policy) and the [Three executor](docs/planning/three-api.md) as reference material.
+
+## Technique shaders on their own
+
+The technique shaders ship without an engine or a scene attached, in two realizations of the same behaviour:
+`@pmndrs/glyph/tsl` as Three.js Shading Language node graphs, and `@pmndrs/glyph/typegpu` as TypeGPU functions for any
+TypeGPU host. The TypeGPU realization is pinned to the TSL one by compiling the TSL graph to WGSL and diffing against
+the real generated source, rather than translating the node graph by inspection.
+
+```ts
+import { bitmapShader, msdfShader, slugShader } from '@pmndrs/glyph/tsl';
+import { bitmapFragment, bitmapVertexSnapped } from '@pmndrs/glyph/typegpu';
+```
 
 ## Develop
 

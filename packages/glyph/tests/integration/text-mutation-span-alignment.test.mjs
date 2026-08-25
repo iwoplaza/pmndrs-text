@@ -40,7 +40,9 @@ import { createElement } from 'react';
 
 import '../support/browser-globals.mjs';
 import { bitmap } from '@pmndrs/glyph/three/bitmap';
-import { alignSpansToClusters, span, txt } from '@pmndrs/glyph/three';
+import { txt } from '@pmndrs/glyph';
+import { alignSpansToClusters } from '../../dist/formatted-text.js';
+import { span } from '@pmndrs/glyph/three';
 import { Text as R3fText, TextSpan as R3fTextSpan } from '@pmndrs/glyph/react';
 
 import { createFontCache, mount, seededRandom, timeout, unmount } from '../support/text-mutation-lanes.mjs';
@@ -184,7 +186,7 @@ test('an authored empty span states nothing and never reaches the engine', { tim
       [0, 2],
     ]);
     assert.equal(node.error, undefined, `an empty span must not fail the frame: ${String(node.error?.message)}`);
-    assert.equal(node.inspectLayout().glyphCount, 3);
+    assert.equal(node.layout().glyphCount, 3);
   });
 });
 

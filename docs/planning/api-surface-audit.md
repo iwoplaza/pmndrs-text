@@ -16,8 +16,8 @@ sources:
     resource: decision-register.md
     title: Decision register
 generated:
-  by: anthropic-claude/opus-5
-  at: '2026-08-23T00:00:00Z'
+  by: openai-codex/gpt-5
+  at: '2026-08-24T03:12:27Z'
 ---
 
 # Public API surface audit and cleanup plan
@@ -100,20 +100,47 @@ F5. **Guarantee the parallel-array invariant.** The one real consumer hand-wrote
 F6. **Make late `registerThreeRasterPlanProgram` an error.** The registry is module-global and each `TextRuntime` snapshots it once at first coordinator creation, so a later registration is a legal call that silently does nothing and surfaces later as a missing technique. A doc comment is not enforcement.
 F7. **Export the `glyphFlags` bit names or drop the field.** Sixteen bits whose meaning lives only in a planning document, which a consumer would have to find and then hardcode indices from.
 F8. **Split the React inline props type.** `R3fTextChild` is typed as the full outer props, but `flattenText` honours only `font`, `style`, `paint`, `material`, and `children`. `contentBox`, `capacity`, `pixelSnapping`, `rasterPixelRatio`, `onError`, `ref`, and every `Object3D` prop are silently discarded, and a `ref` on a nested `Text` never fires. Flutter's split of `RichText` (box-level) from `TextSpan` (inline-level) is the precedent.
-F9. **Re-export `ParagraphLayoutSummary` and `ParagraphLayoutInspection` from `/three`.** `Text.measureLayout()` and `inspectLayout()` return types a `/three` importer cannot name.
+F9. **Re-export `ParagraphLayoutSummary` and `ParagraphLayoutInspection` from `/three`.** `Text.layout()` and `Text.glyphs()` return types a `/three` importer cannot name.
+
+F10. **Give `RasterTechnique` behaviour, the way `RasterBakerModule` already has it.** The bake and raster sides are dependent twins across the artifact boundary, and only one of them got this pass.
+
+    `RasterBakerModule` (`packages/glyph/src/bake.ts:101-107`) is an open contract: `kind`, `extension`, `version`, and two methods -- `descriptor(options)` and `bake(request)`. A third party implements the interface and bakes. `RasterTechnique` (`packages/glyph/src/raster-technique.ts:30-42`) is a pure descriptor: `id`, `kind`, `extension`, `version`, and a phantom type map. **No methods.** A technique therefore cannot say how to consume what its twin produced, so the consuming code must know every technique by name:
+
+    - `core/font-binding.ts:55-74` -- a closed branch over `bitmap`, `msdf`, `slug`, ending in `throw new TypeError('no first-party font-binding compiler is registered for ...')`;
+    - `three/engine-runtime.ts:217-234` -- the same shape again, ending in `'no first-party Three resource resolver is registered for ...'`;
+    - `three/engine-plan-target.ts:781` -- a third `technique === bitmap.id` branch.
+
+    Nothing is registered in any of them; the word describes a hard-coded `if`. The consequence is that **a third-party technique cannot bind a font or resolve a Three resource at all**, even though `compileFontBinding`, `schemaFieldTable`, `FontBindingDescriptor`, and `fontBindingResources` are exported from `/core` so an integrator can build the binding correctly and then find nowhere to put it. That contradicts what `/core` is for -- the example-renderer package exists to prove a renderer can drive the engine itself -- and it is the one place first-party techniques get a private path.
+
+    The technique already owns the data shape (`BitmapData`, `BitmapStrikeData`) and the binding layout (`bitmapSchema.binding.f32` / `.u32`, `raster/bitmap-technique.ts:205-233`). Only the compiler that walks one into the other was split out into `core/`. Put it back on the technique so `loadedFontBindingBytes` resolves through `font.technique` -- which the call site already holds to compare ids -- and do the same for the Three resource resolver. Prefer that to import-side-effect registration into a module-global registry: a registry adds order dependence, needs a `sideEffects` declaration to survive bundling, and re-creates the late-registration hazard F6 already records. Carrying behaviour on the object the caller passed in has none of those failure modes and makes both sides of the boundary the same shape.
+
+    Removing the switch also removes the eager import of all three techniques, which is what currently blocks `Paragraph` from the root entry: the delivery gate rejects the root pulling `raster/bitmap-technique.js`, and a consumer shipping one technique pays for three. That is a consequence of the fix, not the reason for it.
+
+F11. **Stop committing `source_digest` per commit.** Every commit touching source re-pins a generated hash into `docs/packages/*.md`, so replaying N commits during a rebase produces N conflicts whose correct value is neither side -- it is whatever `docs:update` computes at the end. Across the six-layer rebase onto main this was roughly nine of every ten conflicts, and the cost scales with commit count times stack depth. A `.gitattributes` merge driver for `docs/packages/*.md`, or regenerating in CI rather than storing per commit, removes it. `docs:check` already enforces correctness independently, which is what makes the stored copy redundant rather than authoritative.
+
+F12. **Make the paragraph measurement invariant true.** `BaselineMetrics` promises `ascent + descent === lineHeight`, but a paragraph publishes `ascent = firstBaseline`, `descent = contentHeight - lastBaseline`, and `lineHeight = contentHeight` (`packages/glyph/src/layout.ts:39`, `packages/glyph/src/core/layout-query-view.ts:88`). With baselines at 10 and 30 in a 40-tall paragraph, `10 + 10 !== 40`. Anyone sizing or baseline-aligning from the exported type gets a wrong extent on every wrapped paragraph; the existing test covers one line only. Either stop implementing `BaselineMetrics` for paragraph measurements, or define descent against the same baseline.
+
+F13. **Keep word ranges on cluster boundaries.** `packages/glyph/src/glyph-placement.ts:479-492` derives `textEnd` as `cluster + 1`, so a word that is one astral character reports an end of 1 and splits the surrogate pair instead of returning 2. Combining sequences and multi-character ligatures split the same way. Derive the end from the next logical cluster boundary. Caret affinity has the neighbouring defect (`:544-552`): at an internal boundary the trailing edge wins the tie, then the offset advances while `leading: false` is retained, so the reported rectangle contradicts the reported offset, and RTL is not accounted for at all.
+
+F14. **Advance `layoutRevision` whenever the answer could differ.** Revisiting a cached constraint does not advance it, so a host that treats the revision as its change signal renders stale content. The retention brand is separately forgeable, which defeats both the compile-time and runtime ownership checks it exists to provide.
+
+F15. **Stop publishing mutable cached arrays as results.** `layout()` and `glyphs()` hand back typed arrays retained in the cache (`packages/glyph/src/core/layout-query-view.ts:133-174`, `:234-258`), so `result.layout.x.fill(0)` corrupts what the next identical query returns. `Object.freeze` does not protect typed-array elements and `readonly` does not exist at runtime. "Caller-owned memory" and "identical cached object" cannot both be true; pick one and state it.
+
+F16. **Reject contradictory span authorities in `ParagraphOptions`.** The type admits a `FormattedText` value and a separate `spans` array at once, and because `formatted.spans` always exists the explicit array is silently ignored (`packages/glyph/src/paragraph.ts:93-104`). `TextProperties` already models these as mutually exclusive variants; publishing an invalid combination is the same class this audit removes everywhere else.
+
 
 ## Reshape
 
 | Surface | To | Precedent |
 | --- | --- | --- |
-| `measureLayout()`, `inspectLayout()`, `snapshotGlyphOrigins()` returning `undefined` for "not bound to the scene graph" | Distinguish unbound (throw, as `setGlyphOrigins` already does) from "no layout yet", and add a readiness signal so callers stop writing `updateMatrixWorld(true); if (group.error) throw group.error` | troika `sync(cb)` with `syncstart`/`synccomplete`; Flutter `TextPainter.layout()` then `.size` |
+| `Text.layout()`, `Text.glyphs()`, `snapshotGlyphOrigins()` returning `undefined` for "not bound to the scene graph" | Distinguish unbound (throw, as `setGlyphOrigins` already does) from "no layout yet", and add a readiness signal so callers stop writing `updateMatrixWorld(true); if (group.error) throw group.error` | troika `sync(cb)` with `syncstart`/`synccomplete`; Flutter `TextPainter.layout()` then `.size` |
 | `Text.error` / `onError` as the only signal | Add the positive signal. Today the only way to know a layout committed is that `.error` is still `undefined` | troika `onSync`, which is drei's sole seam onto it |
 | No anchoring | `anchorX`/`anchorY` on `ParagraphContentBox`. `contentBox.align` aligns lines within the box; nothing anchors the box, so `r3f-hello-world` hand-computes `position={[-width / 2, height / 2, 0]}` | troika and drei both ship it; drei defaults to `center`/`middle` |
 | No glyph extents | Per-glyph advance or bounds, then `caretAt(x, y)` and `selectionRects(start, end)` on top | troika, Skia, Flutter, and the DOM all ship a hit-test surface; we are the only surveyed API with none |
 
 ## Goal and current state
 
-**Goal.** Every item in this document implemented, **and every open decision entry it depends on resolved**, landed as a GitHub Stack of pull requests, each one green in CI, each one adversarially reviewed by an external model with every review comment either addressed or answered, and the stack ready to merge. The pmndrs/uikit fork is documented here but is **not** part of this goal; only the package-side API it needs is.
+**Goal.** Every item in this document implemented, **every open decision entry it depends on resolved**, and **performance benchmarking we can trust across every core API path**, landed as a GitHub Stack of pull requests, each one green in CI, each one adversarially reviewed by an external model with every review comment either addressed or answered, and the stack ready to merge. The pmndrs/uikit fork is documented here but is **not** part of this goal; only the package-side API it needs is.
 
 Three `Proposed` decisions in [the register](decision-register.md) are in scope and must reach `Accepted` or be withdrawn with a reason:
 
@@ -137,7 +164,7 @@ This section is the handoff. Keep it current as work lands, so anyone can resume
 | 1-3, 5 | Ascent/descent/line height, ink bounds beside advance extents, per-line metrics on the summary | ✅ | #107 |
 | -- | Animation API: snapshot to manipulate to restore over glyphs/words/lines | ✅ | #107 |
 | -- | Reshape: `commitState()`, cluster-first `caretAt`/`selectionRects` | ✅ | #107 |
-| 4, 6-10, 16 | Framework-neutral `Paragraph`, constraint/policy split, intrinsic widths, failure from the measure call, uikit fixture re-pointed, paragraph-scoped revision | ✅ | #109 |
+| 4, 6-10, 16 | Framework-neutral `Paragraph`, constraint/policy split, intrinsic widths, failure from the layout call, uikit fixture re-pointed, paragraph-scoped revision | ✅ | #109 |
 | 24 | `@pmndrs/glyph/typegpu` — Bitmap | ✅ | [#108](https://github.com/pmndrs/glyph/pull/108) |
 | 24 | `/typegpu` — MSDF and decoration | 🚧 | `feat/typegpu-msdf` |
 | 24 | `/typegpu` — Slug (PR #46 is reference only, never merged) | 🚧 | `feat/typegpu-slug` |
@@ -155,19 +182,30 @@ This section is the handoff. Keep it current as work lands, so anyone can resume
 
 Two findings that de-risk the list. `TextEngineSession.measureParagraph(request, paragraphId)` already exists, so item 6 is largely a JavaScript-side wrapper rather than a Rust change. And the render plan already models `clipId`, `depthKey`, `orderToken`, `materialId`, and `transformId` across seven tables, so item 11 is a contract over an existing surface rather than a new one.
 
-Corrections this document has already absorbed, recorded so they are not re-derived: `/core` has consumers and stays published; ascent and descent exist per font on `FontMetrics` and are missing only from paragraph measurement; the revisions are published on `/core` and are missing only as paragraph-scoped state; `stageBatch` from D-118 was never implemented and was superseded; `FontLoadError` and `createFontStack` were wrongly listed for deletion; the uikit shadow-adapter stage is not downstream of this cleanup; `Paragraph` lives on `/core` (not the root entry) because its engine session pulls the first-party font-binding compilers, which keeps the root entry's raster-free bundle boundary intact; and "minimum-content width from a zero-width measurement" was wrong as an implementation recipe -- a literal zero-width flow is degenerate, so intrinsic widths are now scanned from the cluster arena in the same measurement pass.
+Corrections this document has already absorbed, recorded so they are not re-derived: `/core` has consumers and stays published; ascent and descent exist per font on `FontMetrics` and are missing only from paragraph measurement; the revisions are published on `/core` and are missing only as paragraph-scoped state; `stageBatch` from D-118 was never implemented and was superseded; `FontLoadError` and `createFontStack` were wrongly listed for deletion; the uikit shadow-adapter stage is not downstream of this cleanup; `Paragraph` lives on `/core` (not the root entry) because its engine session pulls the first-party font-binding compilers, which keeps the root entry's raster-free bundle boundary intact -- this was re-tested and re-confirmed by the delivery gate, and F10 records that the coupling is fixable rather than inherent; and "minimum-content width from a zero-width measurement" was wrong as an implementation recipe -- a literal zero-width flow is degenerate, so intrinsic widths are now scanned from the cluster arena in the same measurement pass.
 
-### Open question: an unexplained thirty-kilobyte graph delta
+### Answered: the shared module behind the graph delta
 
-Every runtime graph -- `three-runtime-js`, `bitmap-runtime-js`, `mtsdf-runtime-js`, `slug-runtime-js` -- grew by a near-identical ~30 KB raw across this stack. The semantic record widening from 44 to 68 bytes explains the shaper Wasm and the `/core` subpath, but it does not explain four independent graphs moving by the same amount; that shape points at a single shared module entering each graph.
+Every runtime graph -- `three-runtime-js`, `bitmap-runtime-js`, `mtsdf-runtime-js`, `slug-runtime-js` -- grew by a near-identical step across this stack, and that shape pointed at one shared module rather than at the semantic record widening from 44 to 68 bytes. The module is **`unicode-segmenter`**, which enters through `packages/glyph/src/internal/graphemes.ts` at the edit-topology layer: caller-side span alignment must agree with the engine's cluster grid, and `Intl.Segmenter` follows the host ICU, so it can place a boundary this package's own Rust tables do not. One module, four importers, one near-identical step.
 
-Reviewed ceilings were raised to the measured values so CI is not blocked on an unanswered question, and the raise is annotated as such in `apps/benchmarks/src/benchmark/package-size-budgets.ts`. Before release, find what entered the graph and either justify it or remove it. Do not treat the current ceilings as reviewed in the normal sense until that is answered.
+It is a deliberate correctness-over-size trade, not drift, and it is not foreign-host variance: both hosts measure `three-runtime-js` at an identical 399,189 raw against a 377,000 ceiling that main passes with 101 bytes of headroom. The bot reports it as Core JS +25.1 % and the Three adapter +6.9 % gzip. Ceilings are re-priced with that cause recorded in `apps/benchmarks/src/benchmark/package-size-budgets.ts`, so they are now reviewed in the normal sense.
+
+What is still worth deciding before release is whether every entry point should pay it. A consumer who never authors spans still ships the tables.
+
+### Final phase: benchmarks we can trust
+
+The repository has many benchmarks and does not trust them. The complaint is subtle drift: numbers move between runs for reasons unrelated to the change under test, so nobody can say whether a change helped or hurt. A cleanup this size is worth little if its cost cannot be measured.
+
+Performance benchmarking moves onto **pmndrs/labs**, which exists to benchmark in environments that are not fully stable. The scope is the core API rather than the renderer: shaping and line breaking through `Paragraph.layout`, positioned-column materialization through `Paragraph.glyphs`, the frame-wire compile, the render-plan read, the retention handoff, and font binding. Each path needs a stated unit of work and a stated regression threshold.
+
+The plan is `docs/planning/benchmark-trust.md`. It must answer how a run establishes that a difference is real rather than noise, what the baseline is and how it updates without laundering a regression into the record, how it survives shared CI runners, which existing benchmarks are replaced or deleted, and what it cannot tell us.
+
 
 ## Measurement and positioning
 
 Reported from production use: an agent integrating this package "has a hell of a time getting text positioned correctly." The measure surface is the cause, and it is the same gap as the missing glyph extents — both are per-glyph and per-line geometry we compute and do not publish.
 
-`ParagraphLayoutSummary` is what `measureLayout()` returns and its own docstring says it "is suitable for positioning UI, telemetry, and missing-glyph admission checks." It carries `width`, `height`, `contentWidth`, `contentHeight`, `firstBaseline`, `lastBaseline`, `overflowed`, `glyphCount`, `lineCount`, `missingGlyphCount`. Measured against what positioning actually needs:
+`ParagraphLayoutSummary` is what `layout()` returns and its own docstring says it "is suitable for positioning UI, telemetry, and missing-glyph admission checks." It carries `width`, `height`, `contentWidth`, `contentHeight`, `firstBaseline`, `lastBaseline`, `overflowed`, `glyphCount`, `lineCount`, `missingGlyphCount`. Measured against what positioning actually needs:
 
 | Needed | We publish | Elsewhere |
 | --- | --- | --- |
@@ -178,14 +216,14 @@ Reported from production use: an agent integrating this package "has a hell of a
 
 `width` and `height` additionally echo the authored box under `width: { mode: 'exact' }` — the common case — so the only load-bearing number is `contentWidth`, and it is the advance extent rather than the visual one.
 
-Compounding it, the order of operations is circular and undocumented: positioning needs measurements, measurements need a committed layout, the layout commits inside `updateMatrixWorld`, and `measureLayout()` returns `undefined` until then. There is no readiness signal, so a caller must force a commit by hand and check `error` to find out whether the answer is trustworthy. React has no clean hook point for that at all. This is the same defect as the missing readiness signal in the Reshape table, seen from the caller's side.
+Compounding it, the order of operations is circular and undocumented: positioning needs measurements, measurements need a committed layout, the layout commits inside `updateMatrixWorld`, and `layout()` returns `undefined` until then. There is no readiness signal, so a caller must force a commit by hand and check `error` to find out whether the answer is trustworthy. React has no clean hook point for that at all. This is the same defect as the missing readiness signal in the Reshape table, seen from the caller's side.
 
 Required:
 
 1. Publish ascent, descent, and line height on the measurement summary, per line and for the paragraph.
 2. Publish ink bounds beside the advance extents, named so the difference is unmissable. A caller centring text visually must not have to know which one they hold.
 3. Add `anchorX`/`anchorY` so the common case needs no arithmetic, and so the anchor is applied where the layout already knows the extents.
-4. Make the measure-then-position order non-circular: either a synchronous measure that does not require a committed frame, or a readiness signal that tells a caller when the answer is valid. Flutter's `TextPainter.layout()` followed by a synchronous `.size` is the precedent.
+4. Make the layout-then-position order non-circular: either a synchronous layout that does not require a committed frame, or a readiness signal that tells a caller when the answer is valid. Flutter's `TextPainter.layout()` followed by a synchronous `.size` is the precedent.
 5. Whatever the animation API exposes as per-glyph extents must be the same geometry, from the same source, in the same coordinate space as these paragraph and line metrics.
 
 ### Third-party layout hosts: uikit and Yoga
@@ -194,13 +232,13 @@ The same gap decides whether `pmndrs/glyph` can be the text solution for pmndrs/
 
 What is already sound. `ParagraphAxisConstraint` is `unconstrained | at-most | exact`, a one-to-one map onto Yoga's `Undefined | AtMost | Exactly`. `firstBaseline` is measured from the box top edge, which is Yoga's baseline-function convention. Milestone 11.17 made repeated measurement cheap by routing a geometry-only change to a paragraph-scoped synchronous query. The constraint vocabulary and the measurement cost are not the problem.
 
-What is missing. The `Paragraph` interface that [uikit integration](uikit-integration.md) calls the "Minimum core API" -- `measure(constraints)`, `layout(constraints)`, `update(input)`, `dispose()` -- does not exist in the package. There is no `Paragraph` type and no `ParagraphConstraints` type; `measureLayout()` takes no arguments. The paragraph-boundary fixture validates the contract through a hand-written adapter in the benchmarks application, which mutates the retained object and forces a scene-graph commit for every distinct constraint:
+What is missing. The `Paragraph` interface that [uikit integration](uikit-integration.md) calls the "Minimum core API" -- `layout(constraints)`, `glyphs(constraints)`, `update(input)`, `dispose()` -- does not exist in the package. There is no `Paragraph` type and no `ParagraphConstraints` type; `layout()` takes no arguments. The paragraph-boundary fixture validates the contract through a hand-written adapter in the benchmarks application, which mutates the retained object and forces a scene-graph commit for every distinct constraint:
 
 ```ts
 text.contentBox = value;
 group.updateMatrixWorld(true);
 if (group.error !== undefined) throw group.error;
-const measured = text.measureLayout();
+const measured = text.layout();
 ```
 
 That is what an integrator must write to answer one Yoga measure callback, and it is unsound in four ways that a retained layout engine makes worse rather than better:
@@ -214,7 +252,7 @@ That is what an integrator must write to answer one Yoga measure callback, and i
 
 `ParagraphContentBox` additionally conflates per-call constraints (`width`, `height`) with stable policy (`wrap`, `align`, `maxLines`, `overflow`, `justify`, columns, indents). Yoga varies two fields per probe, so a host must re-send the entire policy object every call; that conflation is also why the fixture's memo key must stringify the whole object.
 
-One core, one shared gap, two consumer-specific edges. A framework-neutral `Paragraph` -- pure, synchronous, constraint-parameterized, requiring no scene, renderer, or committed frame -- serves both hosts. The three.js `Text` becomes a thin retained wrapper over it, which is also what removes the measure-then-position circularity above. The remaining differences are small and must not be allowed to cross:
+One core, one shared gap, two consumer-specific edges. A framework-neutral `Paragraph` -- pure, synchronous, constraint-parameterized, requiring no scene, renderer, or committed frame -- serves both hosts. The three.js `Text` becomes a thin retained wrapper over it, which is also what removes the layout-then-position circularity above. The remaining differences are small and must not be allowed to cross:
 
 - Shared, and missing for both: ascent, descent, and line height per line and per paragraph; and a cluster-aware hit-test, caret, and selection surface. uikit's migration explicitly blocks on the latter because its current query path indexes one layout entry per JavaScript character.
 - Needed by a layout host only: minimum-content and maximum-content widths as first-class outputs. Today a host derives `minWidth` from a second full measurement at `{ mode: 'at-most', size: 0 }`, so every `CustomLayouting` recompute pays two measurements. Skia returns `getMinIntrinsicWidth` and `getMaxIntrinsicWidth`, and Flutter returns `minIntrinsicWidth` and `maxIntrinsicWidth`, from a single pass.
@@ -222,7 +260,7 @@ One core, one shared gap, two consumer-specific edges. A framework-neutral `Para
 
 Required, in addition to the five items above:
 
-6. Extract a framework-neutral `Paragraph` with `measure(constraints)` and `layout(constraints)` that need no scene, renderer, or committed frame, and that leave authored state untouched. Re-express the three.js `Text` as a retained wrapper over it.
+6. Extract a framework-neutral `Paragraph` with `layout(constraints)` and `glyphs(constraints)` that need no scene, renderer, or committed frame, and that leave authored state untouched. Re-express the three.js `Text` as a retained wrapper over it.
 7. Separate per-call constraints from stable policy so a host varies only the axis constraints per probe.
 8. Publish minimum-content and maximum-content widths from a single measurement.
 9. Return failure from the measurement itself rather than through an out-of-band group error.
@@ -247,12 +285,16 @@ There is no `/core` contradiction once the demotion is withdrawn, and no bespoke
 Required for a submittable pull request, beyond items 1 through 10:
 
 11. A retention and ownership protocol on the existing render plan. Specify whether a host receives borrowed or copied buffers, when it may retain them and when they expire, how it acknowledges a publication, whether it receives dirty ranges or complete arrays, how paragraph and glyph identity survive an update, how multiple techniques and draw partitions are addressed, and the generation semantics for atlas and texture resources. Today the publication is valid only until the next Wasm call, which no retained host can honour.
+
+    **Landed.** The protocol lives on the session (`core/retention.ts` is its specification): borrows stay the default and expire at the session's next answered call; `isExpired`/`assertLive` detect a stale borrow in two integer compares and throw `TextEnginePublicationExpiredError` instead of reading freed bytes; `retain` makes one contiguous host-owned copy of the whole encoded result and brands it `RetainedTextEnginePublication`, so retaining APIs demand it in their types; `retain`/`acknowledge` feed `session.acknowledgedGeneration`, which the engine already verified monotonically at the wire — retirements carry `afterPublicationGeneration`, so acknowledgement is what releases retired GPU storage; decoded patch records surface dirty ranges per `(bufferId, bufferGeneration)`; paragraph ids are caller-chosen handles, glyph identity rides the policy's stable-id lane, and engine storage is keyed by `(id, generation)` with retirement as the only release signal. `packages/glyph-example-renderer` proves all of it against a real `TextEngineHost` and real Wasm frames.
 12. A documented font path for a host that does not use our loader. uikit resolves fonts from URLs through its own signals; `./runtime-bake` exists and must be shown working from a host-owned fetch, with the baked-asset workflow documented for uikit's own font assets.
+
+    **Finding, now pinned empirically.** A `/core`-only host cannot register a shaping font at all: `RuntimeShaper.registerFont` requires a loader-registered `RegisteredFont` (the shaper checks `registry.getByHandle` and reads loader-populated private data), `registerFontBinding` is refused by Rust with `fontMissing` unless the shaping handle was registered that way, and `createTextRuntime` is exported only from the root entry point. Real text frames are therefore unreachable from the published integration surface — `packages/glyph-example-renderer`'s real-frame test records this by asserting the clean `fontMissing` rejection rather than reaching for a private import. Item 12 is the fix: one published path from host-owned bytes to a registered shaping font.
 13. A published size number. uikit is a general UI toolkit, and a Wasm shaper is a real adoption cost that upstream review will raise first. `release:size:check` already enforces reviewed ceilings; the pull request must state the delta a uikit consumer actually pays, split into shaper, raster module, and baked font assets, so the trade is explicit rather than discovered.
 14. A parity gate against uikit's own fixtures: text, textarea, selection, clipping, and lifecycle. The paragraph-boundary fixture in this repository proves the seam, not the product.
 15. Re-point `docs/planning/uikit-integration.md` at the shipped `Paragraph` and draw-batch surfaces, and correct the `stageBatch` reference. Its fixture-status table must distinguish what the package provides from what the benchmark adapter supplies.
 
-Change notification, from a community report. A community member who attempted the swap reported: "For your yoga integration are you using their `hasNewLayout` method? Uikit wasn't using it before and was thus computing layouts for every component a second time. Improved our cpu performance by around 50%." The method is real -- `hasNewLayout(): boolean` and `markLayoutSeen(): void` are on `Node` in yoga-layout 3.2.1 -- and the fix belongs to uikit, which owns the Yoga nodes. It matters here because it is precisely the gate on when a host calls `layout()`, the one call that materializes per-glyph arrays out of Wasm, and because composing that gate correctly needs something this package does not publish.
+Change notification, from a community report. A community member who attempted the swap reported: "For your yoga integration are you using their `hasNewLayout` method? Uikit wasn't using it before and was thus computing layouts for every component a second time. Improved our cpu performance by around 50%." The method is real -- `hasNewLayout(): boolean` and `markLayoutSeen(): void` are on `Node` in yoga-layout 3.2.1 -- and the fix belongs to uikit, which owns the Yoga nodes. It matters here because it is precisely the gate on when a host calls `glyphs()`, the one call that materializes per-glyph arrays out of Wasm, and because composing that gate correctly needs something this package does not publish.
 
 The two flags are not equivalent in either direction:
 
@@ -270,8 +312,8 @@ const needsReadback = node.hasNewLayout() || paragraph.layoutRevision !== lastSe
 
 Additional requirements, from adversarial review of this plan:
 
-18. Define the font-readiness state machine. Font loading is Promise-based while `Text` requires an already-loaded font at construction, and a layout host measures synchronously whenever it wants. Specify what `measure()` returns before fonts resolve (pending, fallback metrics, or an error), whether a host may synchronously measure an unresolved paragraph, whether fallback metrics may differ from final metrics in intrinsic width, which revision advances when fallback becomes final, and how the host is dirtied at that moment. Item 17 provides the channel; this item provides its semantics.
-19. Specify measurement purity precisely rather than asserting it. Define the complete cache key -- constraints, policy, direction, font-stack identity, font readiness, raster availability, scale, and content revision -- whether equal inputs must return equal results or the identical cached object, whether `measure()` may be re-entered or called while another paragraph is measuring, how long a returned result stays valid once another paragraph is measured, and whether measurement may call back into the host. The engine already rejects one class of re-entry during render-plan application, and its Wasm views are transient, so "pure" alone is not a contract.
+18. Define the font-readiness state machine. Font loading is Promise-based while `Text` requires an already-loaded font at construction, and a layout host measures synchronously whenever it wants. Specify what `layout()` returns before fonts resolve (pending, fallback metrics, or an error), whether a host may synchronously lay out an unresolved paragraph, whether fallback metrics may differ from final metrics in intrinsic width, which revision advances when fallback becomes final, and how the host is dirtied at that moment. Item 17 provides the channel; this item provides its semantics.
+19. Specify layout purity precisely rather than asserting it. Define the complete cache key -- constraints, policy, direction, font-stack identity, font readiness, raster availability, scale, and content revision -- whether equal inputs must return equal results or the identical cached object, whether `layout()` may be re-entered or called while another paragraph is laying out, how long a returned result stays valid once another paragraph is laid out, and whether layout may call back into the host. The engine already rejects one class of re-entry during render-plan application, and its Wasm views are transient, so "pure" alone is not a contract.
 20. Complete the constraint model. `ParagraphAxisConstraint` covers unconstrained, at-most, and exact only. Document where percentage, min-width/max-width, and definite-versus-indefinite block sizing are resolved -- in the host before the callback, or in the paragraph -- and what happens when exact conflicts with min or max. Left unstated, two hosts will feed the same paragraph different interpretations.
 21. Specify direction inheritance. The engine has a `direction` style property, but a host owns property inheritance. Define how a host-supplied inherited direction reaches the paragraph and how `start` and `end` alignment resolve under RTL.
 22. Specify the baseline contract, not just the metrics. `firstBaseline` and `lastBaseline` already exist. What is undefined is the host-facing contract a Yoga baseline function needs: baseline relative to the content box or the outer box, how padding and border participate, what an empty paragraph returns, and which line a multi-line paragraph reports. Publishing ascent and descent does not by itself define `align-items: baseline`.

@@ -137,7 +137,7 @@ export interface ParagraphIntrinsicWidths {
   readonly maxContentWidth: number;
 }
 
-/** A paragraph measurement plus the intrinsic widths carried by every `Paragraph.measure()` result. */
+/** A paragraph measurement plus the intrinsic widths carried by every `Paragraph.layout()` result. */
 export interface ParagraphMetrics extends ParagraphMeasurement, ParagraphIntrinsicWidths {}
 
 /**
@@ -180,8 +180,16 @@ export interface ParagraphLayout extends ParagraphMeasurement {
   readonly lineAdvances: Float32Array;
 }
 
-/** Explicit demand-shaped inspection of retained Rust layout, including stable identities for directed augmentation. */
-export interface ParagraphLayoutInspection extends ParagraphLayout, ParagraphLayoutSummary {
+/**
+ * One positioned paragraph: the measurement view plus every per-glyph and per-line column,
+ * with stable identities for directed augmentation.
+ *
+ * This is what `glyphs()` answers and what `Paragraph.glyphs(constraints)` copies out of Wasm.
+ * It is a second query after `layout()`, not a bigger copy of it: asking for these columns
+ * makes the engine emit a record per glyph, which a caller probing sizes never wants to pay
+ * for. See `layout()` and `Text.layout()` for the split.
+ */
+export interface ParagraphLayoutInspection extends ParagraphLayout, ParagraphLayoutSummary, ParagraphIntrinsicWidths {
   readonly glyphStableIds: Uint32Array;
 }
 

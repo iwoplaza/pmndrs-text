@@ -5,7 +5,7 @@ description: Implements portable font loading, retained Rust shaping and layout,
 resource: ../../packages/glyph
 workspace_package: '@pmndrs/glyph'
 documentation_type: reference
-source_digest: 'sha256:953c8b6551ccd3be89bf1a2e164608961ea644d9f00e0c8be5ee3fb18249364f'
+source_digest: 'sha256:24f1a7f3a9fc12439b5c1b827b0257bfc7096ef4b0867a4f5362c0a4f1b06ddd'
 tags: [package, public-api, rust, wasm, threejs, typography]
 sources:
   - id: manifest
@@ -72,8 +72,8 @@ sources:
     resource: ../planning/three-api.md
     title: Three.js text API reference
 generated:
-  by: openai-codex/gpt-5.6
-  at: '2026-08-15T22:44:31Z'
+  by: openai-codex/gpt-5
+  at: '2026-08-24T03:12:27Z'
 ---
 
 # Package reference: `@pmndrs/glyph`
@@ -189,7 +189,7 @@ latched, because it is retried from the retained publication on the next frame. 
 `registerThreeRasterPlanProgram` refuses a technique registered after a runtime has read the registry (D-270), naming the
 technique instead of applying to nothing. `/three` also re-exports `ParagraphLayoutSummary`, `ParagraphLayoutInspection`,
 `ParagraphLayout`, `ParagraphMeasurement`, and `FontFeature`, so a `/three` importer can name what
-`Text.measureLayout()`, `Text.inspectLayout()`, and `ParagraphStyle.features` give it.
+`Text.layout()`, `Text.glyphs()`, and `ParagraphStyle.features` give it.
 
 One baked GLB may expose several raster techniques without repeating its input identity. `TextRuntime.loadFont()` and
 R3F `useFont()` accept a nonempty `rasters` tuple and return a position-preserving tuple of `LoadedFont` values. The
@@ -300,9 +300,9 @@ selected font binding—not a `Text` technique selector—carries the renderer p
 
 ## Semantic queries
 
-Ordinary rendering requests no layout readback. `Text.measureLayout()` explicitly requests aggregate measurements and
-counts; `Text.inspectLayout()` additionally copies line and glyph arrays. Query results are cached by committed revision.
-When the only pending change is the measured text's geometry, `measureLayout()` routes through the core host's
+Ordinary rendering requests no layout readback. `Text.layout()` explicitly requests aggregate measurements and
+counts; `Text.glyphs()` additionally copies line and glyph arrays. Query results are cached by committed revision.
+When the only pending change is the laid-out text's geometry, `layout()` routes through the core host's
 `session.measureParagraph` — the paragraph-scoped synchronous query below — so repeated measurement under changing
 constraints performs no publication flips and no revision burns, and the next ordinary frame adopts the speculative
 work. Any other pending change synchronizes the containing Rust session once and the following render traversal reuses
@@ -372,7 +372,7 @@ previously lived in core internals. Three's first-party policy is authored with 
 `three/render-policy.ts`, and a scoped import lint denies the three, tsl, and react surfaces any import from `internal/`
 or `generated/`, so the first-party integrations consume exactly the layering a third party would.
 
-Both layers publish as npm subpaths. They are how a renderer integrates without our `Object3D`s, and `@pmndrs/glyph/three` is itself built on `/core`, so the earlier finding that they had no consumers was wrong. `packages/glyph-example-renderer` is the standing proof that a second engine consumer can be written against `/core` alone. `/core`'s contract still has sharp edges -- caller-chosen raw `u32` handles where branded `FontHandle`/`RasterHandle` already exist, caller-supplied opaque byte blobs, a publication whose bytes are valid only until the next Wasm call, and a manual acquire/release refcount pair -- and those are tracked as hardening in the API surface audit rather than as a reason to withdraw the entry point.
+Both layers publish as npm subpaths. They are how a renderer integrates without our `Object3D`s, and `@pmndrs/glyph/three` is itself built on `/core`, so the earlier finding that they had no consumers was wrong. `packages/glyph-example-renderer` is the standing proof that a second engine consumer can be written against `/core` alone, and it now drives real frames through the item 11 retention protocol: publications are borrowed by default but expire loudly (`isExpired`/`assertLive`), `retain` makes one contiguous host-owned copy branded in the type system, acknowledgement feeds the generation the engine already verifies at the wire, patches surface dirty ranges, and storage generations retire through `(kind, id, generation)` records (`core/retention.ts`). `/core`'s contract still has sharp edges -- caller-chosen raw `u32` handles where branded `FontHandle`/`RasterHandle` already exist, caller-supplied opaque byte blobs, no published path from host-owned bytes to a registered shaping font (audit item 12; the example renderer's real-frame test records the clean `fontMissing` rejection), and a manual acquire/release refcount pair -- and those are tracked as hardening in the API surface audit rather than as a reason to withdraw the entry point.
 
 The same reasoning withdrew the `*-abi` and `bakers/*/validate` subpaths. The ABI subpaths existed to publish struct
 offsets for pointer arithmetic, which is an internal representation handed to a caller who then owns keeping it valid;
@@ -393,7 +393,7 @@ The foundation currently has:
   later cursor-convergence regressions;
 - the package JavaScript/integration gate passing through the single-path public exports;
 - exact retained Amiri bidi, policy, ellipsis, clipping, UIKit-layout, and CJK contracts exercised by the browser
-  `paragraph-contracts` target through public `FontLoader`, `Text`, `TextGroup`, `measureLayout()`, and `inspectLayout()`;
+  `paragraph-contracts` target through public `FontLoader`, `Text`, `TextGroup`, `layout()`, and `glyphs()`;
 - 32/32 pixel-exact public Bitmap WebGL2 frames against the independent CPU oracle, including resize and clipping, with
   zero differing channel bytes and pinned SHA-256 `a47930d3…15e893`;
 - source-font SHA-256, registered shaping hashes, and HarfRust/HarfBuzz oracle identities authenticated independently of

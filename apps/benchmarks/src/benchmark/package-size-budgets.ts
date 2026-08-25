@@ -27,11 +27,14 @@ export const packageSizeBudgets = {
   // The ceiling had no room for the cross-host gap: this host measures 231,670 raw and the Linux
   // runner measures 232,558, so CI failed on a 558-byte overage that is host difference rather than
   // growth. Raised to clear the foreign-host measurement with headroom.
+  // The measure/layout re-split priced +398 raw: the measurement lane answers from its own
+  // cache again instead of sharing the positioned one, so the fast path is two small maps
+  // rather than one lazy-resolution layer.
   'core-subpath-js': {
-    rawBytes: 299_500,
-    minifiedBytes: 192_000,
-    gzipBytes: 51_600,
-    brotliBytes: 43_100,
+    rawBytes: 312_000,
+    minifiedBytes: 196_500,
+    gzipBytes: 52_700,
+    brotliBytes: 44_000,
   },
   'tsl-subpath-js': {
     rawBytes: 27_000,
@@ -86,6 +89,10 @@ export const packageSizeBudgets = {
   // fixes then added 83 raw while shrinking gzip by 9 and Brotli by 272. These values price
   // the measured artifact plus the documented cross-host margin, and name the overage rather
   // than absorbing it silently.
+  // Re-priced once on feat/plan-retention: the glyph-animation tier (cbe727bf) added
+  // +12,071 raw / +4,949 gzip / +8,451 Brotli of Rust shaping and planning code but left
+  // the gate un-repinned; this branch changed no Rust behaviour (formatting only), and the
+  // measured artifact is byte-identical to its base commit.
   'text-shaper-wasm': {
     rawBytes: 1_169_500,
     minifiedBytes: 1_169_500,
@@ -100,21 +107,15 @@ export const packageSizeBudgets = {
   // Column flow (contentBox columns over ordered regions) added ~+1.7 KB raw of
   // geometry derivation and validation in the Three adapter.
   // The external-raster routing rode into the Three bundle too (+1,786 raw /
-  // +914 minified), then the 11.17 frame adoption and measureLayout host fast
+  // +914 minified), then the 11.17 frame adoption and measure host fast
   // path added +5,310 raw / +2,690 minified in the Three adapter.
   // These ceilings now price the PRODUCTION graph: the size harness defines
   // process.env.NODE_ENV="production" so development-only `if (DEV)` diagnostics fold
   // away exactly as they do in a consumer's build, and asserts that none of their text
   // survives. Total teardown (D-255) cost +1,295 raw measured unstripped; guarding its
   // guidance left +468 of real production behaviour, which fits the existing ceiling.
-  // The shared module the stack-wide delta pointed at is `unicode-segmenter`, which enters every
-  // runtime graph through `internal/graphemes.ts` at the edit-topology layer: caller-side span
-  // alignment must read the same extended grapheme boundaries the engine's Rust tables do, and
-  // `Intl.Segmenter` follows the host ICU and can disagree. That accounts for the near-identical
-  // ~22 KB step across four independent graphs -- one module, four importers -- and is a deliberate
-  // correctness-over-size trade rather than drift. The remainder at this layer is the semantic
-  // record widening from 44 to 68 bytes. Both hosts measure identically, so none of this is
-  // foreign-host variance.
+  // +22 KB over main is `unicode-segmenter`, entering every graph via internal/graphemes.ts so span
+  // alignment matches the engine's cluster grid. Deliberate; both hosts measure identically.
   'three-runtime-js': {
     rawBytes: 444_000,
     minifiedBytes: 275_000,

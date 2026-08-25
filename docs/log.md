@@ -2,6 +2,31 @@
 
 ## 2026-08-23
 
+- **A retained host can now hold the render plan without holding a hazard** — item 11 of the API surface
+  audit landed as a retention and ownership protocol on the existing plan surface (`core/retention.ts`
+  is its specification; no new draw-batch API). Publications are still borrowed by default, but expiry
+  is now cheap and loud instead of documented folklore: `session.isExpired` is two integer compares,
+  `session.assertLive` throws `TextEnginePublicationExpiredError` naming both generations, and a
+  publication the session never issued is rejected outright. `session.retain` makes one contiguous copy
+  of the whole encoded result — header, tables, and patch payloads stay consistent by construction — and
+  brands it `RetainedTextPublication`, so retaining APIs demand it in their types. Retaining or
+  `acknowledge()`ing advances `session.acknowledgedGeneration`, the value frame requests carry and the
+  engine already verified monotonically: retirements name the generation that makes release safe, so an
+  unacknowledging host leaks retired GPU storage rather than reading freed memory.
+  `readTextEnginePatch` surfaces dirty ranges per `(bufferId, bufferGeneration)`; paragraph ids are
+  caller-chosen handles, glyph identity rides the policy's stable-id lane, and engine storage is keyed
+  by `(id, generation)` with retirement as the only release signal. `packages/glyph-example-renderer`
+  stopped being a defensive-copy stub: it authors its own technique schema and policy through `/core`,
+  drives real `TextEngineHost` frames over the published Wasm artifact, holds retained plans across
+  slots and capacity growth, watches stale borrows die loudly, and records the finding that a
+  `/core`-only host cannot register a shaping font at all (`RuntimeShaper.registerFont` needs
+  loader-registered state, Rust refuses `registerFontBinding` with `fontMissing` without it, and
+  `createTextRuntime` lives only on the root entry) — audit item 12's evidence, pinned empirically.
+
+  **Additive**: `/core` gains `RetainedTextEnginePublication`, `TextEnginePublicationExpiredError`,
+  `retainedPublicationBrand`, the four decoded record readers, and four session methods plus one
+  getter. No behaviour change to shaping, layout, or rasterisation; `/three` keeps passing unchanged.
+
 - **A refused frame now says what is wrong, whose fault it is, and says it once** — Three failure modes a
   caller actually hits shared one shape: the caller was told nothing useful, and told it forever.
   `EngineError::InvalidRequest` stood for more than twenty causes and reached JavaScript as `status 6`, an
@@ -17,7 +42,7 @@
   from `set()` beside `normalizedColumns` and `normalizeCapacity` instead of travelling to Rust (D-268), while
   cluster resolution stays silent and collapsed spans stay in the array. A `registerThreeRasterPlanProgram`
   call that arrives after a runtime has read the registry is refused by name rather than applying to nothing
-  (D-270), and `/three` re-exports the layout types `measureLayout()` and `inspectLayout()` return.
+  (D-270), and `/three` re-exports the layout types `measure()` and `layout()` return.
 
   **Breaking**: `textShaperAbi.status` gains `styleRangeInvalid` (15), `styleSplitsCluster` (16),
   `styleNestingInvalid` (17), `styleRootInvalid` (18), and `fontMetricsMissing` (19); frames that previously
@@ -656,7 +681,7 @@
   calls. The packaged shaper is Cargo release + LTO + SIMD followed by Binaryen `-Oz`; adjacent `-O3`/`-O4` artifacts cost
   more bytes without a demonstrated speed gain. Production profiling hooks remain an explicit removal gate.
 
-- **Specified paragraph-scoped synchronous preparation without triple buffering** — Current `measureLayout()` either
+- **Specified paragraph-scoped synchronous preparation without triple buffering** — Current `measure()` either
   returns committed cache or drives a complete session update and plan. The reviewed follow-up design retains one
   speculative session transaction with paragraph-keyed pending states, linear identity reservation, explicit
   prepare/adopt/leave-committed modes, inactive-slot copied query results, host lease retention, and new-paragraph
@@ -764,9 +789,9 @@
 - **Separated semantic measurement from the render plan** — Activated the existing `semanticViewMask` for an explicit
   retained-Rust measurement query while ordinary rendering continues to request zero semantic records. The first view
   publishes one paragraph summary plus its line records in the immutable A/B sidecar; Three's command-buffer executor
-  ignores it. Public `Text.measureLayout()` caches the frozen result until a committed semantic update. Rust exact and
+  ignores it. Public `Text.layout()` caches the frozen result until a committed semantic update. Rust exact and
   at-most/overflow tests plus a compiled-Wasm Three lifecycle prove the query retains the existing mesh and does not
-  restore the removed `Text.layout` arrays.
+  restore renderer-side positioned arrays.
 
 - **Proved external Rust plan programs on both Three backends** — Replaced the glyph-example package's renderer-side
   `ParagraphBatchTarget`, revision transfer, packing, dirty upload, and mesh transaction with a static policy program,
