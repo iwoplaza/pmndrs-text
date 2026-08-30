@@ -1,5 +1,5 @@
 /**
- * Three.js/TSL entry point for the analytic Slug fill.
+ * Renderer-neutral TypeGPU entry point for the analytic Slug fill.
  *
  * This module only wires TSL nodes into the host-agnostic core: the fragment scale,
  * the thickening factor, and the final weighted blend are all portable core calls.
@@ -15,7 +15,7 @@ export { SlugShaderGlyph } from './slug-band.js';
 
 /**
  * Evaluate analytic Slug fill coverage for one fragment.
- * @note Uses `pageSlot`
+ * @note Uses the resource slots and accessors exported by `slug-texture`.
  */
 export function slugRender(glyph: SlugShaderGlyph, renderCoordinate: d.v2f): /* f32 */ number {
   'use gpu';

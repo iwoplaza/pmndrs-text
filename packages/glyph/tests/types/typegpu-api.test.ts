@@ -1,9 +1,15 @@
+import tgpu from 'typegpu';
 import * as d from 'typegpu/data';
 
 import {
   bitmapFragment,
+  bitmapCoverageSlot,
   bitmapVertex,
   bitmapVertexSnapped,
+  msdfAtlasSizeAccessor,
+  msdfFragment,
+  msdfPixelRangeAccessor,
+  msdfSampleSlot,
   type TypeGpuBitmapFragmentInput,
   type TypeGpuBitmapFragmentOutput,
   type TypeGpuBitmapInstance,
@@ -32,3 +38,16 @@ void instanceSchema;
 
 const vertexStage: typeof bitmapVertex = bitmapVertex;
 void vertexStage;
+
+// Resource ownership is supplied by the consumer: functions go through slots, while
+// literal/uniform/buffer/function values go through schema-aware accessors.
+const bitmapCoverage = tgpu.fn([d.vec2f, d.u32], d.f32)`(coordinate, layer) { return coordinate.x + f32(layer); }`;
+bitmapFragment.with(bitmapCoverageSlot, bitmapCoverage);
+
+const msdfSample = tgpu.fn([d.vec2f, d.u32], d.vec4f)`(coordinate, layer) {
+  return vec4f(coordinate, f32(layer), 1.0);
+}`;
+msdfFragment
+  .with(msdfSampleSlot, msdfSample)
+  .with(msdfAtlasSizeAccessor, d.vec2f(1024, 1024))
+  .with(msdfPixelRangeAccessor, d.f32(4));

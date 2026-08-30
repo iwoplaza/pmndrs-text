@@ -69,9 +69,7 @@ const getCurveContribution = tgpu.comptime((axis: 'vertical' | 'horizontal') =>
 
 const axisSlot = tgpu.slot<'vertical' | 'horizontal'>();
 
-/**
- * @note Uses `pageSlot`
- */
+/** Uses the Slug resource slots and width accessors declared by `slug-texture`. */
 function genericEvaluateBand(
   glyph: SlugShaderGlyph,
   renderCoordinate: d.v2f,

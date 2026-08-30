@@ -34,3 +34,34 @@ export function slugDilate(
 
   return d.vec4f(std.add(position, offset), std.add(textureCoordinate, std.mul(inverseScale, offset)));
 }
+
+/** Matrix-input form for hosts that expose the complete per-instance model-view-projection. */
+export function slugDilateMatrix(
+  position: d.v2f,
+  outwardNormal: d.v2f,
+  textureCoordinate: d.v2f,
+  inverseScale: number,
+  modelViewProjection: d.m4x4f,
+  viewport: d.v2f,
+): d.v4f {
+  'use gpu';
+  const row0 = d.vec4f(
+    modelViewProjection.columns[0].x,
+    modelViewProjection.columns[1].x,
+    modelViewProjection.columns[2].x,
+    modelViewProjection.columns[3].x,
+  );
+  const row1 = d.vec4f(
+    modelViewProjection.columns[0].y,
+    modelViewProjection.columns[1].y,
+    modelViewProjection.columns[2].y,
+    modelViewProjection.columns[3].y,
+  );
+  const row3 = d.vec4f(
+    modelViewProjection.columns[0].w,
+    modelViewProjection.columns[1].w,
+    modelViewProjection.columns[2].w,
+    modelViewProjection.columns[3].w,
+  );
+  return slugDilate(position, outwardNormal, textureCoordinate, inverseScale, row0, row1, row3, viewport);
+}

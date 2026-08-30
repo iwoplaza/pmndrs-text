@@ -7,7 +7,10 @@
  */
 export {
   bitmapAtlasUv,
+  bitmapCoverageOpacity,
+  bitmapCoverageSlot,
   bitmapFragment,
+  bitmapPageAccessor,
   bitmapPaint,
   bitmapPageCoverage,
   bitmapQuadPosition,
@@ -23,9 +26,26 @@ export {
   TypeGpuBitmapVertexOutput,
 } from './typegpu/bitmap-shader.js';
 export {
+  MsdfCompositeInput,
+  MsdfCoverageInput,
   MsdfRenderInput,
+  msdfAtlasCoordinate,
+  msdfAtlasSizeAccessor,
+  msdfClampedCoordinates,
+  msdfComposite,
+  msdfCoverage,
+  msdfFragment,
+  msdfPixelRangeAccessor,
   msdfPosition,
   msdfRender,
+  msdfRenderDetailed,
+  msdfSampleSlot,
+  msdfVertex,
+  TypeGpuMsdfFragmentInput,
+  TypeGpuMsdfFragmentOutput,
+  TypeGpuMsdfInstance,
+  TypeGpuMsdfVertexInput,
+  TypeGpuMsdfVertexOutput,
   type MsdfRenderInput as TypeGpuMsdfRenderInput,
 } from './typegpu/msdf-shader.js';
 export {
@@ -35,6 +55,7 @@ export {
   slugBandIndex,
   slugBandReferenceOffset,
   slugDilate,
+  slugDilateMatrix,
   slugHorizontalCurveContribution,
   slugPixelsPerEm,
   slugReferenceFromPair,
@@ -42,4 +63,26 @@ export {
   slugVerticalCurveContribution,
   solveHorizontalPolynomial as solveSlugHorizontalPolynomial,
   solveVerticalPolynomial as solveSlugVerticalPolynomial,
-} from './tsl/slug-shaders/core/index.js';
+} from './typegpu/slug-shaders/core/index.js';
+export {
+  MAX_SAFE_SLUG_BAND_CURVES,
+  slugRender,
+  slugRenderWithOptions,
+  SlugShaderGlyph,
+  type SlugShaderPage,
+} from './typegpu/slug-shaders/slug-render.js';
+export {
+  slugCurveTexelSlot,
+  slugCurveWidthAccessor,
+  slugHeaderTexelSlot,
+  slugHeaderWidthAccessor,
+  slugReferenceTexelSlot,
+  slugReferenceWidthAccessor,
+} from './typegpu/slug-shaders/slug-texture.js';
+export {
+  decorationPaint,
+  decorationPosition,
+  decorationShader,
+  TypeGpuDecorationInput,
+  TypeGpuDecorationOutput,
+} from './typegpu/decoration-shader.js';

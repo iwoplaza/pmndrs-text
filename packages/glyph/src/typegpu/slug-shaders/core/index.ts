@@ -18,6 +18,6 @@ export {
   slugVerticalCurveContribution,
 } from './band.js';
 export { calcCoverage } from './coverage.js';
-export { slugDilate } from './dilate.js';
+export { slugDilate, slugDilateMatrix } from './dilate.js';
 export { calcRootCode } from './root-code.js';
 export { solveHorizontalPolynomial, solveVerticalPolynomial, stableRoots } from './solve-quadratic.js';

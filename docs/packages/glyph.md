@@ -5,7 +5,7 @@ description: Implements portable font loading, retained Rust shaping and layout,
 resource: ../../packages/glyph
 workspace_package: '@pmndrs/glyph'
 documentation_type: reference
-source_digest: 'sha256:4ec259b765b62a119d67876db1402aefe3ef8cdb6fd9cee897fd30808ae051e3'
+source_digest: 'sha256:13a1a8d8053cff463b9854be91b925816d2c3f01ab4cfff5ba47c371bee604e8'
 tags: [package, public-api, rust, wasm, threejs, typography]
 sources:
   - id: manifest
@@ -48,7 +48,7 @@ sources:
     resource: ../../packages/glyph/src/tsl.ts
     title: Technique shader library layer
   - id: slug-shader-core
-    resource: ../../packages/glyph/src/tsl/slug-shaders/core
+    resource: ../../packages/glyph/src/typegpu/slug-shaders/core
     title: Host-agnostic TypeGPU Slug shader core
   - id: slug-shader-host
     resource: ../../packages/glyph/src/tsl/slug-shader.ts
@@ -126,7 +126,7 @@ that turns those payloads into textures, buffers, and geometry and leases them a
 | Subpath                      | Purpose                                                                                                                                   |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `@pmndrs/glyph`              | Font/raster contracts, loading, fallback stacks, formatting helpers, paragraph inputs, layout-query values, and portable bakers.          |
-| `@pmndrs/glyph/three`        | Three `FontLoader`, `Text`, `TextGroup`, material factories, and policy registration.                                                     |
+| `@pmndrs/glyph/three`        | Three `FontLoader`, `Text`, `TextGroup`, material factories, policy registration, and TypeGPU-backed TSL shader adapters.                  |
 | `@pmndrs/glyph/three/bitmap` | Compatibility alias re-exporting the renderer-neutral Bitmap raster module.                                                               |
 | `@pmndrs/glyph/three/msdf`   | Compatibility alias re-exporting the renderer-neutral MSDF raster module.                                                                 |
 | `@pmndrs/glyph/three/slug`   | Compatibility alias re-exporting the renderer-neutral Slug raster module.                                                                 |
@@ -138,8 +138,8 @@ that turns those payloads into textures, buffers, and geometry and leases them a
 | `@pmndrs/glyph/runtime-bake` | Explicit browser Worker host for optional runtime baking.                                                                                 |
 | `@pmndrs/glyph/raster/*`     | Renderer-neutral Bitmap, MSDF, and Slug decoding and raster-technique contracts.                                                          |
 | `@pmndrs/glyph/core`         | Renderer-neutral Glyph engine and backend, render planners, plan/layout-query views, technique schemas, policy DSL, and binding compiler. |
-| `@pmndrs/glyph/tsl`          | Canonical TSL shader realizations of the first-party technique interfaces; no scene integration.                                          |
-| `@pmndrs/glyph/typegpu`      | Canonical TypeGPU shader realizations of the first-party technique interfaces; no scene integration, no engine driving.                   |
+| `@pmndrs/glyph/tsl`          | TSL adapters over the canonical TypeGPU technique shaders; no scene integration.                                                         |
+| `@pmndrs/glyph/typegpu`      | Canonical TypeGPU algorithms, schemas, slots, and accessors for every first-party technique; no scene integration or engine.              |
 | `@pmndrs/glyph/bakers/*`     | Optional portable raster bakers.                                                                                                          |
 
 The three renderer-neutral raster leaves and their `three/*` compatibility barrels retain registration side effects under
@@ -159,7 +159,7 @@ the removed batch model. The exception is the `@pmndrs/glyph/typegpu` shader lib
 realizations as `/tsl` as typed TypeGPU functions for any WebGPU host; `typegpu` is an optional peer and the root entry
 has no static edge to it.
 
-The analytic Slug fill algorithm lives in `src/tsl/slug-shaders/core` as TypeGPU shader functions over plain values,
+The analytic Slug fill algorithm lives in `src/typegpu/slug-shaders/core` as TypeGPU shader functions over plain values,
 and nothing in that directory imports a renderer.[^slug-shader-core] The stable q-form solver, root-eligibility table,
 per-curve coverage and antialiasing weight, band header and reference bit layout, screen-space scale, thickening,
 weighted blend, and row-based vertex dilation are expressed once. A vertical band is the horizontal band in the

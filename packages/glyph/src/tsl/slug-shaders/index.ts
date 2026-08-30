@@ -1,8 +1,8 @@
 /**
  * Internal Slug shaders. Adapted from three-flatland Slug at 2935a89f (MIT).
  *
- * `core/` holds the renderer-independent TypeGPU algorithm; the modules beside this
- * one bind it to Three.js nodes, TSL control flow, and this package's page textures.
+ * The renderer-independent algorithm lives under `/typegpu`; this directory contains
+ * only the Three/TSL adapter.
  */
 export {
   calcCoverage,
@@ -17,7 +17,7 @@ export {
   slugVerticalCurveContribution,
   solveHorizontalPolynomial,
   solveVerticalPolynomial,
-} from './core/index.js';
+} from '../../typegpu/slug-shaders/core/index.js';
 export { slugDilate, slugDilateMatrix } from './slug-dilate.js';
 export {
   MAX_SAFE_SLUG_BAND_CURVES,
@@ -25,5 +25,12 @@ export {
   slugRenderWithOptions,
   SlugShaderGlyph,
   type SlugShaderPage,
-} from './slug-render.js';
-export { pageSlot } from './slug-texture.js';
+} from '../../typegpu/slug-shaders/slug-render.js';
+export {
+  slugCurveTexelSlot,
+  slugCurveWidthAccessor,
+  slugHeaderTexelSlot,
+  slugHeaderWidthAccessor,
+  slugReferenceTexelSlot,
+  slugReferenceWidthAccessor,
+} from '../../typegpu/slug-shaders/slug-texture.js';

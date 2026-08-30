@@ -3,14 +3,16 @@ import type { DataTexture, Node } from 'three/webgpu';
 import * as t3 from '@typegpu/three';
 import tgpu, { d, std } from 'typegpu';
 
+import { SlugShaderGlyph, slugRenderWithOptions, type SlugShaderPage } from '../typegpu/slug-shaders/slug-render.js';
 import {
-  pageSlot,
-  slugDilate,
-  slugDilateMatrix,
-  SlugShaderGlyph,
-  slugRenderWithOptions,
-  type SlugShaderPage,
-} from './slug-shaders/index.js';
+  slugCurveTexelSlot,
+  slugCurveWidthAccessor,
+  slugHeaderTexelSlot,
+  slugHeaderWidthAccessor,
+  slugReferenceTexelSlot,
+  slugReferenceWidthAccessor,
+} from '../typegpu/slug-shaders/slug-texture.js';
+import { slugDilate, slugDilateMatrix } from './slug-shaders/slug-dilate.js';
 
 /**
  * One glyph instance's canonical Slug fields, already resolved to nodes. The address and count fields locate the
@@ -151,7 +153,14 @@ export function slugShader(instance: TslSlugInstanceNodes, resources: TslSlugSha
     return TSL.vec3(dilated.position.x, dilated.position.y, 0);
   })();
   const page = shaderPage(resources.page);
-  const specializedSlugRender = tgpu.fn(slugRenderWithOptions).with(pageSlot, page);
+  const specializedSlugRender = tgpu
+    .fn(slugRenderWithOptions)
+    .with(slugCurveWidthAccessor, d.u32(page.curveWidth))
+    .with(slugHeaderWidthAccessor, d.u32(page.headerWidth))
+    .with(slugReferenceWidthAccessor, d.u32(page.referenceWidth))
+    .with(slugCurveTexelSlot, page.loadCurve)
+    .with(slugHeaderTexelSlot, page.loadHeader)
+    .with(slugReferenceTexelSlot, page.loadReference);
   const rule = renderOptions(resources.fillRule);
   const coverage = t3.toTSL(() => {
     'use gpu';

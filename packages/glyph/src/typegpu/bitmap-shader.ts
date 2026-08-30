@@ -1,4 +1,10 @@
-import tgpu, { type TgpuBindGroupLayout, type TgpuFn, type TgpuLayoutTexture } from 'typegpu';
+import tgpu, {
+  type TgpuAccessor,
+  type TgpuBindGroupLayout,
+  type TgpuFn,
+  type TgpuLayoutTexture,
+  type TgpuSlot,
+} from 'typegpu';
 import * as d from 'typegpu/data';
 import * as std from 'typegpu/std';
 
@@ -40,6 +46,15 @@ export const TypeGpuBitmapPageLayout: TgpuBindGroupLayout<{
 }> = tgpu.bindGroupLayout({
   page: { texture: d.texture2dArray(d.f32), visibility: ['fragment'] },
 });
+
+/**
+ * The default Bitmap page source. A direct TypeGPU host can replace it with a texture view, raw WebGPU view, or a
+ * function returning either. The Three adapter replaces it with a `DataTexture` bridge from `@typegpu/three`.
+ */
+export const bitmapPageAccessor: TgpuAccessor<d.WgslTexture2dArray<d.F32>> = tgpu.accessor(
+  d.texture2dArray(d.f32),
+  () => TypeGpuBitmapPageLayout.$.page,
+);
 
 /** Everything the vertex stage reads besides the instance: the unit quad and the draw's projection. */
 export const TypeGpuBitmapVertexInput: d.WgslStruct<{
@@ -236,6 +251,20 @@ export function bitmapPageCoverage(page: d.texture2dArray<d.F32>, atlasUv: d.v2f
   return std.textureLoad(page, boundedCoord, pageLayer, 0).x;
 }
 
+/** Resource-polymorphic coverage lookup used by the canonical fragment stage. */
+export type BitmapCoverageSource = (atlasUv: d.v2f, pageLayer: number) => number;
+
+function bitmapAccessorCoverage(atlasUv: d.v2f, pageLayer: number): number {
+  'use gpu';
+  return bitmapPageCoverage(bitmapPageAccessor.$, atlasUv, pageLayer);
+}
+
+/**
+ * Override this slot when Bitmap coverage comes from a procedural function or a host-owned indirection rather than a
+ * texture. Its default reads `bitmapPageAccessor`, so ordinary texture-backed hosts only replace the accessor.
+ */
+export const bitmapCoverageSlot: TgpuSlot<BitmapCoverageSource> = tgpu.slot(bitmapAccessorCoverage);
+
 /**
  * The canonical Bitmap fragment stage: single-channel coverage fetched from the bound page array at the interpolated
  * atlas coordinate, then composed with the paint colour.
@@ -247,6 +276,13 @@ export const bitmapFragment: TgpuFn<(input: typeof TypeGpuBitmapFragmentInput) =
   )((input) => {
     'use gpu';
 
-    const coverage = bitmapPageCoverage(TypeGpuBitmapPageLayout.$.page, input.atlasUv, input.pageLayer);
+    const coverage = bitmapCoverageSlot.$(input.atlasUv, input.pageLayer);
     return bitmapPaint(coverage, input.color);
   });
+
+/** Compact bridge result for node systems that cannot carry WGSL structs across their interop boundary. */
+export function bitmapCoverageOpacity(input: TypeGpuBitmapFragmentInput): d.v2f {
+  'use gpu';
+  const output = bitmapFragment(input);
+  return d.vec2f(output.coverage, output.opacity);
+}

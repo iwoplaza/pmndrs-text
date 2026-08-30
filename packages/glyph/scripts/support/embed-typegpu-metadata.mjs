@@ -21,21 +21,16 @@ export async function embedTypeGpuMetadata(stagingDirectory) {
   const { default: typegpuPlugin } = await import('unplugin-typegpu/rollup');
   const plugin = typegpuPlugin();
   const typegpuDirectory = join(stagingDirectory, 'typegpu');
-  const slugShaderDirectory = join(stagingDirectory, 'tsl', 'slug-shaders');
-  const slugCoreDirectory = join(slugShaderDirectory, 'core');
+  const tslDirectory = join(stagingDirectory, 'tsl');
   const entries = [
     'typegpu.js',
-    join('tsl', 'slug-shader.js'),
-    ...(await readdir(typegpuDirectory)).filter((name) => name.endsWith('.js')).map((name) => join('typegpu', name)),
-    ...(await readdir(slugShaderDirectory))
+    ...(await readdir(typegpuDirectory, { recursive: true }))
       .filter((name) => name.endsWith('.js'))
-      .map((name) => join('tsl', 'slug-shaders', name)),
-    ...(await readdir(slugCoreDirectory))
+      .map((name) => join('typegpu', name)),
+    ...(await readdir(tslDirectory, { recursive: true }))
       .filter((name) => name.endsWith('.js'))
-      .map((name) => join('tsl', 'slug-shaders', 'core', name)),
+      .map((name) => join('tsl', name)),
   ];
-  const { default: typegpuPlugin } = await import('unplugin-typegpu/rollup');
-  const plugin = typegpuPlugin();
   for (const entry of entries) {
     const file = join(stagingDirectory, entry);
     const source = await readFile(file, 'utf8');

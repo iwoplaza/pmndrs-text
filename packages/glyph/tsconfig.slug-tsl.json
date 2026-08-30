@@ -11,12 +11,12 @@
   },
   "files": [
     "src/tsl/slug-shader.ts",
-    "src/tsl/slug-shaders/core/index.ts",
     "src/tsl/slug-shaders/index.ts",
-    "src/tsl/slug-shaders/slug-band.ts",
     "src/tsl/slug-shaders/slug-dilate.ts",
-    "src/tsl/slug-shaders/slug-render.ts",
-    "src/tsl/slug-shaders/slug-texture.ts",
+    "src/typegpu/slug-shaders/core/index.ts",
+    "src/typegpu/slug-shaders/slug-band.ts",
+    "src/typegpu/slug-shaders/slug-render.ts",
+    "src/typegpu/slug-shaders/slug-texture.ts",
     "tests/types/tsl-scalar-operations.test.ts"
   ]
 }
