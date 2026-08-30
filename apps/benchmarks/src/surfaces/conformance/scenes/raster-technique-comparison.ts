@@ -414,23 +414,18 @@ async function createComparisonResources(
   }
 }
 
-function heatmapNode(mtsdfTexture: THREE.Texture, slugTexture: THREE.Texture) {
+function heatmapNode(mtsdfTexture: THREE.Texture, slugTexture: THREE.Texture): Node<'vec4'> {
   const mtsdfCoverage: Node<'float'> = texture(mtsdfTexture).r;
   const slugCoverage: Node<'float'> = texture(slugTexture).r;
   const mtsdfCoverageAccess = t3.fromTSL(mtsdfCoverage, d.f32);
   const slugCoverageAccess = t3.fromTSL(slugCoverage, d.f32);
+
   return t3.toTSL(() => {
     'use gpu';
-    return heatmapColor(mtsdfCoverageAccess.$, slugCoverageAccess.$, HEATMAP_GAIN);
-  });
-}
-
-function heatmapColor(mtsdfCoverage: number, slugCoverage: number, gain: number): d.v4f {
-  'use gpu';
-
-  const mtsdfExtra = std.saturate((mtsdfCoverage - slugCoverage) * gain);
-  const slugExtra = std.saturate((slugCoverage - mtsdfCoverage) * gain);
-  return d.vec4f(mtsdfExtra, slugExtra, slugExtra, 1);
+    const mtsdfExtra = std.saturate((mtsdfCoverageAccess.$ - slugCoverageAccess.$) * HEATMAP_GAIN);
+    const slugExtra = std.saturate((slugCoverageAccess.$ - mtsdfCoverageAccess.$) * HEATMAP_GAIN);
+    return d.vec4f(mtsdfExtra, slugExtra, slugExtra, 1);
+  }) as Node<'vec4'>;
 }
 
 async function compileComparison(resources: ComparisonResources): Promise<void> {
