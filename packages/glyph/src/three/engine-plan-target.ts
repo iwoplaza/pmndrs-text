@@ -32,14 +32,20 @@ import { msdf } from '../raster/msdf.js';
 import { slug } from '../raster/slug-technique.js';
 
 import { bitmapShader, decorationShader, msdfShader, slugShader, type TslSlugPageResources } from '../tsl.js';
-import type { ThreeTextEngineCoordinator, ThreeTextEngineResource } from './engine-coordinator.js';
+import type {
+  ThreeRenderResourceLease,
+  ThreeTextEngineCoordinator,
+  ThreeTextEngineResource,
+} from './engine-coordinator.js';
 import type { ThreeTextMaterial, ThreeTextMaterialContext } from './material.js';
 import { assertThreeGeometryPayload, type ThreePlanProgramBuffer } from './plan-program-registry.js';
+import { createSuppliedGlyphGeometrySource, type ThreeGlyphGeometrySource } from './glyph-measurement.js';
 
 type ScalarArray = Float32Array | Uint32Array | Uint16Array;
 type PlanMaterialId = Parameters<PlanCandidate['resolveMaterial']>[0];
 const MAX_RESOURCE_KIND = 32;
 const MAX_POLICY_BUFFER_VECTOR_WIDTH = 4;
+const MAX_UPDATE_RANGES = 32;
 
 declare const threePolicyAttributeNameBrand: unique symbol;
 type ThreePolicyAttributeName = string & { readonly [threePolicyAttributeNameBrand]: true };
@@ -73,6 +79,10 @@ interface RetainedSlugPage extends TslSlugPageResources {
   dispose(): void;
 }
 
+type RetainedTextureLease = ThreeRenderResourceLease<THREE.DataArrayTexture>;
+type RetainedSlugPageLease = ThreeRenderResourceLease<RetainedSlugPage>;
+type RetainedGpuResourceLease = RetainedTextureLease | RetainedSlugPageLease;
+
 interface MaterialRealization {
   readonly material: THREE.NodeMaterial;
   readonly resourceId: number;
@@ -84,14 +94,20 @@ interface MaterialRealization {
 interface OriginSegment {
   readonly origins: RetainedBuffer;
   readonly stableIds: RetainedBuffer;
+  readonly storageKey: string;
   readonly order: RetainedBuffer | undefined;
+  readonly geometry: ThreeGlyphGeometrySource | undefined;
   readonly start: number;
   readonly count: number;
+  readonly drawIndex: number;
 }
 
 interface OriginRecord {
   readonly buffer: RetainedBuffer;
+  readonly storageKey: string;
   readonly index: number;
+  readonly geometry: ThreeGlyphGeometrySource | undefined;
+  readonly drawIndex: number;
   /** The lane's value with the glyph at rest. Displacement from it is the technique-free bridge. */
   targetX: number;
   targetY: number;
@@ -107,7 +123,14 @@ interface RecordAddressing {
 
 type DrawGeometry =
   | Readonly<{ kind: 'synthetic-quad'; key: 'synthetic-quad' }>
-  | Readonly<{ kind: 'supplied'; key: string; resourceName: string; payload: PortableGeometryPayload }>;
+  | Readonly<{
+      kind: 'supplied';
+      key: string;
+      geometryKind: 'quad' | 'hull' | 'custom';
+      coordinates: 'unit-square' | 'em';
+      resourceName: string;
+      payload: PortableGeometryPayload;
+    }>;
 
 interface ReusedDrawUpdate {
   readonly mesh: THREE.Mesh;
@@ -117,6 +140,7 @@ interface ReusedDrawUpdate {
   readonly primitiveKind: 'decoration' | 'glyph';
   readonly matrixAutoUpdate: boolean;
   readonly renderOrder: number;
+  readonly depthKey: number;
 }
 
 type StagedBufferOperation =
@@ -140,13 +164,6 @@ type StagedBufferOperation =
       source: RetainedBuffer;
       sourceOffset: number;
       byteLength: number;
-    }>
-  | Readonly<{
-      kind: 'restore-origin';
-      buffer: RetainedBuffer;
-      scalarOffset: number;
-      x: number;
-      y: number;
     }>;
 
 interface StagedBufferUpload {
@@ -188,12 +205,12 @@ interface PreparedDrawReplacement {
 interface PreparationContext {
   readonly buffers: Map<number, RetainedBuffer>;
   readonly resources: Map<number, RetainedResource>;
-  readonly bitmapTextures: Map<number, THREE.DataArrayTexture>;
-  readonly msdfAtlases: Map<number, THREE.DataArrayTexture>;
-  readonly slugPages: Map<number, RetainedSlugPage>;
+  readonly bitmapTextures: Map<number, RetainedTextureLease>;
+  readonly msdfAtlases: Map<number, RetainedTextureLease>;
+  readonly slugPages: Map<number, RetainedSlugPageLease>;
   readonly materials: Map<string, MaterialRealization>;
   readonly newMaterials: Set<THREE.NodeMaterial>;
-  readonly newTextures: Set<THREE.Texture | RetainedSlugPage>;
+  readonly newTextures: Set<RetainedGpuResourceLease>;
   readonly newResources: Set<RetainedResource>;
   readonly candidate: PlanCandidate;
   readonly transforms: ReadonlyMap<number, THREE.Object3D>;
@@ -207,7 +224,7 @@ interface PreparedPublication {
   readonly draws: PreparedDrawReplacement;
   readonly transforms: PreparedTransforms;
   readonly retiredMaterials: readonly THREE.NodeMaterial[];
-  readonly retiredTextures: readonly (THREE.Texture | RetainedSlugPage)[];
+  readonly retiredTextures: readonly RetainedGpuResourceLease[];
   readonly retiredResources: readonly RetainedResource[];
 }
 
@@ -217,6 +234,17 @@ export interface ThreeTextEnginePlanOwner {
   readonly drawRoot: THREE.Object3D;
   readonly pixelSnapping: boolean;
   readonly renderOrderBase: number;
+  /** Optional transform remapping used when a copied plan is imported beneath a detached root. */
+  objectForTransform?(transformId: number, source: THREE.Object3D): THREE.Object3D;
+  /** Allocates detached per-record storage before any material captures it. */
+  prepareGlyphStorage?(storageKey: string, capacityRecords: number): void;
+  /** Resolves per-record transforms and pivots for one physical record index space. */
+  glyphStorage?(storageKey: string):
+    | Readonly<{
+        transforms: THREE.StorageInstancedBufferAttribute;
+        pivots: THREE.StorageInstancedBufferAttribute;
+      }>
+    | undefined;
 }
 
 /** Applies retained Rust command-buffer deltas to Three storage attributes and draw objects. */
@@ -226,9 +254,9 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
   readonly #owner: ThreeTextEnginePlanOwner;
   #buffers = new Map<number, RetainedBuffer>();
   #resources = new Map<number, RetainedResource>();
-  #bitmapTextures = new Map<number, THREE.DataArrayTexture>();
-  #msdfAtlases = new Map<number, THREE.DataArrayTexture>();
-  #slugPages = new Map<number, RetainedSlugPage>();
+  #bitmapTextures = new Map<number, RetainedTextureLease>();
+  #msdfAtlases = new Map<number, RetainedTextureLease>();
+  #slugPages = new Map<number, RetainedSlugPageLease>();
   #materials = new Map<string, MaterialRealization>();
   readonly #ownedMaterials = new WeakSet<THREE.NodeMaterial>();
   readonly #activeTransformIndices = new Set<number>();
@@ -258,15 +286,15 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
     let bytes = 0;
     for (const buffer of this.#buffers.values()) bytes += buffer.array.byteLength;
     bytes += this.#transformAttribute.array.byteLength;
-    for (const texture of this.#bitmapTextures.values()) {
+    for (const { resource: texture } of this.#bitmapTextures.values()) {
       const data = texture.image.data as ArrayBufferView | undefined;
       bytes += data?.byteLength ?? 0;
     }
-    for (const atlas of this.#msdfAtlases.values()) {
+    for (const { resource: atlas } of this.#msdfAtlases.values()) {
       const data = atlas.image.data as ArrayBufferView | undefined;
       bytes += data?.byteLength ?? 0;
     }
-    for (const page of this.#slugPages.values()) bytes += page.byteLength;
+    for (const { resource: page } of this.#slugPages.values()) bytes += page.byteLength;
     return bytes;
   }
 
@@ -317,65 +345,40 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
     return { drawnX, drawnY, incomplete };
   }
 
-  /**
-   * Patches the retained buffer and returns the indices it could not reach, never silently skipping.
-   *
-   * `shapedX`/`shapedY` are the layout's rest positions for the same glyphs; the displacement from
-   * them is what the record actually stores, under the reasoning on `snapshotGlyphOrigins`.
-   */
-  setGlyphOriginOverrides(
-    stableIds: Uint32Array,
-    shapedX: Float32Array,
-    shapedY: Float32Array,
-    x: Float32Array,
-    y: Float32Array,
-  ): readonly number[] {
-    if (
-      stableIds.length !== shapedX.length ||
-      stableIds.length !== shapedY.length ||
-      stableIds.length !== x.length ||
-      stableIds.length !== y.length
-    ) {
-      throw new RangeError('glyph origin override arrays must be parallel');
-    }
+  /** Returns retained supplied geometry for requested stable glyph ids. */
+  glyphGeometry(stableIds: Uint32Array): ReadonlyMap<number, ThreeGlyphGeometrySource> {
     this.#ensureOriginRecords();
-    const touched = new Map<RetainedBuffer, readonly [number, number]>();
-    const unapplied: number[] = [];
-    for (let index = 0; index < stableIds.length; index += 1) {
-      const record = this.#originRecords.get(stableIds[index]!);
-      if (record === undefined || !(record.buffer.array instanceof Float32Array)) {
-        unapplied.push(index);
-        continue;
-      }
-      const offset = record.index * record.buffer.vectorWidth;
-      record.buffer.array[offset] = record.targetX + (x[index]! - shapedX[index]!);
-      record.buffer.array[offset + 1] = record.targetY + (y[index]! - shapedY[index]!);
-      const range = touched.get(record.buffer);
-      touched.set(record.buffer, [
-        Math.min(range?.[0] ?? offset, offset),
-        Math.max(range?.[1] ?? offset + 2, offset + 2),
-      ]);
-    }
-    markOriginRanges(touched);
-    return unapplied;
-  }
-
-  clearGlyphOriginOverrides(stableIds: Uint32Array): void {
-    this.#ensureOriginRecords();
-    const touched = new Map<RetainedBuffer, readonly [number, number]>();
+    const geometry = new Map<number, ThreeGlyphGeometrySource>();
     for (const stableId of stableIds) {
       const record = this.#originRecords.get(stableId);
-      if (record === undefined || !(record.buffer.array instanceof Float32Array)) continue;
-      const offset = record.index * record.buffer.vectorWidth;
-      record.buffer.array[offset] = record.targetX;
-      record.buffer.array[offset + 1] = record.targetY;
-      const range = touched.get(record.buffer);
-      touched.set(record.buffer, [
-        Math.min(range?.[0] ?? offset, offset),
-        Math.max(range?.[1] ?? offset + 2, offset + 2),
-      ]);
+      if (record?.geometry !== undefined) geometry.set(stableId, record.geometry);
     }
-    markOriginRanges(touched);
+    return geometry;
+  }
+
+  /** Returns the detached plan's physical record address for one stable glyph id. */
+  glyphRecord(stableId: number): Readonly<{ storageKey: string; index: number }> | undefined {
+    this.#ensureOriginRecords();
+    const record = this.#originRecords.get(stableId);
+    return record === undefined ? undefined : { storageKey: record.storageKey, index: record.index };
+  }
+
+  /** Material instances owned exclusively by this executor's current draw branch. */
+  get materials(): readonly THREE.NodeMaterial[] {
+    return Object.freeze([...new Set(this.#draws.map((draw) => draw.material as THREE.NodeMaterial))]);
+  }
+
+  /** Returns the first realized draw order containing any selected stable glyph. */
+  renderOrderBaseForGlyphs(stableIds: Uint32Array): number | undefined {
+    this.#ensureOriginRecords();
+    let base: number | undefined;
+    for (const stableId of stableIds) {
+      const drawIndex = this.#originRecords.get(stableId)?.drawIndex;
+      const renderOrder = drawIndex === undefined ? undefined : this.#draws[drawIndex]?.renderOrder;
+      if (renderOrder === undefined) continue;
+      base = base === undefined ? renderOrder : Math.min(base, renderOrder);
+    }
+    return base;
   }
 
   /** Upload changed scene transforms without crossing into Wasm or invalidating text measure. */
@@ -392,14 +395,15 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
       const directDraws = this.#directDrawsByTransform.get(transformId);
       if (!indexed && directDraws === undefined) continue;
       if (!rootPrepared) {
-        if (!worldMatricesCurrent) this.#owner.drawRoot.updateWorldMatrix(true, false);
+        if (!worldMatricesCurrent) this.#owner.drawRoot.updateWorldMatrix(true, false, true);
         this.#rootInverse.copy(this.#owner.drawRoot.matrixWorld).invert();
         rootPrepared = true;
       }
       const object = this.#transforms.get(transformId);
       if (object === undefined) throw new Error(`Three plan target has no retained transform ${transformId}`);
-      if (!worldMatricesCurrent) object.updateWorldMatrix(true, false);
-      this.#relativeTransform.multiplyMatrices(this.#rootInverse, object.matrixWorld);
+      if (!worldMatricesCurrent) object.updateWorldMatrix(true, false, true);
+      if (object === this.#owner.drawRoot) this.#relativeTransform.identity();
+      else this.#relativeTransform.multiplyMatrices(this.#rootInverse, object.matrixWorld);
       const visible = visibleBelowRoot(object, this.#owner.drawRoot);
       let transformChanged = false;
       if (indexed) {
@@ -491,7 +495,7 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
       newTextures: new Set(),
       newResources: new Set(),
       candidate,
-      transforms: resolveCandidateTransforms(candidate, this.#coordinator),
+      transforms: resolveCandidateTransforms(candidate, this.#coordinator, this.#owner),
       transformAttribute: this.#transformAttribute,
       transformGeneration: this.#transformGeneration,
     };
@@ -743,30 +747,6 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
       staged.set(buffer, upload);
       return upload;
     };
-    for (const origin of this.#originRecords.values()) {
-      const buffer = buffers.get(origin.buffer.id);
-      if (buffer !== origin.buffer || !(buffer.array instanceof Float32Array)) continue;
-      const offset = origin.index * buffer.vectorWidth;
-      assertByteRange(
-        offset * Float32Array.BYTES_PER_ELEMENT,
-        2 * Float32Array.BYTES_PER_ELEMENT,
-        buffer.array.byteLength,
-        'glyph origin record exceeds its retained buffer',
-      );
-      operations.push({
-        kind: 'restore-origin',
-        buffer,
-        scalarOffset: offset,
-        x: origin.targetX,
-        y: origin.targetY,
-      });
-      includeMutationRange(
-        mutable(buffer),
-        offset * Float32Array.BYTES_PER_ELEMENT,
-        2 * Float32Array.BYTES_PER_ELEMENT,
-      );
-    }
-
     for (let index = 0; index < table.count; index += 1) {
       const patch = readRenderPlanPatch(plan, table, index);
       const buffer = retainedBuffer(buffers, patch.bufferId, patch.bufferGeneration);
@@ -822,6 +802,7 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
     const context = this.#preparation;
     if (context === undefined) throw new Error('Three draw preparation requires an active publication');
     const root = this.#owner.drawRoot;
+    this.#prepareOwnerGlyphStorage(plan, buffers);
 
     const next: THREE.Mesh[] = [];
     const nextKeys: string[] = [];
@@ -951,9 +932,12 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
           nextOriginSegments.push({
             origins,
             stableIds,
+            storageKey: glyphStorageKey(stableIds),
             order: addressing.order,
+            geometry: createGeometrySource(drawGeometry),
             start: recordIndex,
             count: recordCount,
+            drawIndex: index,
           });
         }
         const key = drawRealizationKey(
@@ -979,6 +963,7 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
             primitiveKind: decoration ? 'decoration' : 'glyph',
             matrixAutoUpdate: transform.kind !== 'direct',
             renderOrder: this.#owner.renderOrderBase + index,
+            depthKey: draw.depthKey,
           });
           reused.add(reusable);
           next.push(reusable);
@@ -990,12 +975,18 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
         for (const buffer of byPolicyId.values()) {
           geometry.setAttribute(buffer.threeAttributeName, buffer.attribute);
         }
+        const glyphStorage = this.#glyphStorage(byPolicyId);
+        if (glyphStorage !== undefined) {
+          geometry.setAttribute('_pmndrsGlyphInstanceTransforms', glyphStorage.transforms);
+          geometry.setAttribute('_pmndrsGlyphInstancePivots', glyphStorage.pivots);
+        }
 
         if (transform.kind === 'indexed') geometry.setAttribute('_pmndrsGlyphTransforms', context.transformAttribute);
         const mesh = new THREE.Mesh(geometry, material);
         mesh.userData.pmndrsGlyphRunStart = recordIndex;
         mesh.userData.pmndrsGlyphTransformId = transformId;
         mesh.userData.pmndrsGlyphPrimitiveKind = decoration ? 'decoration' : 'glyph';
+        mesh.userData.pmndrsGlyphDepthKey = draw.depthKey;
         mesh.matrixAutoUpdate = transform.kind !== 'direct';
         mesh.frustumCulled = false;
         mesh.renderOrder = this.#owner.renderOrderBase + index;
@@ -1048,12 +1039,29 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
         if (this.#originRecords.has(stableId)) throw new Error('origin augmentation repeats a stable glyph identity');
         this.#originRecords.set(stableId, {
           buffer: segment.origins,
+          storageKey: segment.storageKey,
           index: recordIndex,
+          geometry: segment.geometry,
+          drawIndex: segment.drawIndex,
           targetX: segment.origins.array[offset]!,
           targetY: segment.origins.array[offset + 1]!,
         });
       }
     }
+  }
+
+  #prepareOwnerGlyphStorage(plan: RenderPlanReader, buffers: RenderPlanTable): void {
+    const prepare = this.#owner.prepareGlyphStorage;
+    if (prepare === undefined) return;
+    let storageCount = 0;
+    for (let bufferIndex = 0; bufferIndex < buffers.count; bufferIndex += 1) {
+      const record = readRenderPlanBuffer(plan, buffers, bufferIndex);
+      const buffer = this.#buffer(record.id, record.generation);
+      if (buffer.policyBufferId !== threeSystemBuffers.stableGlyphId.id) continue;
+      prepare(glyphStorageKey(buffer), buffer.capacityRecords);
+      storageCount += 1;
+    }
+    if (storageCount === 0) throw new RangeError('detached glyph plan has no physical record capacity');
   }
 
   #transformRealization(
@@ -1089,6 +1097,35 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
     return true;
   }
 
+  #glyphStorage(buffers: ReadonlyMap<ThreeBufferBindingId, RetainedBuffer>):
+    | Readonly<{
+        transforms: THREE.StorageInstancedBufferAttribute;
+        pivots: THREE.StorageInstancedBufferAttribute;
+      }>
+    | undefined {
+    const stableIds = buffers.get(threeSystemBuffers.stableGlyphId.id);
+    return stableIds === undefined ? undefined : this.#owner.glyphStorage?.(glyphStorageKey(stableIds));
+  }
+
+  #glyphPosition(
+    position: THREE.Node<'vec3'>,
+    instance: THREE.Node<'uint'>,
+    buffers: ReadonlyMap<ThreeBufferBindingId, RetainedBuffer>,
+  ): THREE.Node<'vec3'> {
+    const storage = this.#glyphStorage(buffers);
+    if (storage === undefined) return position;
+    const { transforms, pivots } = storage;
+    const pivot = TSL.storage(pivots, 'vec2', pivots.count).setPBO(true).element(instance);
+    const table = TSL.storage(transforms, 'vec4', transforms.count).setPBO(true);
+    const firstColumn = instance.mul(4);
+    const column0 = table.element(firstColumn);
+    const column1 = table.element(firstColumn.add(1));
+    const column2 = table.element(firstColumn.add(2));
+    const column3 = table.element(firstColumn.add(3));
+    const local = TSL.vec4(position.x.sub(pivot.x), position.y.sub(pivot.y), position.z, 1);
+    return column0.mul(local.x).add(column1.mul(local.y)).add(column2.mul(local.z)).add(column3.mul(local.w)).xyz;
+  }
+
   #bitmapMaterial(
     resource: RetainedResource,
     buffers: ReadonlyMap<ThreeBufferBindingId, RetainedBuffer>,
@@ -1107,7 +1144,7 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
       .map((buffer) => `${buffer.id}:${buffer.generation}`)
       .join(
         ',',
-      )}:${transformProgramKey(transform, this.#transformGenerationForRealization())}:${addressingProgramKey(addressing)}`;
+      )}:${glyphStorageProgramKey(buffers)}:${transformProgramKey(transform, this.#transformGenerationForRealization())}:${addressingProgramKey(addressing)}`;
     const cached = this.#materialRealizations().get(key);
     if (cached !== undefined) return cached.material;
     const texture = this.#bitmapTexture(resource.referenceId, atlas);
@@ -1132,12 +1169,12 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
     const position =
       transform.kind === 'indexed'
         ? indexedTransformPosition(
-            shader.position,
+            this.#glyphPosition(shader.position, instance, buffers),
             transform.indices.attribute,
             this.#transformAttributeForRealization(),
             instance,
           )
-        : shader.position;
+        : this.#glyphPosition(shader.position, instance, buffers);
     const material = this.#createMaterial(materialId, {
       technique: bitmap.id,
       shader,
@@ -1175,12 +1212,12 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
     const position =
       transform.kind === 'indexed'
         ? indexedTransformPosition(
-            shader.position,
+            this.#glyphPosition(shader.position, instance, buffers),
             transform.indices.attribute,
             this.#transformAttributeForRealization(),
             instance,
           )
-        : shader.position;
+        : this.#glyphPosition(shader.position, instance, buffers);
     const material = baseTextMaterial();
     material.positionNode = position;
     material.colorNode = shader.color;
@@ -1234,7 +1271,7 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
       .map((buffer) => `${buffer.policyBufferId}:${buffer.id}:${buffer.generation}`)
       .join(
         ',',
-      )}:${transformProgramKey(transform, this.#transformGenerationForRealization())}:${addressingProgramKey(addressing)}`;
+      )}:${glyphStorageProgramKey(buffers)}:${transformProgramKey(transform, this.#transformGenerationForRealization())}:${addressingProgramKey(addressing)}`;
     const cached = this.#materialRealizations().get(key);
     if (cached !== undefined) return cached.material;
     const runStart = TSL.uniform(0, 'uint').onObjectUpdate(
@@ -1267,12 +1304,12 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
         transformPosition: (position) =>
           transform.kind === 'indexed'
             ? indexedTransformPosition(
-                position,
+                this.#glyphPosition(position, instance, buffers),
                 transform.indices.attribute,
                 this.#transformAttributeForRealization(),
                 instance,
               )
-            : position,
+            : this.#glyphPosition(position, instance, buffers),
       }),
     );
     this.#retainMaterial(key, material, resource, materialBuffers(required, transform, addressing), transform.kind);
@@ -1296,7 +1333,7 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
       .map((buffer) => `${buffer.id}:${buffer.generation}`)
       .join(
         ',',
-      )}:${transformProgramKey(transform, this.#transformGenerationForRealization())}:${addressingProgramKey(addressing)}`;
+      )}:${glyphStorageProgramKey(buffers)}:${transformProgramKey(transform, this.#transformGenerationForRealization())}:${addressingProgramKey(addressing)}`;
     const cached = this.#materialRealizations().get(key);
     if (cached !== undefined) return cached.material;
     const runStart = TSL.uniform(0, 'uint').onObjectUpdate(
@@ -1334,12 +1371,12 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
     const position =
       transform.kind === 'indexed'
         ? indexedTransformPosition(
-            shader.position,
+            this.#glyphPosition(shader.position, instance, buffers),
             transform.indices.attribute,
             this.#transformAttributeForRealization(),
             instance,
           )
-        : shader.position;
+        : this.#glyphPosition(shader.position, instance, buffers);
     const material = this.#createMaterial(materialId, {
       technique: msdf.id,
       shader,
@@ -1352,37 +1389,43 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
 
   #bitmapTexture(referenceId: number, data: PortableTextureArrayPayload): THREE.DataArrayTexture {
     const textures = this.#bitmapTexturesForRealization();
-    let texture = textures.get(referenceId);
-    if (texture !== undefined) return texture;
-    texture = new THREE.DataArrayTexture(data.bytes, data.width, data.height, data.layers);
-    texture.format = THREE.RedFormat;
-    texture.type = THREE.UnsignedByteType;
-    texture.colorSpace = THREE.NoColorSpace;
-    texture.magFilter = THREE.LinearFilter;
-    texture.minFilter = THREE.LinearFilter;
-    texture.generateMipmaps = false;
-    texture.flipY = false;
-    texture.needsUpdate = true;
-    this.#preparation?.newTextures.add(texture);
-    textures.set(referenceId, texture);
-    return texture;
+    let lease = textures.get(referenceId);
+    if (lease !== undefined) return lease.resource;
+    lease = this.#coordinator.acquireRenderResource(`bitmap:${referenceId}`, () => {
+      const texture = new THREE.DataArrayTexture(data.bytes, data.width, data.height, data.layers);
+      texture.format = THREE.RedFormat;
+      texture.type = THREE.UnsignedByteType;
+      texture.colorSpace = THREE.NoColorSpace;
+      texture.magFilter = THREE.LinearFilter;
+      texture.minFilter = THREE.LinearFilter;
+      texture.generateMipmaps = false;
+      texture.flipY = false;
+      texture.needsUpdate = true;
+      return texture;
+    });
+    this.#preparation?.newTextures.add(lease);
+    textures.set(referenceId, lease);
+    return lease.resource;
   }
 
   #msdfAtlas(referenceId: number, data: PortableTextureArrayPayload): THREE.DataArrayTexture {
     const atlases = this.#msdfAtlasesForRealization();
-    let atlas = atlases.get(referenceId);
-    if (atlas !== undefined) return atlas;
-    atlas = new THREE.DataArrayTexture(data.bytes, data.width, data.height, data.layers);
-    atlas.format = THREE.RGBAFormat;
-    atlas.type = THREE.UnsignedByteType;
-    atlas.colorSpace = THREE.NoColorSpace;
-    atlas.magFilter = THREE.LinearFilter;
-    atlas.minFilter = THREE.LinearFilter;
-    atlas.generateMipmaps = false;
-    atlas.needsUpdate = true;
-    this.#preparation?.newTextures.add(atlas);
-    atlases.set(referenceId, atlas);
-    return atlas;
+    let lease = atlases.get(referenceId);
+    if (lease !== undefined) return lease.resource;
+    lease = this.#coordinator.acquireRenderResource(`msdf:${referenceId}`, () => {
+      const atlas = new THREE.DataArrayTexture(data.bytes, data.width, data.height, data.layers);
+      atlas.format = THREE.RGBAFormat;
+      atlas.type = THREE.UnsignedByteType;
+      atlas.colorSpace = THREE.NoColorSpace;
+      atlas.magFilter = THREE.LinearFilter;
+      atlas.minFilter = THREE.LinearFilter;
+      atlas.generateMipmaps = false;
+      atlas.needsUpdate = true;
+      return atlas;
+    });
+    this.#preparation?.newTextures.add(lease);
+    atlases.set(referenceId, lease);
+    return lease.resource;
   }
 
   #slugMaterial(
@@ -1407,7 +1450,7 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
       .map((buffer) => `${buffer.id}:${buffer.generation}`)
       .join(
         ',',
-      )}:${transformProgramKey(transformRealization, this.#transformGenerationForRealization())}:${addressingProgramKey(addressing)}`;
+      )}:${glyphStorageProgramKey(buffers)}:${transformProgramKey(transformRealization, this.#transformGenerationForRealization())}:${addressingProgramKey(addressing)}`;
     const cached = this.#materialRealizations().get(key);
     if (cached !== undefined) return cached.material;
     const runStart = TSL.uniform(0, 'uint').onObjectUpdate(
@@ -1461,7 +1504,8 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
         modelViewProjection,
       },
     );
-    const position = indexedTransform?.position(shader.position) ?? shader.position;
+    const glyphPosition = this.#glyphPosition(shader.position, instance, buffers);
+    const position = indexedTransform?.position(glyphPosition) ?? glyphPosition;
     const material = this.#createMaterial(materialId, {
       technique: slug.id,
       shader,
@@ -1480,46 +1524,48 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
 
   #slugPage(referenceId: number, data: PortableResourceGroupPayload): RetainedSlugPage {
     const pages = this.#slugPagesForRealization();
-    let page = pages.get(referenceId);
-    if (page !== undefined) return page;
-    const curves = textureMember(data, 'curves', 'rgba16float', 'Slug');
-    const headers = textureMember(data, 'headers', 'r32uint', 'Slug');
-    const references = textureMember(data, 'references', 'r32uint', 'Slug');
-    const curveBytes = ownedUint16(curves.bytes);
-    const headerBytes = ownedUint32(headers.bytes);
-    const referenceBytes = ownedUint32(references.bytes);
-    const curveTexture = dataTexture(curveBytes, curves.width, curves.height, THREE.RGBAFormat, THREE.HalfFloatType);
-    const headerTexture = dataTexture(
-      headerBytes,
-      headers.width,
-      headers.height,
-      THREE.RedIntegerFormat,
-      THREE.UnsignedIntType,
-    );
-    const referenceTexture = dataTexture(
-      referenceBytes,
-      references.width,
-      references.height,
-      THREE.RedIntegerFormat,
-      THREE.UnsignedIntType,
-    );
-    page = {
-      curveTexture,
-      curveWidth: curves.width,
-      headerTexture,
-      headerWidth: headers.width,
-      referenceTexture,
-      referenceWidth: references.width,
-      byteLength: curveBytes.byteLength + headerBytes.byteLength + referenceBytes.byteLength,
-      dispose() {
-        curveTexture.dispose();
-        headerTexture.dispose();
-        referenceTexture.dispose();
-      },
-    };
-    this.#preparation?.newTextures.add(page);
-    pages.set(referenceId, page);
-    return page;
+    let lease = pages.get(referenceId);
+    if (lease !== undefined) return lease.resource;
+    lease = this.#coordinator.acquireRenderResource(`slug:${referenceId}`, () => {
+      const curves = textureMember(data, 'curves', 'rgba16float', 'Slug');
+      const headers = textureMember(data, 'headers', 'r32uint', 'Slug');
+      const references = textureMember(data, 'references', 'r32uint', 'Slug');
+      const curveBytes = ownedUint16(curves.bytes);
+      const headerBytes = ownedUint32(headers.bytes);
+      const referenceBytes = ownedUint32(references.bytes);
+      const curveTexture = dataTexture(curveBytes, curves.width, curves.height, THREE.RGBAFormat, THREE.HalfFloatType);
+      const headerTexture = dataTexture(
+        headerBytes,
+        headers.width,
+        headers.height,
+        THREE.RedIntegerFormat,
+        THREE.UnsignedIntType,
+      );
+      const referenceTexture = dataTexture(
+        referenceBytes,
+        references.width,
+        references.height,
+        THREE.RedIntegerFormat,
+        THREE.UnsignedIntType,
+      );
+      return {
+        curveTexture,
+        curveWidth: curves.width,
+        headerTexture,
+        headerWidth: headers.width,
+        referenceTexture,
+        referenceWidth: references.width,
+        byteLength: curveBytes.byteLength + headerBytes.byteLength + referenceBytes.byteLength,
+        dispose() {
+          curveTexture.dispose();
+          headerTexture.dispose();
+          referenceTexture.dispose();
+        },
+      };
+    });
+    this.#preparation?.newTextures.add(lease);
+    pages.set(referenceId, lease);
+    return lease.resource;
   }
 
   #createMaterial(materialId: number, context: ThreeTextMaterialContext): THREE.NodeMaterial {
@@ -1570,15 +1616,15 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
     return this.#preparation?.resources ?? this.#resources;
   }
 
-  #bitmapTexturesForRealization(): Map<number, THREE.DataArrayTexture> {
+  #bitmapTexturesForRealization(): Map<number, RetainedTextureLease> {
     return this.#preparation?.bitmapTextures ?? this.#bitmapTextures;
   }
 
-  #msdfAtlasesForRealization(): Map<number, THREE.DataArrayTexture> {
+  #msdfAtlasesForRealization(): Map<number, RetainedTextureLease> {
     return this.#preparation?.msdfAtlases ?? this.#msdfAtlases;
   }
 
-  #slugPagesForRealization(): Map<number, RetainedSlugPage> {
+  #slugPagesForRealization(): Map<number, RetainedSlugPageLease> {
     return this.#preparation?.slugPages ?? this.#slugPages;
   }
 
@@ -1635,14 +1681,14 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
     }
   }
 
-  #retiredTextures(context: PreparationContext): readonly (THREE.Texture | RetainedSlugPage)[] {
-    const retained = new Set<THREE.Texture | RetainedSlugPage>([
+  #retiredTextures(context: PreparationContext): readonly RetainedGpuResourceLease[] {
+    const retained = new Set<RetainedGpuResourceLease>([
       ...context.bitmapTextures.values(),
       ...context.msdfAtlases.values(),
       ...context.slugPages.values(),
     ]);
     return [
-      ...new Set<THREE.Texture | RetainedSlugPage>([
+      ...new Set<RetainedGpuResourceLease>([
         ...this.#bitmapTextures.values(),
         ...this.#msdfAtlases.values(),
         ...this.#slugPages.values(),
@@ -1665,14 +1711,15 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
       }
     }
     if (transformIds.size === 0) return { contents, start: 0, end: 0, direct };
-    draws.root.updateWorldMatrix(true, false);
+    draws.root.updateWorldMatrix(true, false, true);
     const rootInverse = new THREE.Matrix4().copy(draws.root.matrixWorld).invert();
     const relative = new THREE.Matrix4();
     for (const transformId of transformIds) {
       const object = transforms.get(transformId);
       if (object === undefined) throw new Error(`Three plan target has no candidate transform ${transformId}`);
-      object.updateWorldMatrix(true, false);
-      relative.multiplyMatrices(rootInverse, object.matrixWorld);
+      object.updateWorldMatrix(true, false, true);
+      if (object === draws.root) relative.identity();
+      else relative.multiplyMatrices(rootInverse, object.matrixWorld);
       const visible = visibleBelowRoot(object, draws.root);
       if (draws.activeTransformIndices.has(transformId)) {
         const offset = transformId * 16;
@@ -1741,6 +1788,7 @@ export class ThreeTextRenderPlanExecutor implements PlanTarget {
 function resolveCandidateTransforms(
   candidate: PlanCandidate,
   coordinator: ThreeTextEngineCoordinator,
+  owner: ThreeTextEnginePlanOwner,
 ): ReadonlyMap<number, THREE.Object3D> {
   const transforms = new Map<number, THREE.Object3D>();
   for (const { transformIndex, binding } of candidate.transforms) {
@@ -1750,7 +1798,8 @@ function resolveCandidateTransforms(
     if (transforms.has(transformIndex)) {
       throw new TypeError(`Three plan candidate repeats transform ${transformIndex}`);
     }
-    transforms.set(transformIndex, coordinator.resolveTransform(binding));
+    const source = coordinator.resolveTransform(binding);
+    transforms.set(transformIndex, owner.objectForTransform?.(transformIndex, source) ?? source);
   }
   return transforms;
 }
@@ -1862,6 +1911,15 @@ function physicalRecordIndex(order: RetainedBuffer | undefined, logical: number)
   const physical = order.array[logical];
   if (physical === undefined) throw new RangeError('stable-indirect logical record exceeds its order buffer');
   return physical;
+}
+
+function glyphStorageKey(stableIds: RetainedBuffer): string {
+  return `${stableIds.id}:${stableIds.generation}`;
+}
+
+function glyphStorageProgramKey(buffers: ReadonlyMap<ThreeBufferBindingId, RetainedBuffer>): string {
+  const stableIds = buffers.get(threeSystemBuffers.stableGlyphId.id);
+  return stableIds === undefined ? 'glyph-storage:none' : `glyph-storage:${glyphStorageKey(stableIds)}`;
 }
 
 function addressingProgramKey(addressing: RecordAddressing): string {
@@ -2095,28 +2153,6 @@ function ownedUint32(bytes: Uint8Array): Uint32Array {
   return new Uint32Array(copy.buffer, copy.byteOffset, copy.byteLength / 4);
 }
 
-function markUpdated(buffer: RetainedBuffer, byteOffset: number, byteLength: number): void {
-  const bytesPerScalar = buffer.array.BYTES_PER_ELEMENT;
-  if (byteOffset % bytesPerScalar !== 0 || byteLength % bytesPerScalar !== 0) {
-    throw new RangeError('buffer patch is not scalar aligned');
-  }
-  syncDetachedUploadRange(buffer, byteOffset, byteLength);
-  mergeUpdateRange(buffer.attribute, byteOffset / bytesPerScalar, byteLength / bytesPerScalar);
-  buffer.attribute.needsUpdate = true;
-  invalidatePboTexture(buffer.attribute);
-}
-
-function syncDetachedUploadRange(buffer: RetainedBuffer, byteOffset: number, byteLength: number): void {
-  const upload = buffer.attribute.array;
-  if (upload === buffer.array) return;
-  if (upload.constructor !== buffer.array.constructor || upload.byteLength < buffer.array.byteLength) {
-    throw new TypeError('Three replaced a text-plan upload array with an incompatible view');
-  }
-  const source = new Uint8Array(buffer.array.buffer, buffer.array.byteOffset + byteOffset, byteLength);
-  const destination = new Uint8Array(upload.buffer, upload.byteOffset + byteOffset, byteLength);
-  destination.set(source);
-}
-
 function mergeUpdateRange(attribute: THREE.BufferAttribute, start: number, count: number): void {
   let mergedStart = start;
   let mergedEnd = start + count;
@@ -2128,18 +2164,30 @@ function mergeUpdateRange(attribute: THREE.BufferAttribute, start: number, count
     mergedEnd = Math.max(mergedEnd, rangeEnd);
     attribute.updateRanges.splice(index, 1);
   }
-  attribute.addUpdateRange(mergedStart, mergedEnd - mergedStart);
-}
-
-function markOriginRanges(ranges: ReadonlyMap<RetainedBuffer, readonly [number, number]>): void {
-  for (const [buffer, [start, end]] of ranges) {
-    markUpdated(buffer, start * buffer.array.BYTES_PER_ELEMENT, (end - start) * buffer.array.BYTES_PER_ELEMENT);
+  if (attribute.updateRanges.length >= MAX_UPDATE_RANGES) {
+    for (const range of attribute.updateRanges) {
+      mergedStart = Math.min(mergedStart, range.start);
+      mergedEnd = Math.max(mergedEnd, range.start + range.count);
+    }
+    attribute.clearUpdateRanges();
   }
+  attribute.addUpdateRange(mergedStart, mergedEnd - mergedStart);
 }
 
 function invalidatePboTexture(attribute: THREE.StorageInstancedBufferAttribute): void {
   const pbo = (attribute as THREE.StorageInstancedBufferAttribute & { pbo?: THREE.DataTexture }).pbo;
   if (pbo !== undefined) pbo.needsUpdate = true;
+}
+
+/** @internal Marks one storage-attribute span for both WebGPU and WebGL2/PBO uploads. */
+export function markStorageAttributeUpdated(
+  attribute: THREE.StorageInstancedBufferAttribute,
+  start: number,
+  count: number,
+): void {
+  mergeUpdateRange(attribute, start, count);
+  attribute.needsUpdate = true;
+  invalidatePboTexture(attribute);
 }
 
 function geometryDeclaration(resource: ThreeTextEngineResource | undefined) {
@@ -2167,6 +2215,8 @@ function resolveDrawGeometry(resource: ThreeTextEngineResource | undefined): Dra
   const indexCount = payload.indices === undefined ? 0 : payload.accessors[payload.indices.accessor]!.count;
   return {
     kind: 'supplied',
+    geometryKind: declaration.kind,
+    coordinates: declaration.coordinates,
     resourceName: declaration.resource,
     payload,
     key: [
@@ -2180,6 +2230,11 @@ function resolveDrawGeometry(resource: ThreeTextEngineResource | undefined): Dra
       range.count,
     ].join(':'),
   };
+}
+
+function createGeometrySource(drawGeometry: DrawGeometry): ThreeGlyphGeometrySource | undefined {
+  if (drawGeometry.kind === 'synthetic-quad') return undefined;
+  return createSuppliedGlyphGeometrySource(drawGeometry.payload, drawGeometry.geometryKind, drawGeometry.coordinates);
 }
 
 function realizeGeometry(drawGeometry: DrawGeometry, recordCount: number): THREE.BufferGeometry {
@@ -2371,10 +2426,6 @@ function commitBufferOperation(operation: StagedBufferOperation): void {
     }
     return;
   }
-  const target = operation.buffer.array;
-  if (!(target instanceof Float32Array)) throw new TypeError('glyph origin buffer changed scalar type before commit');
-  target[operation.scalarOffset] = operation.x;
-  target[operation.scalarOffset + 1] = operation.y;
 }
 
 function commitBufferUpload(uploadRange: StagedBufferUpload): void {
@@ -2405,6 +2456,7 @@ function applyReusedDrawUpdate(update: ReusedDrawUpdate): void {
   update.mesh.userData.pmndrsGlyphRunStart = update.recordIndex;
   update.mesh.userData.pmndrsGlyphTransformId = update.transformId;
   update.mesh.userData.pmndrsGlyphPrimitiveKind = update.primitiveKind;
+  update.mesh.userData.pmndrsGlyphDepthKey = update.depthKey;
   update.mesh.matrixAutoUpdate = update.matrixAutoUpdate;
   update.mesh.renderOrder = update.renderOrder;
 }

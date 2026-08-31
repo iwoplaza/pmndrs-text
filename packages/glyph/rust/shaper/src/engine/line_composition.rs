@@ -219,7 +219,7 @@ pub(crate) fn layout_next_line(
     }))
 }
 
-/// Integer twin of [`layout_next_line`] over the F26.6 advance stream (slice 2a of
+/// Integer twin of [`layout_next_line`] over the F16.16 advance stream (slice 2a of
 /// the integer-layout-units plan). Widths arrive in layout units; advance and
 /// space-sum accumulation is exact `i64` arithmetic, which is what admits the
 /// chunk-64 kernels in slice 2b. The declared shrink fraction applies to the
@@ -229,7 +229,7 @@ pub(crate) fn layout_next_line(
 /// for space sums above ~2^16 units and whose `<<16` comparison overflowed i64
 /// inside the admitted magnitude range. The parity harness below proves the
 /// selection agrees with the f64 fit over quantized inputs, where f64 sums of
-/// dyadic F26.6 values are themselves exact; slice 2b inverts authority and this
+/// dyadic F16.16 values are themselves exact; slice 2b inverts authority and this
 /// twin replaces the f64 body rather than living beside it.
 pub(crate) fn layout_next_line_integer(
     clusters: &ClusterArena,
@@ -245,7 +245,7 @@ pub(crate) fn layout_next_line_integer(
         return Err(EngineError::InvalidRequest);
     }
     let count = clusters.starts.len();
-    if cursor.cluster > count || clusters.advances_f26.len() != count {
+    if cursor.cluster > count || clusters.advance_units.len() != count {
         return Err(EngineError::InvalidRequest);
     }
     if cursor.trailing_empty {
@@ -303,12 +303,13 @@ pub(crate) fn layout_next_line_integer(
             let chunk = index / super::cluster_state::LAYOUT_CHUNK;
             let flags_or = clusters.chunk_flags_or[chunk];
             if flags_or & (CLUSTER_REQUIRED_BREAK | CLUSTER_HARD_BREAK) == 0 {
-                let next_advance = advance + clusters.chunk_advance_sums[chunk];
-                let next_space_units = space_units + clusters.chunk_space_sums[chunk];
+                let next_advance = advance.saturating_add(clusters.chunk_advance_sums[chunk]);
+                let next_space_units = space_units.saturating_add(clusters.chunk_space_sums[chunk]);
                 let fits = max_width_units.is_none_or(|units| {
-                    next_advance
-                        - super::layout_units::apply_ratio(next_space_units, word_space_shrink)
-                        <= units
+                    next_advance.saturating_sub(super::layout_units::apply_ratio(
+                        next_space_units,
+                        word_space_shrink,
+                    )) <= units
                 });
                 if fits {
                     if flags_or & CLUSTER_ALLOWED_BREAK != 0 {
@@ -331,10 +332,10 @@ pub(crate) fn layout_next_line_integer(
             pending_safe = None;
         }
         let required_break = flags & CLUSTER_REQUIRED_BREAK != 0;
-        let cluster_advance = i64::from(clusters.advances_f26[index]);
-        let next_advance = advance + cluster_advance;
+        let cluster_advance = clusters.advance_units[index];
+        let next_advance = advance.saturating_add(cluster_advance);
         let next_space_units = if flags & CLUSTER_SPACE != 0 {
-            space_units + cluster_advance
+            space_units.saturating_add(cluster_advance)
         } else {
             space_units
         };
@@ -356,10 +357,9 @@ pub(crate) fn layout_next_line_integer(
         if wrap != WRAP_NONE
             && !cluster_is_space
             && max_width_units.is_some_and(|units| {
-                next_advance
-                    - hanging_units
-                    - super::layout_units::apply_ratio(next_space_units, word_space_shrink)
-                    > units
+                next_advance.saturating_sub(hanging_units).saturating_sub(
+                    super::layout_units::apply_ratio(next_space_units, word_space_shrink),
+                ) > units
             })
             && index > line_start
         {
@@ -396,7 +396,7 @@ pub(crate) fn layout_next_line_integer(
         advance = next_advance;
         space_units = next_space_units;
         trailing_space_units = if cluster_is_space {
-            trailing_space_units + cluster_advance
+            trailing_space_units.saturating_add(cluster_advance)
         } else {
             0
         };
@@ -428,7 +428,7 @@ pub(crate) fn layout_next_line_integer(
 
     if selected_end <= line_start {
         selected_end = line_start + 1;
-        selected_advance = i64::from(clusters.advances_f26[line_start]);
+        selected_advance = clusters.advance_units[line_start];
     }
     // The line still CONTAINS its terminating spaces -- they keep their clusters and
     // their text range -- but they contribute no width, exactly as `justifiable_span`
@@ -441,9 +441,9 @@ pub(crate) fn layout_next_line_integer(
     }
     let mut hung_units = 0_i64;
     while visible_end > line_start && clusters.flags[visible_end - 1] & CLUSTER_SPACE != 0 {
-        let trimmed = i64::from(clusters.advances_f26[visible_end - 1]);
-        selected_advance -= trimmed;
-        hung_units += trimmed;
+        let trimmed = clusters.advance_units[visible_end - 1];
+        selected_advance = selected_advance.saturating_sub(trimmed);
+        hung_units = hung_units.saturating_add(trimmed);
         visible_end -= 1;
     }
     let last = selected_end - 1;
@@ -490,7 +490,7 @@ fn resolve_last_flagged(
         position + 1
     };
     for index in start..prefix_end {
-        advance += i64::from(clusters.advances_f26[index]);
+        advance = advance.saturating_add(clusters.advance_units[index]);
     }
     let break_at = if flag == CLUSTER_SAFE_BEFORE {
         position
@@ -522,13 +522,13 @@ mod tests {
         clusters
     }
 
-    /// Clusters whose f64 advances are exactly the dyadic values their F26.6
+    /// Clusters whose f64 advances are exactly the dyadic values their F16.16
     /// quantization names, so both fits sum identical quantities and f64 addition
     /// itself is exact: the parity obligation of the integer-layout-units plan.
     fn make_quantized_clusters(advances: &[f64], flags: &[u8]) -> ClusterArena {
         let mut clusters = make_clusters(advances, flags);
-        for (advance, units) in clusters.advances.iter_mut().zip(&clusters.advances_f26) {
-            *advance = scaled_from_layout_units(i64::from(*units));
+        for (index, advance) in clusters.advances.iter_mut().enumerate() {
+            *advance = scaled_from_layout_units(clusters.advance_units[index]);
         }
         clusters.refresh_layout_units().unwrap();
         clusters
@@ -592,7 +592,7 @@ mod tests {
             while width < 260.0 {
                 // The constraint quantizes once at the boundary; both fits then
                 // consume identical dyadic quantities and must agree bit for bit.
-                let width_units = i64::from(layout_units_from_scaled(width));
+                let width_units = layout_units_from_scaled(width);
                 let scalar = fit_all(&clusters, scaled_from_layout_units(width_units), wrap, 0.0);
                 let integer = fit_all_integer(&clusters, Some(width_units), wrap, 0.0);
                 assert_eq!(integer, scalar, "wrap {wrap} width {width}");
@@ -639,7 +639,7 @@ mod tests {
         for width in [
             33.0_f64, 129.31, 260.07, 517.5, 1041.13, 2087.0, 4200.9, 8500.0,
         ] {
-            let width_units = i64::from(layout_units_from_scaled(width));
+            let width_units = layout_units_from_scaled(width);
             for shrink in [0.0_f64, 13_107.0 / 65_536.0] {
                 let scalar = fit_all(
                     &clusters,
@@ -659,17 +659,40 @@ mod tests {
     }
 
     #[test]
+    fn integer_fit_saturates_extreme_caller_derived_advance_sums() {
+        let count = 1_025;
+        let clusters = make_clusters(&vec![f64::MAX; count], &vec![0; count]);
+        for wrap in [WRAP_NONE, WRAP_WORD] {
+            let lines = fit_all_integer(&clusters, None, wrap, 0.0);
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0].cluster_end, count as u32);
+            assert_eq!(
+                lines[0].advance,
+                scaled_from_layout_units(i64::MAX),
+                "wrap {wrap} must saturate instead of wrapping the accumulated line advance",
+            );
+        }
+    }
+
+    #[test]
     fn integer_shrink_matches_f64_shrink_for_odd_units_and_non_dyadic_ratios() {
-        use super::super::layout_units::layout_units_from_scaled;
-        // The Sol review's counterexample: one-unit spaces at width 64 units with a
+        use super::super::layout_units::{LAYOUT_UNITS_PER_PIXEL, layout_units_from_scaled};
+        // The Sol review's counterexample: one-unit spaces at width 65,536 units with a
         // 0.5 shrink. Per-space truncation broke here; the cumulative space sum
         // under the exactly-applied ratio must agree with the f64 fit.
         let mut flags = [0_u8; 3];
         flags[0] = CLUSTER_ALLOWED_BREAK | CLUSTER_SPACE;
         flags[1] = CLUSTER_ALLOWED_BREAK | CLUSTER_SPACE;
-        let clusters = make_quantized_clusters(&[1.0 / 64.0, 1.0 / 64.0, 63.0 / 64.0], &flags);
+        let clusters = make_quantized_clusters(
+            &[
+                1.0 / LAYOUT_UNITS_PER_PIXEL,
+                1.0 / LAYOUT_UNITS_PER_PIXEL,
+                (LAYOUT_UNITS_PER_PIXEL - 1.0) / LAYOUT_UNITS_PER_PIXEL,
+            ],
+            &flags,
+        );
         let scalar = fit_all(&clusters, 1.0, WRAP_WORD, 0.5);
-        let integer = fit_all_integer(&clusters, Some(64), WRAP_WORD, 0.5);
+        let integer = fit_all_integer(&clusters, Some(65_536), WRAP_WORD, 0.5);
         assert_eq!(integer, scalar);
         assert_eq!(integer[0].cluster_end, 3, "shrink admits the third cluster");
 
@@ -691,7 +714,7 @@ mod tests {
             let clusters = make_quantized_clusters(&advances, &sweep_flags);
             let mut width = 17.0_f64;
             while width < 130.0 {
-                let width_units = i64::from(layout_units_from_scaled(width));
+                let width_units = layout_units_from_scaled(width);
                 let scalar = fit_all(
                     &clusters,
                     scaled_from_layout_units(width_units),
@@ -715,8 +738,7 @@ mod tests {
         let clusters = make_quantized_clusters(&[1.0; 10], &flags);
         let mut width = 8.0_f64;
         while width < 11.0 {
-            let width_units =
-                i64::from(super::super::layout_units::layout_units_from_scaled(width));
+            let width_units = super::super::layout_units::layout_units_from_scaled(width);
             let scalar = fit_all(
                 &clusters,
                 scaled_from_layout_units(width_units),
@@ -776,9 +798,7 @@ mod tests {
         let integer = layout_next_line_integer(
             &clusters,
             &mut integer_cursor,
-            Some(i64::from(
-                super::super::layout_units::layout_units_from_scaled(4.0),
-            )),
+            Some(super::super::layout_units::layout_units_from_scaled(4.0)),
             WRAP_WORD,
             0.0,
         )
@@ -831,9 +851,7 @@ mod tests {
         // The integer fit is authoritative and must agree exactly.
         let integer = fit_all_integer(
             &clusters,
-            Some(i64::from(
-                super::super::layout_units::layout_units_from_scaled(4.0),
-            )),
+            Some(super::super::layout_units::layout_units_from_scaled(4.0)),
             WRAP_WORD,
             0.0,
         );

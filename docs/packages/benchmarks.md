@@ -5,7 +5,7 @@ description: Provides the shared interactive and automated benchmark product sur
 resource: ../../apps/benchmarks
 workspace_package: '@pmndrs/glyph-benchmarks'
 documentation_type: reference
-source_digest: 'sha256:01de613e24d913365e310eda9efcfc89f810eb1e67bef5029a8e64b7ecddaed1'
+source_digest: 'sha256:5ad671d21db73a036664cc2209965d1ab5831e911ed73c71082395260f6f6fc0'
 tags: [package, benchmarks, react, vite, product-e2e]
 sources:
   - id: manifest
@@ -255,22 +255,22 @@ resolves through the same transfer function as the numeric constant it replaces.
 `Text.set()`: a rejected update leaves current desired state untouched, while renderer failures surface without restoring
 stale authored inputs.
 
-Their presentation transitions are now owned by the application. Merged v0 exported `captureBitmapGlyphPositions` and
-`createBitmapGlyphPositionTransition`, which packaged glyph identity matching and interpolation together for Bitmap only.
-Target-v1 exposes the `GlyphPlacements` snapshot and its topology-guarded write, so
-`techniques/shared/glyph-origin-transition.ts` owns only the application policy, once for all three techniques: it calls
-`snapshotGlyphs()`, hands the previous snapshot to `adopt` — which recovers each glyph's drawn position by the identity
-the package owns rather than one the application reconstructs from six parallel arrays — interpolates toward the shaped
-origins rather than the current displayed ones, writes through `applyGlyphs`, calls `restoreGlyphs` when settled, and
-reports `matchedGlyphs` so the existing viewport telemetry keeps its meaning. Bitmap keeps its host-driven
-progress because its React viewport already animates the timeline; MTSDF and Slug, whose surfaces do not drive progress,
-advance the same smoothstep from their own frame clock and gain the transition they previously lacked.
+Their presentation transitions are application-owned consumers of the detached-copy API. Merged v0 exported
+`captureBitmapGlyphPositions` and `createBitmapGlyphPositionTransition`, which combined identity matching and live-buffer
+overrides for Bitmap only. `techniques/shared/glyph-origin-transition.ts` now reads local matrices through
+`measureGlyphs()`, refreshes the source world matrix once at that explicit boundary, composes committed world matrices,
+updates the source layout, calls `breakApart()` for one independently rendered `Glyphs` branch, hides
+the live source, updates the detached root once per frame, converts each interpolated world matrix through a hoisted
+world inverse, and writes complete position/quaternion/scale matrices through `setMatrixAt()`. It matches
+records by the package-owned `GlyphKey`, disposes the copy at settle, and restores source visibility. No benchmark keeps a
+mutable glyph snapshot applied to live text, and no benchmark depends on the removed `snapshotGlyphs()` / `applyGlyphs()` /
+`restoreGlyphs()` API. Bitmap keeps host-driven progress; MTSDF and Slug advance the same smoothstep on their frame clock.
 
 Whether a reflow may interpolate at all is decided once, in `glyphOriginPolicy`, and keyed to the kind of change rather
 than the technique. `GlyphKey` survives a reflow that moves glyphs and not one that reshapes them, and its cluster
 component says nothing about visual order: under bidi, inserting one character reorders a whole run, so a typewriter reveal that kept matching
 slid glyphs across their neighbours toward positions they never travelled through. A change to the source text — or to
-the fixture, script, or features that decide which glyphs the text shapes into — therefore snaps, clearing the overrides
+the fixture, script, or features that decide which glyphs the text shapes into — therefore snaps without creating a copy
 so the committed layout stays authoritative and reporting zero matches rather than a count it did not animate. Geometry
 and style changes leave the shaped run and its visual order intact, so font size, layout width, anchor, and device pixel
 ratio still interpolate. A snapping reflow also skips `captureGlyphOrigins` entirely, so it never builds the snapshot
@@ -502,7 +502,7 @@ Milestone 7.2 owns a product-facing advanced-shaping showcase over this same ren
 
 The showcase corpus is an immutable TypeScript discriminated union with exact integer timeline state. Each case now owns a focused conformance sequence and a longer live sequence. Grapheme segmentation keeps combining marks and complex-script clusters intact; seeking does not depend on JavaScript code-unit slicing. The live benchmark exposes edit, play/pause, reset, and scrub controls over the retained public `Text` object. Automatic playback reveals one grapheme on every application animation frame at a stable width, making continuous 60 Hz shaping and layout the default workload on a 60 Hz display rather than throttling updates to a slow typewriter cadence. Bitmap and MSDF center the paragraph measure in both viewport axes while keeping its text start-aligned, so the box has a stable horizontal origin and each line grows naturally before wrapping. Resident updates publish through ordinary Three.js matrix traversal; `Text.ready` is observed only to publish causal probe/telemetry completion and to report genuinely cold or failed preparation, not to make the renderer advance the text. The maintained GPU probe renders every authored case with zero missing glyphs, confirms the fixed anchor and measure, and requires multi-line wrapping; a separate exact conformance matrix deliberately retains its bounded source and historical hashes.
 
-The CI-safe advanced-shaping target derives all 68 finite frames from that same corpus and sends each through the public `Text` object and bitmap batch construction at an explicit 800 CSS-pixel viewport and 16 px font size. Its exact Chromium 149 record covers five cases, 709 laid-out glyphs, 625 rendered instances, 72 draws, zero missing glyphs, 17,362 normalized layout bytes, and composite hash `51ba1d14`; a wrong hash and a missing-glyph mutation are negative controls. The three recorded 8.5–11.3 ms durations describe this machine's end-to-end conformance execution only. They are neither live renderer costs nor portability thresholds. Hardware GPU pixels remain owned by the exact bitmap readback lane, while the admitted Vitexec product probe proves that each authenticated showcase fixture reaches the live WebGPU canvas.
+The CI-safe advanced-shaping target derives all 68 finite frames from that same corpus and sends each through the public `Text` object and bitmap batch construction at an explicit 800 CSS-pixel viewport and 16 px font size. Its exact Chromium 149 record covers five cases, 709 laid-out glyphs, 625 rendered instances, 63 draws, zero missing glyphs, 17,362 normalized layout bytes, and composite hash `ae66ee48`; a wrong hash and a missing-glyph mutation are negative controls. The three recorded 8.5–11.3 ms durations describe this machine's end-to-end conformance execution only. They are neither live renderer costs nor portability thresholds. Hardware GPU pixels remain owned by the exact bitmap readback lane, while the admitted Vitexec product probe proves that each authenticated showcase fixture reaches the live WebGPU canvas.
 
 The foundation closure gate executes 111 Vitest cases and 16 isolated headless Chromium targets from the current
 manifest, including forced-WebGL2 Bitmap/MTSDF/Slug, conformance, source-outline, React reconciliation, Worker fallback,
@@ -566,6 +566,18 @@ program and includes its F32×4, U32, and U16 buffers in the scalar/auto/SIMD by
 explicit SIMD measures 0.438 ms p95 versus 1.113 ms scalar; at 100,602 it measures 1.750 versus 4.350 ms. Browser timer
 quantization is visible in those figures, so Node retains the finer candidate ranking while Chromium supplies the
 independent engine-admission check.
+
+The bidi transition-scan lane records three named inputs. `transitionScanX*` uses the captured resolved levels, but the
+current captured corpus is pure LTR Latin and therefore resolves to the same all-zero levels as the explicit
+`transitionUniformX*` control; no natural mixed-direction corpus is measured yet. `transitionMixedX*` is an adversarial
+synthetic short-run sequence and is the run's only non-uniform input. On the recorded Darwin arm64 Node run, the
+production one-block SIMD scan reduced the captured
+25,515-glyph median from 0.00828 ms scalar to 0.00128 ms and the 100,602-glyph median from 0.03262 ms to 0.00484 ms;
+the uniform lane necessarily reproduced it within timing noise. The adversarial mixed lane regressed from 0.01062 ms to
+0.04718 ms and from 0.04286 ms to 0.18971 ms respectively. Production therefore uses the conservative one-block scan
+for the measured LTR workload, retains scalar as the correctness oracle and tail, and records the mixed-direction cost
+explicitly rather than presenting the synthetic lane as representative. These host-local measurements are admission
+evidence, not a portability claim; a natural bidi-bearing corpus remains required before making a broader claim.
 
 The bake-host report separates the consumer phases without timing conformance work. Each offline sample creates a fresh Wasm baker and records initialization plus first bake as cold, then records a second bake on that instance as warm. Each isolated Chromium context queues two requests onto one Worker: first completion contains Worker/Wasm startup plus its bake, while the interval to second completion is the warm reused-instance bake. Three captured arm64/Chromium 149 samples preserve complete artifact parity; medians were 4.16 ms cold / 2.94 ms warm offline and 21.70 ms cold / 3.50 ms warm in the Worker. These are observations, not cross-host thresholds.
 

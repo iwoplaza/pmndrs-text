@@ -18,6 +18,8 @@ interface RasterProofResult {
   readonly litPixels: number;
   readonly retainedDraw: boolean;
   readonly retainedStorage: boolean;
+  readonly detachedFirstFrameMatches: boolean;
+  readonly detachedSameFrameWriteMatches: boolean;
   readonly gpuBytes: number;
 }
 
@@ -69,11 +71,13 @@ try {
     if (errors.length !== 0) throw new Error(`${expected} browser errors: ${errors.join(' | ')}`);
     if (result.backend !== expected) throw new Error(`expected ${expected}, received ${result.backend}`);
     if (
-      result.drawCount < 1 ||
+      result.drawCount < 3 ||
       result.glyphCount !== 16 ||
       result.litPixels < 32 ||
       !result.retainedDraw ||
       !result.retainedStorage ||
+      !result.detachedFirstFrameMatches ||
+      !result.detachedSameFrameWriteMatches ||
       result.gpuBytes <= 0
     ) {
       throw new Error(`${expected} target-v1 Bitmap output is not visibly populated: ${JSON.stringify(result)}`);
@@ -102,6 +106,8 @@ try {
       result.litPixels < 32 ||
       !result.retainedDraw ||
       !result.retainedStorage ||
+      !result.detachedFirstFrameMatches ||
+      !result.detachedSameFrameWriteMatches ||
       result.gpuBytes <= 0
     )
       throw new Error(`${expected} target-v1 MTSDF output is not visibly populated: ${JSON.stringify(result)}`);
@@ -129,6 +135,8 @@ try {
       result.litPixels < 32 ||
       !result.retainedDraw ||
       !result.retainedStorage ||
+      !result.detachedFirstFrameMatches ||
+      !result.detachedSameFrameWriteMatches ||
       result.gpuBytes <= 0
     )
       throw new Error(`${expected} target-v1 Slug output is not visibly populated: ${JSON.stringify(result)}`);
