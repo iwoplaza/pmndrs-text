@@ -1,12 +1,13 @@
 use alloc::vec::Vec;
+
+use crate::{AtlasRegion, outline::Bounds, outline::Edge};
 #[cfg(not(any(feature = "std", test)))]
 use core_maths::CoreFloat as _;
 
 const ARTIFACT_T_EPSILON: f64 = 0.01;
-const ALPHA_CONFIRMATION_SUBDIVISIONS: usize = 32;
-const ALPHA_EDGE_MARGIN: f64 = 4.0 / 255.0;
-const MAX_ALPHA_CONFIRMATION_PASSES: usize = 4;
 const ERROR: u8 = 1;
+pub(crate) const PROTECTED: u8 = 2;
+const PROTECTION_RADIUS_TOLERANCE: f64 = 1.001;
 const MIN_DEVIATION_RATIO: f64 = 10.0 / 9.0;
 
 #[derive(Clone, Copy)]
@@ -25,6 +26,7 @@ pub(crate) fn correct_interpolation_artifacts(
     horizontal_distance_delta: f64,
     vertical_distance_delta: f64,
     stencil: &mut Vec<u8>,
+    protection: &[u8],
 ) -> Result<usize, ()> {
     let Some(texel_count) = width.checked_mul(height) else {
         return Err(());
@@ -51,23 +53,16 @@ pub(crate) fn correct_interpolation_artifacts(
     };
     for y in 0..height {
         for x in 0..width {
-            if has_artifact_with_neighbor(rgba, grid, x, y) {
-                stencil[y * width + x] |= ERROR;
+            let index = y * width + x;
+            if protection.get(index).copied().unwrap_or(0) & PROTECTED == 0
+                && has_artifact_with_neighbor(rgba, grid, x, y)
+            {
+                stencil[index] |= ERROR;
             }
         }
     }
 
-    let mut corrected = apply_median_stencil(rgba, stencil);
-    for _ in 0..MAX_ALPHA_CONFIRMATION_PASSES {
-        stencil.fill(0);
-        if mark_alpha_disagreements(rgba, width, height, stencil) == 0 {
-            break;
-        }
-        corrected = corrected
-            .checked_add(apply_true_distance_stencil(rgba, stencil))
-            .ok_or(())?;
-    }
-    Ok(corrected)
+    Ok(apply_median_stencil(rgba, stencil))
 }
 
 fn apply_median_stencil(rgba: &mut [u8], stencil: &[u8]) -> usize {
@@ -85,98 +80,6 @@ fn apply_median_stencil(rgba: &mut [u8], stencil: &[u8]) -> usize {
         corrected += 1;
     }
     corrected
-}
-
-fn apply_true_distance_stencil(rgba: &mut [u8], stencil: &[u8]) -> usize {
-    let mut corrected = 0;
-    for (index, mask) in stencil.iter().copied().enumerate() {
-        if mask & ERROR == 0 {
-            continue;
-        }
-        // Alpha stores the true signed distance in MTSDF. Once the denser pass proves that
-        // interpolated RGB disagrees with it at the coverage boundary, copying that distance
-        // removes both the inversion and its wrong magnitude. The edge-fast pass above keeps
-        // median correction for ordinary MSDF channel collisions.
-        let offset = index * 4;
-        let true_distance = rgba[offset + 3];
-        rgba[offset] = true_distance;
-        rgba[offset + 1] = true_distance;
-        rgba[offset + 2] = true_distance;
-        corrected += 1;
-    }
-    corrected
-}
-
-fn mark_alpha_disagreements(rgba: &[u8], width: usize, height: usize, stencil: &mut [u8]) -> usize {
-    if width < 2 || height < 2 {
-        return 0;
-    }
-    let mut marked = 0;
-    for y in 0..height - 1 {
-        for x in 0..width - 1 {
-            let indices = [
-                y * width + x,
-                y * width + x + 1,
-                (y + 1) * width + x,
-                (y + 1) * width + x + 1,
-            ];
-            let corners = indices.map(|index| pixel4(rgba, index));
-            let minimum_alpha = corners
-                .iter()
-                .map(|corner| corner[3])
-                .fold(f64::INFINITY, f64::min);
-            let maximum_alpha = corners
-                .iter()
-                .map(|corner| corner[3])
-                .fold(f64::NEG_INFINITY, f64::max);
-            // Edge-fast owns far-field inversions. Restrict the denser MTSDF-specific pass to
-            // cells whose true-distance alpha reaches the coverage boundary within four byte steps.
-            if maximum_alpha < 0.5 - ALPHA_EDGE_MARGIN || minimum_alpha > 0.5 + ALPHA_EDGE_MARGIN {
-                continue;
-            }
-            let spreads = corners.map(|corner| {
-                corner[0].max(corner[1]).max(corner[2]) - corner[0].min(corner[1]).min(corner[2])
-            });
-            for sample_y in 1..ALPHA_CONFIRMATION_SUBDIVISIONS {
-                let y_ratio = sample_y as f64 / ALPHA_CONFIRMATION_SUBDIVISIONS as f64;
-                for sample_x in 1..ALPHA_CONFIRMATION_SUBDIVISIONS {
-                    let x_ratio = sample_x as f64 / ALPHA_CONFIRMATION_SUBDIVISIONS as f64;
-                    let sample: [f64; 4] = core::array::from_fn(|channel| {
-                        bilinear_channel(corners, channel, x_ratio, y_ratio)
-                    });
-                    if (median3([sample[0], sample[1], sample[2]]) >= 0.5) == (sample[3] >= 0.5) {
-                        continue;
-                    }
-                    let weights = [
-                        (1.0 - x_ratio) * (1.0 - y_ratio),
-                        x_ratio * (1.0 - y_ratio),
-                        (1.0 - x_ratio) * y_ratio,
-                        x_ratio * y_ratio,
-                    ];
-                    let mut selected = 0;
-                    let mut selected_score = 0.0;
-                    for corner in 0..4 {
-                        let score = spreads[corner] * weights[corner];
-                        if score > selected_score {
-                            selected = corner;
-                            selected_score = score;
-                        }
-                    }
-                    if selected_score > 0.0 && stencil[indices[selected]] & ERROR == 0 {
-                        stencil[indices[selected]] |= ERROR;
-                        marked += 1;
-                    }
-                }
-            }
-        }
-    }
-    marked
-}
-
-fn bilinear_channel(corners: [[f64; 4]; 4], channel: usize, x_ratio: f64, y_ratio: f64) -> f64 {
-    let bottom = corners[0][channel] * (1.0 - x_ratio) + corners[1][channel] * x_ratio;
-    let top = corners[2][channel] * (1.0 - x_ratio) + corners[3][channel] * x_ratio;
-    bottom * (1.0 - y_ratio) + top * y_ratio
 }
 
 fn pixel4(rgba: &[u8], index: usize) -> [f64; 4] {
@@ -509,16 +412,324 @@ fn median_u8(red: u8, green: u8, blue: u8) -> u8 {
     red.min(green).max(red.max(green).min(blue))
 }
 
+/// Mark the four texels enveloping every colour-transition corner as protected.
+///
+/// Ported from msdfgen's `MSDFErrorCorrection::protectCorners`, which the shipping kernel omitted.
+/// Two consecutive edges sharing at most one channel form a corner: that is where the median is
+/// deliberately allowed to disagree with the true distance so the reconstruction stays sharp.
+/// Correcting such a texel replaces the sharp corner with the rounded true distance.
+pub(crate) fn mark_protected_corners(
+    edges: &[Edge],
+    contours: &[core::ops::Range<usize>],
+    bounds: Bounds,
+    region: AtlasRegion,
+    width: usize,
+    height: usize,
+    protection: &mut Vec<u8>,
+) -> Result<(), ()> {
+    let texel_count = width.checked_mul(height).ok_or(())?;
+    if texel_count > protection.len() {
+        protection
+            .try_reserve_exact(texel_count - protection.len())
+            .map_err(|_| ())?;
+    }
+    protection.resize(texel_count, 0);
+    protection.fill(0);
+    if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+        return Ok(());
+    }
+    for contour in contours {
+        let Some(span) = edges.get(contour.clone()) else {
+            continue;
+        };
+        let Some(&last) = span.last() else {
+            continue;
+        };
+        let mut previous_color = last.color();
+        for edge in span {
+            let common = previous_color & edge.color();
+            previous_color = edge.color();
+            // A corner is a colour transition: the two edges share at most one channel.
+            if common & common.wrapping_sub(1) != 0 {
+                continue;
+            }
+            let point = edge.start();
+            let x_ratio = (point.x - bounds.min_x) / bounds.width();
+            let y_ratio = (point.y - bounds.min_y) / bounds.height();
+            // Texel centres sit at integer indices; row 0 is the top, matching the output buffer.
+            let column = x_ratio * region.inner_width as f32 + region.padding_x as f32 - 0.5;
+            let source_row = y_ratio * region.inner_height as f32 + region.padding_y as f32 - 0.5;
+            let row = (height as f32) - 1.0 - source_row;
+            if !column.is_finite() || !row.is_finite() {
+                continue;
+            }
+            let left = libm_floor(column);
+            let top = libm_floor(row);
+            for (x, y) in [
+                (left, top),
+                (left + 1, top),
+                (left, top + 1),
+                (left + 1, top + 1),
+            ] {
+                if x < 0 || y < 0 {
+                    continue;
+                }
+                let (x, y) = (x as usize, y as usize);
+                if x < width && y < height {
+                    protection[y * width + x] |= PROTECTED;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn libm_floor(value: f32) -> i64 {
+    let truncated = value as i64;
+    if value < 0.0 && (truncated as f32) != value {
+        truncated - 1
+    } else {
+        truncated
+    }
+}
+
+/// Protect texels that straddle a real edge from correction.
+///
+/// Ported from msdfgen's `MSDFErrorCorrection::protectEdges`. Where two neighbouring texels bracket
+/// the 0.5 crossing, the channel that carries the edge is allowed to be an outlier: that outlier is
+/// the edge's sub-texel position, not an interpolation fault. Only the non-median channels that
+/// actually contribute to the crossing are protected, so genuine channel collisions elsewhere stay
+/// correctable.
+pub(crate) fn mark_protected_edges(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    horizontal_distance_delta: f64,
+    vertical_distance_delta: f64,
+    protection: &mut [u8],
+) {
+    if width < 2 || height < 2 {
+        return;
+    }
+    let horizontal_radius = PROTECTION_RADIUS_TOLERANCE * horizontal_distance_delta;
+    let vertical_radius = PROTECTION_RADIUS_TOLERANCE * vertical_distance_delta;
+    let diagonal_radius =
+        PROTECTION_RADIUS_TOLERANCE * horizontal_distance_delta.hypot(vertical_distance_delta);
+    let pair = |first: usize, second: usize, radius: f64, protection: &mut [u8]| {
+        let a = pixel4(rgba, first);
+        let b = pixel4(rgba, second);
+        let first_median = median3([a[0], a[1], a[2]]);
+        let second_median = median3([b[0], b[1], b[2]]);
+        if (first_median - 0.5).abs() + (second_median - 0.5).abs() >= radius {
+            return;
+        }
+        let mask = edge_between_texels(a, b);
+        protect_extreme_channels(&mut protection[first], a, first_median, mask);
+        protect_extreme_channels(&mut protection[second], b, second_median, mask);
+    };
+    for y in 0..height {
+        for x in 0..width - 1 {
+            let index = y * width + x;
+            pair(index, index + 1, horizontal_radius, protection);
+        }
+    }
+    for y in 0..height - 1 {
+        for x in 0..width {
+            let index = y * width + x;
+            pair(index, index + width, vertical_radius, protection);
+        }
+    }
+    for y in 0..height - 1 {
+        for x in 0..width - 1 {
+            let index = y * width + x;
+            pair(index, index + width + 1, diagonal_radius, protection);
+            pair(index + 1, index + width, diagonal_radius, protection);
+        }
+    }
+}
+
+/// Bit mask of the channels whose zero crossing between two texels is the median there.
+fn edge_between_texels(a: [f64; 4], b: [f64; 4]) -> u8 {
+    let mut mask = 0;
+    for (channel, flag) in [(0_usize, 1_u8), (1, 2), (2, 4)] {
+        let denominator = a[channel] - b[channel];
+        if denominator == 0.0 {
+            continue;
+        }
+        let t = (a[channel] - 0.5) / denominator;
+        if !(t > 0.0 && t < 1.0) {
+            continue;
+        }
+        let interpolated = [
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+        ];
+        if median3(interpolated) == interpolated[channel] {
+            mask |= flag;
+        }
+    }
+    mask
+}
+
+/// Protect a texel when one of its non-median channels carries the crossing in `mask`.
+fn protect_extreme_channels(stencil: &mut u8, texel: [f64; 4], median: f64, mask: u8) {
+    if (mask & 1 != 0 && texel[0] != median)
+        || (mask & 2 != 0 && texel[1] != median)
+        || (mask & 4 != 0 && texel[2] != median)
+    {
+        *stencil |= PROTECTED;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::{
+        math::Point,
+        outline::{BLUE, GREEN, RED},
+    };
+
+    /// The unit square mapped one font unit per texel, with four texels of padding.
+    fn unit_square_region() -> (Bounds, AtlasRegion, usize, usize) {
+        let bounds = Bounds::new(0.0, 0.0, 8.0, 8.0);
+        let region = AtlasRegion {
+            inner_width: 8,
+            inner_height: 8,
+            padding_x: 4,
+            padding_y: 4,
+        };
+        (bounds, region, 16, 16)
+    }
+
+    #[test]
+    fn colour_transition_protects_the_four_enveloping_texels() {
+        let (bounds, region, width, height) = unit_square_region();
+        // Two edges meeting at (4, 4) with no shared channel: a corner by msdfgen's definition.
+        let edges = [
+            Edge::Line {
+                points: [Point::new(0.0, 4.0), Point::new(4.0, 4.0)],
+                color: RED | GREEN,
+            },
+            Edge::Line {
+                points: [Point::new(4.0, 4.0), Point::new(4.0, 0.0)],
+                color: BLUE,
+            },
+        ];
+        let mut protection = Vec::new();
+        let contour = 0..2;
+        mark_protected_corners(
+            &edges,
+            core::slice::from_ref(&contour),
+            bounds,
+            region,
+            width,
+            height,
+            &mut protection,
+        )
+        .expect("protection");
+        // The contour wraps, so both junctions are colour transitions: the shared start at
+        // (0, 4) and the shared end at (4, 4). One font unit is one texel with four of padding,
+        // so those land at texel indices 3.5 and 7.5, each enveloped by a 2x2 block. Row 0 is
+        // the top, and y = 4 is the vertical centre, so both blocks straddle rows 7 and 8.
+        let marked: Vec<usize> = protection
+            .iter()
+            .enumerate()
+            .filter(|(_, flag)| **flag & PROTECTED != 0)
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            marked,
+            [
+                7 * width + 3,
+                7 * width + 4,
+                7 * width + 7,
+                7 * width + 8,
+                8 * width + 3,
+                8 * width + 4,
+                8 * width + 7,
+                8 * width + 8,
+            ]
+        );
+    }
+
+    #[test]
+    fn two_shared_channels_are_not_a_corner() {
+        let (bounds, region, width, height) = unit_square_region();
+        // msdfgen treats a transition as a corner when the two edges share at most one channel,
+        // so sharing exactly one is still a corner. Two shared channels is a smooth join.
+        let edges = [
+            Edge::Line {
+                points: [Point::new(0.0, 4.0), Point::new(4.0, 4.0)],
+                color: RED | GREEN,
+            },
+            Edge::Line {
+                points: [Point::new(4.0, 4.0), Point::new(4.0, 0.0)],
+                color: RED | GREEN,
+            },
+        ];
+        let mut protection = Vec::new();
+        let contour = 0..2;
+        mark_protected_corners(
+            &edges,
+            core::slice::from_ref(&contour),
+            bounds,
+            region,
+            width,
+            height,
+            &mut protection,
+        )
+        .expect("protection");
+        assert!(protection.iter().all(|flag| flag & PROTECTED == 0));
+    }
+
+    #[test]
+    fn a_protected_texel_is_never_rewritten_by_correction() {
+        // This pair is the inversion case `corrects_interpolation_inversions_without_changing_alpha`
+        // relies on, so the unprotected control is known to be rewritten. Protecting both texels
+        // must leave the field untouched: that is what keeps a real corner sharp.
+        let source = [255_u8, 230, 0, 17, 0, 230, 255, 23];
+
+        let mut unprotected = source.to_vec();
+        let rewritten = correct_interpolation_artifacts(
+            &mut unprotected,
+            2,
+            1,
+            0.05,
+            0.05,
+            &mut Vec::new(),
+            &[],
+        )
+        .expect("correction");
+
+        let mut protected = source.to_vec();
+        let untouched = correct_interpolation_artifacts(
+            &mut protected,
+            2,
+            1,
+            0.05,
+            0.05,
+            &mut Vec::new(),
+            &[PROTECTED; 2],
+        )
+        .expect("correction");
+
+        assert_eq!(
+            rewritten, 2,
+            "the control must actually correct, or this proves nothing"
+        );
+        assert_ne!(unprotected.as_slice(), source.as_slice());
+        assert_eq!(untouched, 0);
+        assert_eq!(protected.as_slice(), source.as_slice());
+    }
 
     #[test]
     fn corrects_interpolation_inversions_without_changing_alpha() {
         let mut rgba = vec![255, 230, 0, 17, 0, 230, 255, 23];
         let alpha = [rgba[3], rgba[7]];
         let corrected =
-            correct_interpolation_artifacts(&mut rgba, 2, 1, 0.05, 0.05, &mut Vec::new())
+            correct_interpolation_artifacts(&mut rgba, 2, 1, 0.05, 0.05, &mut Vec::new(), &[])
                 .expect("correction");
         assert_eq!(corrected, 2);
         assert_eq!(&rgba[..3], &[230, 230, 230]);
@@ -531,7 +742,7 @@ mod tests {
         let mut rgba = vec![0, 0, 0, 0, 255, 255, 255, 255];
         let expected = rgba.clone();
         let corrected =
-            correct_interpolation_artifacts(&mut rgba, 2, 1, 0.05, 0.05, &mut Vec::new())
+            correct_interpolation_artifacts(&mut rgba, 2, 1, 0.05, 0.05, &mut Vec::new(), &[])
                 .expect("correction");
         assert_eq!(corrected, 0);
         assert_eq!(rgba, expected);
@@ -564,38 +775,14 @@ mod tests {
         let mut wide_span = inversion;
 
         let narrow_corrections =
-            correct_interpolation_artifacts(&mut narrow_span, 2, 1, 0.7, 0.7, &mut Vec::new())
+            correct_interpolation_artifacts(&mut narrow_span, 2, 1, 0.7, 0.7, &mut Vec::new(), &[])
                 .expect("narrow correction");
         let wide_corrections =
-            correct_interpolation_artifacts(&mut wide_span, 2, 1, 0.8, 0.8, &mut Vec::new())
+            correct_interpolation_artifacts(&mut wide_span, 2, 1, 0.8, 0.8, &mut Vec::new(), &[])
                 .expect("wide correction");
 
         assert_eq!(narrow_corrections, 2);
         assert_eq!(wide_corrections, 0);
         assert_eq!(wide_span, vec![255, 230, 0, 17, 0, 230, 255, 23]);
-    }
-
-    #[test]
-    fn uses_true_distance_alpha_to_remove_residual_bilinear_holes() {
-        let mut rgba = vec![
-            110, 110, 107, 110, 130, 130, 161, 130, 130, 140, 130, 130, 155, 155, 157, 155,
-        ];
-        let alpha = [rgba[3], rgba[7], rgba[11], rgba[15]];
-        let corrected =
-            correct_interpolation_artifacts(&mut rgba, 2, 2, 0.125, 0.125, &mut Vec::new())
-                .expect("correction");
-        assert!(corrected > 0);
-        assert_eq!([rgba[3], rgba[7], rgba[11], rgba[15]], alpha);
-        for pixel in rgba.chunks_exact(4) {
-            if pixel[0] == pixel[1] && pixel[1] == pixel[2] {
-                assert_eq!(pixel[0], pixel[3]);
-            }
-        }
-        assert_eq!(mark_alpha_disagreements(&rgba, 2, 2, &mut [0; 4]), 0);
-        assert_eq!(
-            correct_interpolation_artifacts(&mut rgba, 2, 2, 0.125, 0.125, &mut Vec::new(),)
-                .expect("idempotent correction"),
-            0,
-        );
     }
 }
