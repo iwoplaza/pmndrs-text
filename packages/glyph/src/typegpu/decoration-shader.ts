@@ -23,14 +23,14 @@ export function decorationPaint(packed: d.v2u): d.v4f {
   const byte = 1 / 255;
   const encoded = d.vec3f(
     d.f32(packed.x & d.u32(0xff)) * byte,
-    d.f32((packed.x >> d.u32(8)) & d.u32(0xff)) * byte,
-    d.f32((packed.x >> d.u32(16)) & d.u32(0xff)) * byte,
+    d.f32((packed.x >>> d.u32(8)) & d.u32(0xff)) * byte,
+    d.f32((packed.x >>> d.u32(16)) & d.u32(0xff)) * byte,
   );
   return d.vec4f(
     srgbChannelToLinear(encoded.x),
     srgbChannelToLinear(encoded.y),
     srgbChannelToLinear(encoded.z),
-    d.f32((packed.x >> d.u32(24)) & d.u32(0xff)) * byte,
+    d.f32((packed.x >>> d.u32(24)) & d.u32(0xff)) * byte,
   );
 }
 
