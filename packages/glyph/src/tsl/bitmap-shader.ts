@@ -1,16 +1,14 @@
 import * as t3 from '@typegpu/three';
-import tgpu, { d, std } from 'typegpu';
+import { d } from 'typegpu';
 import * as TSL from 'three/tsl';
 import type { Node, Texture } from 'three/webgpu';
 
 import {
   bitmapAtlasUv,
-  bitmapCoverageSlot,
-  bitmapCoverageOpacity,
+  bitmapPaintCoverageOpacity,
   bitmapPageTexelCoordinate,
   bitmapQuadPosition,
   snapClipAxis,
-  TypeGpuBitmapFragmentInput,
 } from '../typegpu/bitmap-shader.js';
 
 const modelViewProjection = TSL.modelViewProjection as Node<'vec4'>;
@@ -59,21 +57,22 @@ export function bitmapShader(
     'use gpu';
     return bitmapAtlasUv(t3.fromTSL(instance.uvOrigin, d.vec2f).$, t3.fromTSL(instance.uvSize, d.vec2f).$, t3.uv().$);
   }) as Node<'vec2'>;
-  const page = t3.fromTSL(resources.page, d.texture2dArray(d.f32));
-  const sampleCoverage = (coordinate: d.v2f, layer: number): number => {
+  const pageDimensions = TSL.textureSize(TSL.textureLoad(resources.page), TSL.int(0));
+  const texelCoordinate = t3.toTSL(() => {
     'use gpu';
-    const dimensions = std.textureDimensions(page.$, 0);
-    return std.textureLoad(page.$, bitmapPageTexelCoordinate(dimensions, coordinate), layer, 0).x;
-  };
-  const fragment = tgpu.fn(bitmapCoverageOpacity).with(bitmapCoverageSlot, sampleCoverage);
+    return bitmapPageTexelCoordinate(
+      t3.fromTSL(pageDimensions, d.vec2u).$,
+      t3.fromTSL(atlasUv, d.vec2f).$,
+    );
+  }) as Node<'uvec2'>;
+  const coverage = TSL.textureLoad(resources.page, TSL.ivec2(texelCoordinate), TSL.int(0)).depth(
+    TSL.int(instance.pageIndex),
+  ).r;
   const coverageOpacity = t3.toTSL(() => {
     'use gpu';
-    return fragment(
-      TypeGpuBitmapFragmentInput({
-        atlasUv: t3.fromTSL(atlasUv, d.vec2f).$,
-        color: t3.fromTSL(instance.color, d.vec4f).$,
-        pageLayer: t3.fromTSL(instance.pageIndex, d.u32).$,
-      }),
+    return bitmapPaintCoverageOpacity(
+      t3.fromTSL(coverage, d.f32).$,
+      t3.fromTSL(instance.color, d.vec4f).$,
     );
   }) as Node<'vec2'>;
 

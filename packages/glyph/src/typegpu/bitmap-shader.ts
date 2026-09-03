@@ -233,6 +233,14 @@ export function bitmapPaint(coverage: number, color: d.v4f): TypeGpuBitmapFragme
   });
 }
 
+/** Compact Bitmap paint result for node-system adapters that already resolved coverage at their resource boundary. */
+export function bitmapPaintCoverageOpacity(coverage: number, color: d.v4f): d.v2f {
+  'use gpu';
+
+  const output = bitmapPaint(coverage, color);
+  return d.vec2f(output.coverage, output.opacity);
+}
+
 /**
  * Coverage of one atlas coordinate: the coordinate is clamped into the page, scaled onto the texel grid, floored, and
  * clamped against the bounds — the same nearest-texel fetch the `/tsl` realization compiles to for data textures.

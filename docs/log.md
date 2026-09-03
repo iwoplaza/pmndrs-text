@@ -1,5 +1,9 @@
 # pmndrs/glyph documentation update log
 
+## 2026-09-04
+
+- **Lowered Bitmap array loads through Three's backend boundary** — The Three adapter now delegates its physical texel load to the installed TSL `textureLoad(...).depth(...)` node. WebGL therefore receives `texelFetch` with an `ivec3(x, y, layer)` coordinate and explicit LOD, while WebGPU retains its native array-texture load. Canonical TypeGPU helpers still own bounded coordinate resolution and paint.
+
 ## 2026-09-03
 
 - **Kept textures out of GLSL function parameters** — Bitmap's Three adapter now captures its array texture at the resource boundary and shares only the canonical bounded-texel coordinate helper with direct TypeGPU. Its emitted GLSL calls `texelFetch` without declaring TypeGPU's texture schema syntax as a function parameter, while WGSL retains the public resource-polymorphic coverage helper.

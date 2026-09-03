@@ -12,6 +12,7 @@ export {
   bitmapFragment,
   bitmapPageAccessor,
   bitmapPaint,
+  bitmapPaintCoverageOpacity,
   bitmapPageCoverage,
   bitmapPageTexelCoordinate,
   bitmapQuadPosition,

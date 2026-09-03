@@ -32,10 +32,11 @@ test('the Bitmap Three adapter captures its texture instead of passing it to a G
     { page },
   );
   withMaterial(output, (mesh) => {
-    const { fragment } = compileNodeMaterialBackends(mesh).webgl;
+    const { fragment } = compileNodeMaterialBackends(mesh).webgl2;
     assert.doesNotMatch(fragment, /texture_\w+</);
     assert.doesNotMatch(fragment, /bitmapPageCoverage\s*\(/);
-    assert.match(fragment, /texelFetch\s*\(/);
+    assert.match(fragment, /texelFetch\s*\([^,]+,\s*ivec3\s*\([^)]+\),\s*int\s*\(\s*0(?:\.0)?\s*\)\s*\)/);
+    assert.doesNotMatch(fragment, /texelFetch\s*\([^,]+,\s*uvec2/);
   });
   page.dispose();
 });
