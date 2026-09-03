@@ -57,7 +57,10 @@ export function bitmapShader(
     'use gpu';
     return bitmapAtlasUv(t3.fromTSL(instance.uvOrigin, d.vec2f).$, t3.fromTSL(instance.uvSize, d.vec2f).$, t3.uv().$);
   }) as Node<'vec2'>;
-  const pageDimensions = TSL.textureSize(TSL.textureLoad(resources.page), TSL.int(0));
+  // The installed Three declaration erases TextureSizeNode's vector width; array textures report ivec3.
+  const reportedDimensions = TSL.textureSize(TSL.textureLoad(resources.page), TSL.int(0)) as unknown as Node<'ivec3'>;
+  const arrayDimensions = TSL.uvec3(reportedDimensions);
+  const pageDimensions = TSL.uvec2(arrayDimensions.x, arrayDimensions.y);
   const texelCoordinate = t3.toTSL(() => {
     'use gpu';
     return bitmapPageTexelCoordinate(
@@ -65,9 +68,8 @@ export function bitmapShader(
       t3.fromTSL(atlasUv, d.vec2f).$,
     );
   }) as Node<'uvec2'>;
-  const coverage = TSL.textureLoad(resources.page, TSL.ivec2(texelCoordinate), TSL.int(0)).depth(
-    TSL.int(instance.pageIndex),
-  ).r;
+  const texelIndex = TSL.ivec2(TSL.int(texelCoordinate.x), TSL.int(texelCoordinate.y));
+  const coverage = TSL.textureLoad(resources.page, texelIndex, TSL.int(0)).depth(TSL.int(instance.pageIndex)).r;
   const coverageOpacity = t3.toTSL(() => {
     'use gpu';
     return bitmapPaintCoverageOpacity(

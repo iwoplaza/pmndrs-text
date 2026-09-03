@@ -2,6 +2,8 @@
 
 ## 2026-09-04
 
+- **Made Bitmap array dimensions and texel indices explicit at the TSL bridge** — Three reports an array texture's size as signed `(width, height, layers)`, while the canonical TypeGPU bounds helper consumes an unsigned 2D extent and returns an unsigned coordinate. The adapter now selects XY and converts each component on both sides, preventing invalid `ivec3 → uvec2` and `uvec2 → ivec2` assignments in emitted GLSL.
+
 - **Lowered Bitmap array loads through Three's backend boundary** — The Three adapter now delegates its physical texel load to the installed TSL `textureLoad(...).depth(...)` node. WebGL therefore receives `texelFetch` with an `ivec3(x, y, layer)` coordinate and explicit LOD, while WebGPU retains its native array-texture load. Canonical TypeGPU helpers still own bounded coordinate resolution and paint.
 
 ## 2026-09-03

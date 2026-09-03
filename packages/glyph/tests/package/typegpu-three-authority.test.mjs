@@ -37,6 +37,8 @@ test('the Bitmap Three adapter captures its texture instead of passing it to a G
     assert.doesNotMatch(fragment, /bitmapPageCoverage\s*\(/);
     assert.match(fragment, /texelFetch\s*\([^,]+,\s*ivec3\s*\([^)]+\),\s*int\s*\(\s*0(?:\.0)?\s*\)\s*\)/);
     assert.doesNotMatch(fragment, /texelFetch\s*\([^,]+,\s*uvec2/);
+    assert.doesNotMatch(fragment, /uvec2\s+\w+\s*=\s*textureSize\s*\(/);
+    assert.doesNotMatch(fragment, /ivec2\s+\w+\s*=\s*item_\w*\s*\(\s*\)/);
   });
   page.dispose();
 });
