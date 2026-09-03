@@ -135,6 +135,9 @@ importers:
       tailwindcss:
         specifier: 4.2.1
         version: 4.2.1
+      unplugin-typegpu:
+        specifier: 0.12.2
+        version: 0.12.2(rolldown@1.1.5)(typegpu@0.12.3)(vite@8.1.5(@types/node@24.13.3)(jiti@2.7.0))
       vite:
         specifier: 8.1.5
         version: 8.1.5(@types/node@24.13.3)(jiti@2.7.0)
@@ -5629,7 +5632,7 @@ snapshots:
 
   tinyest-for-wgsl@0.4.0:
     dependencies:
-      tinyest: 0.3.2
+      tinyest: 0.3.3
 
   tinyest@0.3.2: {}
 
@@ -5734,7 +5737,7 @@ snapshots:
       magic-string: 0.30.21
       pathe: 2.0.3
       picomatch: 4.0.5
-      tinyest: 0.3.2
+      tinyest: 0.3.3
       tinyest-for-wgsl: 0.4.0
       typegpu: 0.12.3
       unplugin: 3.3.0(rolldown@1.1.5)(vite@8.1.5(@types/node@24.13.3)(jiti@2.7.0))
