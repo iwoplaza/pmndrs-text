@@ -5,7 +5,7 @@ import * as d from 'typegpu/data';
 import * as TSL from 'three/tsl';
 import * as THREE from 'three/webgpu';
 
-import { decorationShader, msdfShader } from '../../dist/tsl.js';
+import { bitmapShader, decorationShader, msdfShader } from '../../dist/tsl.js';
 import { msdfPosition } from '../../dist/typegpu/msdf-shader.js';
 import { compileNodeMaterialBackends } from '../support/node-material-shaders.mjs';
 
@@ -15,6 +15,29 @@ test('MTSDF placement converts downward paragraph y to upward Three y', () => {
     -32.75,
     0,
   ]);
+});
+
+test('the Bitmap Three adapter captures its texture instead of passing it to a GLSL function', () => {
+  const page = new THREE.DataArrayTexture(new Uint8Array(4 * 4), 4, 4, 1);
+  page.format = THREE.RedFormat;
+  const output = bitmapShader(
+    {
+      origin: TSL.vec2(0),
+      size: TSL.vec2(1),
+      uvOrigin: TSL.vec2(0),
+      uvSize: TSL.vec2(1),
+      color: TSL.vec4(1),
+      pageIndex: TSL.uint(0),
+    },
+    { page },
+  );
+  withMaterial(output, (mesh) => {
+    const { fragment } = compileNodeMaterialBackends(mesh).webgl;
+    assert.doesNotMatch(fragment, /texture_\w+</);
+    assert.doesNotMatch(fragment, /bitmapPageCoverage\s*\(/);
+    assert.match(fragment, /texelFetch\s*\(/);
+  });
+  page.dispose();
 });
 
 test('the MTSDF Three adapter compiles the canonical TypeGPU functions on both backends', () => {

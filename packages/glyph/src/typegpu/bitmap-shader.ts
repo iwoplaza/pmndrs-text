@@ -241,14 +241,20 @@ export function bitmapPageCoverage(page: d.texture2dArray<d.F32>, atlasUv: d.v2f
   'use gpu';
 
   const dimensions = std.textureDimensions(page, 0);
+  return std.textureLoad(page, bitmapPageTexelCoordinate(dimensions, atlasUv), pageLayer, 0).x;
+}
+
+/** Resolve a normalized atlas coordinate to a bounded texel without carrying a texture across a function boundary. */
+export function bitmapPageTexelCoordinate(dimensions: d.v2u, atlasUv: d.v2f): d.v2u {
+  'use gpu';
+
   const clampedUv = d.vec2f(std.clamp(atlasUv.x, 0, 1), std.clamp(atlasUv.y, 0, 1));
   const scaledCoord = d.vec2f(clampedUv.x * d.f32(dimensions.x), clampedUv.y * d.f32(dimensions.y));
   const flooredCoord = d.vec2f(std.floor(scaledCoord.x), std.floor(scaledCoord.y));
-  const boundedCoord = d.vec2u(
+  return d.vec2u(
     d.u32(std.clamp(flooredCoord.x, 0, d.f32(dimensions.x - 1))),
     d.u32(std.clamp(flooredCoord.y, 0, d.f32(dimensions.y - 1))),
   );
-  return std.textureLoad(page, boundedCoord, pageLayer, 0).x;
 }
 
 /** Resource-polymorphic coverage lookup used by the canonical fragment stage. */

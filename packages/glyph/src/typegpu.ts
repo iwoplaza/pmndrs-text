@@ -13,6 +13,7 @@ export {
   bitmapPageAccessor,
   bitmapPaint,
   bitmapPageCoverage,
+  bitmapPageTexelCoordinate,
   bitmapQuadPosition,
   bitmapVertex,
   bitmapVertexSnapped,

@@ -2,6 +2,8 @@
 
 ## 2026-09-03
 
+- **Kept textures out of GLSL function parameters** — Bitmap's Three adapter now captures its array texture at the resource boundary and shares only the canonical bounded-texel coordinate helper with direct TypeGPU. Its emitted GLSL calls `texelFetch` without declaring TypeGPU's texture schema syntax as a function parameter, while WGSL retains the public resource-polymorphic coverage helper.
+
 - **Restored MTSDF paragraph orientation** — The canonical TypeGPU MTSDF vertex stage now converts the engine's downward paragraph Y into Three's upward Y, matching Bitmap, Slug, decoration, and the previous native TSL realization. A numeric regression pins the asymmetric origin and quad offset so a whole-paragraph mirror cannot pass unnoticed.
 
 ## 2026-08-30

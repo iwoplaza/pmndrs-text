@@ -1,5 +1,5 @@
 import * as t3 from '@typegpu/three';
-import tgpu, { d } from 'typegpu';
+import tgpu, { d, std } from 'typegpu';
 import * as TSL from 'three/tsl';
 import type { Node, Texture } from 'three/webgpu';
 
@@ -7,7 +7,7 @@ import {
   bitmapAtlasUv,
   bitmapCoverageSlot,
   bitmapCoverageOpacity,
-  bitmapPageCoverage,
+  bitmapPageTexelCoordinate,
   bitmapQuadPosition,
   snapClipAxis,
   TypeGpuBitmapFragmentInput,
@@ -62,7 +62,8 @@ export function bitmapShader(
   const page = t3.fromTSL(resources.page, d.texture2dArray(d.f32));
   const sampleCoverage = (coordinate: d.v2f, layer: number): number => {
     'use gpu';
-    return bitmapPageCoverageForThree(page.$, coordinate, layer);
+    const dimensions = std.textureDimensions(page.$, 0);
+    return std.textureLoad(page.$, bitmapPageTexelCoordinate(dimensions, coordinate), layer, 0).x;
   };
   const fragment = tgpu.fn(bitmapCoverageOpacity).with(bitmapCoverageSlot, sampleCoverage);
   const coverageOpacity = t3.toTSL(() => {
@@ -84,12 +85,6 @@ export function bitmapShader(
     color: instance.color.rgb,
     opacity: coverageOpacity.y,
   };
-}
-
-function bitmapPageCoverageForThree(page: d.texture2dArray<d.F32>, atlasUv: d.v2f, pageLayer: number): number {
-  'use gpu';
-  // Keep the algorithm in the public TypeGPU helper; this wrapper only supplies Three's texture resource.
-  return bitmapPageCoverage(page, atlasUv, pageLayer);
 }
 
 function pixelSnappedClipPosition(): Node<'vec4'> {
