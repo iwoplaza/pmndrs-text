@@ -5,7 +5,7 @@ description: Implements portable font loading, retained Rust shaping and layout,
 resource: ../../packages/glyph
 workspace_package: '@pmndrs/glyph'
 documentation_type: reference
-source_digest: 'sha256:49db333ca96af55ffbeb4691a79542f0b98a263bc116858ffb322315b1afe306'
+source_digest: 'sha256:f96984a0e01fadf9e86f163250ffb63dfa0d2f0b8b8a6bfa89a0692755bd47fe'
 tags: [package, public-api, rust, wasm, threejs, typography]
 sources:
   - id: manifest
@@ -126,7 +126,7 @@ that turns those payloads into textures, buffers, and geometry and leases them a
 | Subpath                      | Purpose                                                                                                                                   |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `@pmndrs/glyph`              | Font/raster contracts, loading, fallback stacks, formatting helpers, paragraph inputs, layout-query values, and portable bakers.          |
-| `@pmndrs/glyph/three`        | Three `FontLoader`, `Text`, `TextGroup`, material factories, policy registration, and TypeGPU-backed TSL shader adapters.                  |
+| `@pmndrs/glyph/three`        | Three `FontLoader`, `Text`, `TextGroup`, material factories, policy registration, and TypeGPU-backed TSL shader adapters.                 |
 | `@pmndrs/glyph/three/bitmap` | Compatibility alias re-exporting the renderer-neutral Bitmap raster module.                                                               |
 | `@pmndrs/glyph/three/msdf`   | Compatibility alias re-exporting the renderer-neutral MSDF raster module.                                                                 |
 | `@pmndrs/glyph/three/slug`   | Compatibility alias re-exporting the renderer-neutral Slug raster module.                                                                 |
@@ -138,7 +138,7 @@ that turns those payloads into textures, buffers, and geometry and leases them a
 | `@pmndrs/glyph/runtime-bake` | Explicit browser Worker host for optional runtime baking.                                                                                 |
 | `@pmndrs/glyph/raster/*`     | Renderer-neutral Bitmap, MSDF, and Slug decoding and raster-technique contracts.                                                          |
 | `@pmndrs/glyph/core`         | Renderer-neutral Glyph engine and backend, render planners, plan/layout-query views, technique schemas, policy DSL, and binding compiler. |
-| `@pmndrs/glyph/tsl`          | TSL adapters over the canonical TypeGPU technique shaders; no scene integration.                                                         |
+| `@pmndrs/glyph/tsl`          | TSL adapters over the canonical TypeGPU technique shaders; no scene integration.                                                          |
 | `@pmndrs/glyph/typegpu`      | Canonical TypeGPU algorithms, schemas, slots, and accessors for every first-party technique; no scene integration or engine.              |
 | `@pmndrs/glyph/bakers/*`     | Optional portable raster bakers.                                                                                                          |
 

@@ -2,7 +2,7 @@
 
 ## 2026-09-04
 
-- **Made Bitmap array dimensions and texel indices explicit at the TSL bridge** — Three reports an array texture's size as signed `(width, height, layers)`, while the canonical TypeGPU bounds helper consumes an unsigned 2D extent and returns an unsigned coordinate. The adapter now selects XY and converts each component on both sides, preventing invalid `ivec3 → uvec2` and `uvec2 → ivec2` assignments in emitted GLSL.
+- **Normalized Bitmap texture dimensions across shader backends** — GLSL reports an array texture's size as signed `(width, height, layers)`, while WGSL reports only an unsigned `(width, height)`. The shared bounds helper now accepts a two-component float extent, so Three can discard GLSL's layer count and normalize WGSL's unsigned result before the TypeGPU bridge; each resource boundary converts the bounded coordinate to the integer type its texel load requires.
 
 - **Lowered Bitmap array loads through Three's backend boundary** — The Three adapter now delegates its physical texel load to the installed TSL `textureLoad(...).depth(...)` node. WebGL therefore receives `texelFetch` with an `ivec3(x, y, layer)` coordinate and explicit LOD, while WebGPU retains its native array-texture load. Canonical TypeGPU helpers still own bounded coordinate resolution and paint.
 
@@ -195,6 +195,7 @@
   and the renderer-neutral Paragraph context now follows `TextRuntime` disposal just as the Three coordinator already
   did. The example engine no longer asks callers to invent stack or session IDs it can allocate itself; stack
   registration returns the one handle text options genuinely reference.
+
 ## 2026-08-25
 
 - **Pipelined GPU submission is measured and size-priced** — Removing the accidental per-frame queue-completion fence

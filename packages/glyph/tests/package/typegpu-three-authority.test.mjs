@@ -10,11 +10,10 @@ import { msdfPosition } from '../../dist/typegpu/msdf-shader.js';
 import { compileNodeMaterialBackends } from '../support/node-material-shaders.mjs';
 
 test('MTSDF placement converts downward paragraph y to upward Three y', () => {
-  assert.deepEqual(JSON.parse(JSON.stringify(msdfPosition(d.vec2f(13.5, 7.25), d.vec2f(21, 34), d.vec3f(0.25, 0.75, 0)))), [
-    18.75,
-    -32.75,
-    0,
-  ]);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(msdfPosition(d.vec2f(13.5, 7.25), d.vec2f(21, 34), d.vec3f(0.25, 0.75, 0)))),
+    [18.75, -32.75, 0],
+  );
 });
 
 test('the Bitmap Three adapter captures its texture instead of passing it to a GLSL function', () => {
@@ -32,13 +31,15 @@ test('the Bitmap Three adapter captures its texture instead of passing it to a G
     { page },
   );
   withMaterial(output, (mesh) => {
-    const { fragment } = compileNodeMaterialBackends(mesh).webgl2;
+    const backends = compileNodeMaterialBackends(mesh);
+    const { fragment } = backends.webgl2;
     assert.doesNotMatch(fragment, /texture_\w+</);
     assert.doesNotMatch(fragment, /bitmapPageCoverage\s*\(/);
     assert.match(fragment, /texelFetch\s*\([^,]+,\s*ivec3\s*\([^)]+\),\s*int\s*\(\s*0(?:\.0)?\s*\)\s*\)/);
     assert.doesNotMatch(fragment, /texelFetch\s*\([^,]+,\s*uvec2/);
     assert.doesNotMatch(fragment, /uvec2\s+\w+\s*=\s*textureSize\s*\(/);
     assert.doesNotMatch(fragment, /ivec2\s+\w+\s*=\s*item_\w*\s*\(\s*\)/);
+    assert.doesNotMatch(backends.webgpu.fragment, /vec3<u32>\s*\(\s*vec2<f32>\s*\(\s*textureDimensions/);
   });
   page.dispose();
 });

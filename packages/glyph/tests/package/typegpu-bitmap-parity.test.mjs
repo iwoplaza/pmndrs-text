@@ -84,16 +84,19 @@ test('quad placement matches the TSL realization, including the y flip', () => {
 
 test('coverage is an exact clamped texel fetch on both sides', () => {
   const tslFetch = flatten(tsl.plain.fragment);
-  assert.match(tslFetch, /fnbitmapPageCoverage\(/);
-  assert.match(tslFetch, /textureDimensions\(page,0\)/);
+  assert.match(tslFetch, /fnbitmapPageTexelCoordinate\(/);
+  assert.match(tslFetch, /textureDimensions\(/);
   assert.match(tslFetch, /floor\(/);
   assert.match(tslFetch, /clamp\(flooredCoord/);
-  assert.match(tslFetch, /textureLoad\(page,boundedCoord,pageLayer,0\)\.x/);
+  assert.match(tslFetch, /textureLoad\(/);
 
   const gpuFetch = flatten(gpu.fragment);
   assert.match(gpuFetch, /textureDimensions\(page,0\)/);
   assert.match(gpuFetch, /floor\(/);
-  assert.match(gpuFetch, /textureLoad\(page,boundedCoord,pageLayer,0\)\.x/);
+  assert.match(
+    gpuFetch,
+    /textureLoad\(page,vec2u\(u32\(texelCoordinate\.x\),u32\(texelCoordinate\.y\)\),pageLayer,0\)\.x/,
+  );
 });
 
 test('paint composition scales alpha by coverage identically', () => {
