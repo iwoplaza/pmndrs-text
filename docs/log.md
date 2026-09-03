@@ -1,5 +1,9 @@
 # pmndrs/glyph documentation update log
 
+## 2026-09-03
+
+- **Restored MTSDF paragraph orientation** — The canonical TypeGPU MTSDF vertex stage now converts the engine's downward paragraph Y into Three's upward Y, matching Bitmap, Slug, decoration, and the previous native TSL realization. A numeric regression pins the asymmetric origin and quad offset so a whole-paragraph mirror cannot pass unnoticed.
+
 ## 2026-08-30
 
 - **TypeGPU is the shader authority** — Moved the remaining Slug shader modules under `/typegpu`, added canonical TypeGPU Bitmap, MTSDF, and decoration stages, and replaced native TSL formulas with `@typegpu/three` adapters. Resource operations are specialized through slots and schema-aware accessors, so direct TypeGPU hosts, procedural consumers, raw WebGPU-backed resources, and Three data textures share the same algorithms. Device-free WGSL/GLSL tests cover every first-party adapter, and direct TypeGPU resolution tests prove texture-free function sources.

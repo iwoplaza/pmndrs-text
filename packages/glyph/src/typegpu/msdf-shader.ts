@@ -142,10 +142,10 @@ export type MsdfSampleSource = (atlasCoordinate: d.v2f, pageIndex: number) => d.
 /** A host supplies texture sampling, a procedural field, or any other semantic sample source. */
 export const msdfSampleSlot: TgpuSlot<MsdfSampleSource> = tgpu.slot<MsdfSampleSource>();
 
-/** Position one unit-quad vertex in the paragraph plane. */
+/** Position one unit-quad vertex in paragraph space, converting the engine's downward y to Three's upward y. */
 export function msdfPosition(origin: d.v2f, size: d.v2f, unitPosition: d.v3f): d.v3f {
   'use gpu';
-  return d.vec3f(origin.add(unitPosition.xy.mul(size)), 0);
+  return d.vec3f(origin.x + unitPosition.x * size.x, -(origin.y + unitPosition.y * size.y), 0);
 }
 
 export function msdfAtlasCoordinate(uvOrigin: d.v2f, uvSize: d.v2f, unitUv: d.v2f): d.v2f {

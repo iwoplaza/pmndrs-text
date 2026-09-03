@@ -1,11 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import * as d from 'typegpu/data';
 import * as TSL from 'three/tsl';
 import * as THREE from 'three/webgpu';
 
 import { decorationShader, msdfShader } from '../../dist/tsl.js';
+import { msdfPosition } from '../../dist/typegpu/msdf-shader.js';
 import { compileNodeMaterialBackends } from '../support/node-material-shaders.mjs';
+
+test('MTSDF placement converts downward paragraph y to upward Three y', () => {
+  assert.deepEqual(JSON.parse(JSON.stringify(msdfPosition(d.vec2f(13.5, 7.25), d.vec2f(21, 34), d.vec3f(0.25, 0.75, 0)))), [
+    18.75,
+    -32.75,
+    0,
+  ]);
+});
 
 test('the MTSDF Three adapter compiles the canonical TypeGPU functions on both backends', () => {
   const atlas = new THREE.DataArrayTexture(new Uint8Array(4 * 4 * 4), 4, 4, 1);
