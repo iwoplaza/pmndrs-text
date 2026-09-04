@@ -7,10 +7,10 @@ use crate::{FontGlyphExtents, FontMetrics, bidi::BidiAnalysis};
 use super::{
     EngineError, FrameFault,
     cluster_state::{CLUSTER_HARD_BREAK, CLUSTER_SPACE, ClusterArena},
+    codec_gather::{LayoutGlyph, PAINT_LAYER_GLYPH},
     flow_composition::{FlowFragment, FlowLayoutArena, FlowLine},
     frame::{ALIGN_CENTER, ALIGN_END, ALIGN_JUSTIFY, ALIGN_START},
     identity_index::{IdentityIndex, IdentityIndexError},
-    policy_gather::LayoutGlyph,
     shaping_state::{BoundaryShape, BoundaryShapeArena, ShapingRun},
     style_state::{ResolvedStyle, StyleSegment},
 };
@@ -105,6 +105,7 @@ pub struct DecorationRecord {
     pub flags: u32,
     pub style: u8,
     pub color: u32,
+    pub material_id: u32,
     pub inline_start: f32,
     pub inline_extent: f32,
     pub block_start: f32,
@@ -141,6 +142,7 @@ fn same_decoration_group(left: &ResolvedStyle, right: &ResolvedStyle) -> bool {
     left.decoration_flags == right.decoration_flags
         && left.decoration_rgba == right.decoration_rgba
         && left.decoration_style == right.decoration_style
+        && left.material_id == right.material_id
         && left.decoration_thickness.to_bits() == right.decoration_thickness.to_bits()
         && left.decoration_offset.to_bits() == right.decoration_offset.to_bits()
         && left.decoration_font_size.to_bits() == right.decoration_font_size.to_bits()
@@ -738,7 +740,7 @@ impl PositionedGlyphArena {
                             glyph_id,
                             material_id: style.material_id,
                             clip_id: line.clip_id,
-                            depth_key: 0,
+                            depth_key: PAINT_LAYER_GLYPH,
                             font_size: style.font_size,
                             raster_pixel_ratio: style.raster_pixel_ratio,
                             inline_start: finite_f32(ink.inline_start)?,
@@ -878,6 +880,7 @@ impl PositionedGlyphArena {
                 flags: flag,
                 style: style.decoration_style,
                 color: style.decoration_rgba,
+                material_id: style.material_id,
                 inline_start,
                 inline_extent,
                 block_start: finite_f32(block_position)?,
@@ -1114,7 +1117,7 @@ impl PositionedGlyphArena {
                         glyph_id,
                         material_id: style.material_id,
                         clip_id: line.clip_id,
-                        depth_key: 0,
+                        depth_key: PAINT_LAYER_GLYPH,
                         font_size: style.font_size,
                         raster_pixel_ratio: style.raster_pixel_ratio,
                         inline_start: finite_f32(ink.inline_start)?,
@@ -1962,6 +1965,59 @@ mod tests {
     use super::super::shaping_state::ShapeArena;
     use super::*;
 
+    fn assert_layout_plan_producer_invariants(arena: &PositionedGlyphArena) {
+        let glyph_count = arena.glyphs.len();
+        assert_eq!(arena.semantic_change_masks.len(), glyph_count);
+        for (index, field) in arena.semantic_f32.iter().enumerate() {
+            assert!(
+                field.len() == glyph_count
+                    || (index >= SEMANTIC_F32_BASE_FIELD_COUNT && field.is_empty()),
+                "f32 lane {index} has {} rows for {glyph_count} glyphs",
+                field.len(),
+            );
+            assert!(field.iter().all(|value| value.is_finite()));
+        }
+        for (index, field) in arena.semantic_u32.iter().enumerate() {
+            assert!(
+                field.len() == glyph_count
+                    || (index >= SEMANTIC_U32_BASE_FIELD_COUNT && field.is_empty()),
+                "u32 lane {index} has {} rows for {glyph_count} glyphs",
+                field.len(),
+            );
+        }
+
+        let mut stable_ids = arena
+            .semantic_glyphs
+            .iter()
+            .map(|glyph| glyph.stable_id)
+            .collect::<Vec<_>>();
+        assert!(stable_ids.iter().all(|&stable_id| stable_id != 0));
+        stable_ids.sort_unstable();
+        assert!(stable_ids.windows(2).all(|pair| pair[0] != pair[1]));
+
+        for glyph in &arena.glyphs {
+            let semantic = &arena.semantic_glyphs[glyph.semantic_glyph_index as usize];
+            assert_eq!(semantic.stable_id, glyph.stable_id);
+            assert_ne!(glyph.content_revision, 0);
+            assert_ne!(glyph.binding_handle, 0);
+            assert_ne!(glyph.font_handle, 0);
+            assert!(glyph.inline_start.is_finite());
+            assert!(glyph.block_start.is_finite());
+            assert!(glyph.inline_extent.is_finite() && glyph.inline_extent >= 0.0);
+            assert!(glyph.block_extent.is_finite() && glyph.block_extent >= 0.0);
+            assert!((glyph.inline_start + glyph.inline_extent).is_finite());
+            assert!((glyph.block_start + glyph.block_extent).is_finite());
+        }
+        for decoration in &arena.decorations {
+            assert!(decoration.inline_start.is_finite());
+            assert!(decoration.block_start.is_finite());
+            assert!(decoration.inline_extent.is_finite() && decoration.inline_extent >= 0.0);
+            assert!(decoration.block_extent.is_finite() && decoration.block_extent >= 0.0);
+            assert!((decoration.inline_start + decoration.inline_extent).is_finite());
+            assert!((decoration.block_start + decoration.block_extent).is_finite());
+        }
+    }
+
     /// A line that ends in a space keeps that space but does not charge it to `advance`.
     /// In LTR it is laid last, past the end, and costs nothing. In RTL it is laid FIRST,
     /// so without a discount it pushes every visible glyph right by its width -- which is
@@ -2130,7 +2186,7 @@ mod tests {
             &arena(ALIGN_CENTER, 17.0),
             &arena(ALIGN_CENTER, 25.0)
         ));
-        // A final line under the auto last-line policy never justifies, so a
+        // A final line under the auto last-line codec never justifies, so a
         // width change is genuinely a positioning no-op there.
         assert!(equivalent(
             &arena(ALIGN_JUSTIFY, 17.0),
@@ -2272,17 +2328,17 @@ mod tests {
     }
 
     #[test]
-    fn last_line_policy_justifies_final_and_hard_broken_lines() {
+    fn last_line_codec_justifies_final_and_hard_broken_lines() {
         let (_text, clusters, line, fragment) = justify_fixture();
         let auto = JustifyControls::default();
         let final_auto = justification_adjustment(line, fragment, true, &clusters, 0, 7, 0.0, auto);
         assert_eq!(final_auto.per_space_units, 0);
-        let policy = JustifyControls {
+        let codec = JustifyControls {
             last_line_justify: true,
             ..JustifyControls::default()
         };
         let final_justified =
-            justification_adjustment(line, fragment, true, &clusters, 0, 7, 0.0, policy);
+            justification_adjustment(line, fragment, true, &clusters, 0, 7, 0.0, codec);
         assert_eq!(final_justified.per_space_units, 327_680);
     }
 
@@ -2470,6 +2526,9 @@ mod tests {
         style.decoration_flags = crate::engine::frame::DECORATION_UNDERLINE
             | crate::engine::frame::DECORATION_LINE_THROUGH;
         style.decoration_rgba = 0xff00_00ff;
+        style.material_id = 17;
+        style.outline_width = 1.0;
+        style.shadow_offset_x = 0.5;
         let styles = [StyleSegment {
             text_start: 0,
             text_end: 3,
@@ -2585,6 +2644,7 @@ mod tests {
             )
             .unwrap();
 
+        assert_layout_plan_producer_invariants(&active);
         assert_eq!(active.decorations.len(), 2);
         let underline = active.decorations[0];
         // Centered 12.0 advance in the 20.0 slot: run spans 4.0..16.0.
@@ -2595,6 +2655,7 @@ mod tests {
         assert_eq!(underline.block_start, 9.0);
         assert_eq!(underline.block_extent, 0.5);
         assert_eq!(underline.color, 0xff00_00ff);
+        assert_eq!(underline.material_id, 17);
         assert_eq!(underline.clip_id, 9);
         assert_eq!(underline.region_id, 9);
         assert_eq!(underline.flow_thread_id, 7);
@@ -2962,6 +3023,7 @@ mod tests {
                 extents,
             )
             .unwrap();
+        assert_layout_plan_producer_invariants(&active);
         assert_eq!(active.glyphs.len(), 2);
         assert_eq!(active.glyphs[0].content_revision, 1);
         assert_eq!(active.glyphs[1].content_revision, 2);
@@ -2996,6 +3058,7 @@ mod tests {
                 extents,
             )
             .unwrap();
+        assert_layout_plan_producer_invariants(&pending);
         assert_eq!(pending.glyphs[0].content_revision, 1);
         assert_eq!(pending.glyphs[1].content_revision, 2);
         assert_eq!(next_revision, 3);

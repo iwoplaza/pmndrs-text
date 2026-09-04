@@ -1,7 +1,9 @@
 import { readFile } from 'node:fs/promises';
 
-import { FontLoader, Text, TextGroup } from '../../dist/three.js';
-import { bitmap } from '../../dist/three/bitmap.js';
+import { glyph } from '../../dist/index.js';
+import { defineThreeConfig, type GlyphBufferCapacity } from '../../dist/three.js';
+import { bitmap } from '../../dist/raster/bitmap.js';
+import * as THREE from 'three/webgpu';
 
 export const paragraphBenchmarkSource = [
   'Typography is a moving system. AVATAR To Wa Yo repeat familiar kerning pairs while a responsive panel changes the space around them. The quick visual check is useful, but the benchmark records the cost of shaping, layout, upload, and every rendered frame.',
@@ -26,18 +28,34 @@ const corpusFixtures = {
   latin: { source: paragraphBenchmarkSource, font: 'inter-bitmap-16.font.glb' },
   cjk: { source: paragraphBenchmarkSourceCjk, font: 'noto-sans-cjk-showcase-bitmap-16.font.glb' },
 } as const satisfies Record<BenchmarkCorpus, { readonly source: string; readonly font: string }>;
+let nextFixtureHandle = 1;
 
 export async function loadParagraphBenchmarkFixture(corpus: BenchmarkCorpus = 'latin') {
+  await glyph.init();
+  const fixtureHandle = nextFixtureHandle++;
   const workspaceRoot = new URL('../../../../', import.meta.url);
-  const loader = new FontLoader();
   const bytes = await readFile(
     new URL(`apps/benchmarks/fixtures/rendering/${corpusFixtures[corpus].font}`, workspaceRoot),
   );
-  const loaded = await loader.loadAsync({
-    input: { baked: `data:application/octet-stream;base64,${bytes.toString('base64')}` },
-    raster: { technique: bitmap, options: { strikes: [16] } },
+  const loaded = glyph.fontFace(new Blob([new Uint8Array(bytes)], { type: 'model/gltf-binary' }), {
+    format: bitmap({ strikes: [16] }),
   });
-  return { loader, loaded };
+  await loaded.load();
+  let nextRoot = 1;
+  return {
+    loaded,
+    root(capacity: GlyphBufferCapacity) {
+      const root = glyph.handle(
+        `three:paragraph-benchmark:${String(fixtureHandle)}:${String(nextRoot)}`,
+        defineThreeConfig({ capacity }),
+      );
+      nextRoot += 1;
+      return root;
+    },
+    dispose() {
+      loaded.dispose();
+    },
+  };
 }
 
 export function createBenchmarkParagraph(
@@ -45,8 +63,9 @@ export function createBenchmarkParagraph(
   text: string,
   width: number,
 ) {
-  const group = new TextGroup({ capacity: { size: Math.max(256, text.length), policy: 'grow' } });
-  const paragraph = new Text({
+  const root = fixture.root({ size: Math.max(256, text.length), policy: 'grow' });
+  const group = root.createTextGroup();
+  const paragraph = root.createText({
     font: fixture.loaded,
     text,
     style: { fontSize: 24 },
@@ -54,12 +73,15 @@ export function createBenchmarkParagraph(
     constraints: { width: { mode: 'exact', size: width } },
   });
   group.add(paragraph);
-  return { group, paragraph };
+  const scene = new THREE.Scene();
+  scene.add(group);
+  return { group, paragraph, root, scene };
 }
 
 export function disposeBenchmarkParagraph(created: ReturnType<typeof createBenchmarkParagraph>): void {
   created.group.dispose();
   created.paragraph.dispose();
+  created.root.dispose();
 }
 
 export function paragraphTextForGlyphs(target: number, corpus: BenchmarkCorpus = 'latin'): string {

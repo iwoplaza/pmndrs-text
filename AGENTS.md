@@ -2,46 +2,40 @@
 
 `pmndrs/glyph` is an ESM-only monorepo for portable font baking, universal shaping, paragraph layout, and optional raster renderers. New packages and applications belong under `packages/` or `apps/`; do not add implementation artifacts at the repository root.
 
-Before writing or reviewing Rust, TypeScript, React, Wasm boundaries, or tests, read the canonical [engineering standard](docs/engineering/code-style.md). Use the repository-local `maintainability-review` skill for a deliberate cleanup, pre-release review, or milestone-wide audit; the skill owns the procedure, while the engineering standard owns the rules.
+Before writing or reviewing Rust, TypeScript, React, Wasm boundaries, or tests, read the canonical [engineering standard](.agents/docs/engineering/code-style.md). Use the repository-local `maintainability-review` skill for a deliberate cleanup, pre-release review, or milestone-wide audit; the skill owns the procedure, while the engineering standard owns the rules.
+
+Classify validation by who can author the value, not by module, package, Worker, language, or Wasm crossings. Validate
+public caller input, third-party callback results, and genuinely external data once; retain raw memory-safety and work
+bounds. Trust package-owned TypeScript/Rust/baker/serializer/Worker output and prove it at the producer with unit, ABI,
+property, fuzz, and product tests. Never justify a runtime guard with a test that forges an internal value no production
+caller can supply. During validation cleanup, remove one internal check, strengthen its producer proof, run the focused
+test, and then continue.
 
 Use the repository-local `tsl` skill before implementing or reviewing Three.js Shading Language materials, compute work, post-processing, or GLSL-to-TSL migrations. Verify examples against the repository's installed Three.js version rather than relying on remembered APIs.
 
-Use the repository-local `engine-call-contract` skill before adding, moving, or removing anything on a published entry point, before giving an engine call an error path or a result type, and when deciding whether a failure belongs to the caller or to this package. It carries the two rules the API is built on: a call answers or throws where it was written, and a type an application can encounter lives at the root while a thing only an integrator constructs lives in `/core`.
+Use the repository-local `engine-call-contract` skill before adding, moving, or removing anything on a published entry point, before giving an engine call an error path or a result type, and when deciding whether a failure belongs to the caller or to this package. It carries the two rules the API is built on: a call answers or throws where it was written, and application-encountered values and types live at the root while integrator construction helpers live on their exact `/config/*` leaves.
 
 Use the vendored `typegpu` skill from TypeGPU's own maintainers before writing or reviewing TypeGPU shaders, buffers, bind groups, or pipelines, exactly as the `tsl` skill governs Three.js Shading Language work. It was installed with the upstream installer (`skills add software-mansion-labs/skills -s typegpu`) and targets TypeGPU 0.12, matching the pinned dependency. Its `references/` cover shaders, textures, types, pipelines, and the standard library.
 
 Use the repository-local `agent-router` skill for every external-model review, delegated implementation, or research run. It routes through the pinned `ai-cli-mcp` server, preserves resumable sessions, and requires an isolated worktree for mutation-capable CLIs.
 
-The local `ai-cli` command can diagnose the pinned package, catalog, and provider CLIs, but it is not proof that the MCP transport is loaded. After changing MCP configuration, reload the client and confirm the server's tools are present before calling the router healthy.
+Read rolling JSONL traces only with `.agents/tools/read-append-log.mjs`; never load an entire trace or `.agents/docs/log.md` into
+context. `--delta` advances a cursor, while `--lines <n> --bytes <n>` gives a bounded diagnostic tail. Trace samples are
+not authoritative results: retrieve the completed response through `wait` or `get_result`. Keep raw traces in ignored
+`.cache/` storage and publish only a human-readable summary when the result belongs in repository knowledge.
 
-Until the MCP tools are visible, `mise exec -- pnpm exec ai-cli ...` is the approved temporary fallback because it uses the pinned workspace package and preserves the same PID/session lifecycle. Mark those runs `transport: cli-fallback`, capture their PID and session ID, and never substitute an unpinned provider CLI or treat a successful fallback as MCP validation.
-
-Use the bounded append-only reader at `.agents/tools/read-append-log.mjs` for agent traces and rolling logs. Do not load `docs/log.md` or a full JSONL trace into context; query `docs/planning/decision-register.md` for settled decisions and read only the relevant bounded log slice.
-
-The reader is the required context-management tool for append-only output:
-
-```bash
-node .agents/tools/read-append-log.mjs <trace.jsonl> --delta
-node .agents/tools/read-append-log.mjs <trace.jsonl> --lines 80 --bytes 12000
-```
-
-`--delta` advances a cursor and handles a rolled or truncated file. A trace sample is diagnostic only; retrieve authoritative agent results through the provider/MCP result operation. For decisions, query the decision register and the relevant package concept instead of searching the whole chronology.
-
-Keep machine traces and OKF-visible knowledge separate. Raw JSONL traces and cursor state may live in ignored `.cache/` directories and may be byte-rolled. If a run is surfaced in an OKF bundle or `docs/log.md`, write a human-readable summary that preserves the reserved OKF log shape: exactly one H1 title, newest-first `## YYYY-MM-DD` sections, and flat prose entries. Never byte-roll, cursor-edit, or append raw trace records into an OKF `log.md`; validate the bundle after changing it.
-
-Use the repository-local `gh-stack` skill for every dependent branch or pull-request workflow. Create, adopt, navigate,
-rebase, push, submit, sync, link, and merge stacks through non-interactive `gh stack` commands; ordinary `git push`,
-`gh pr create`, and `gh pr merge` are not substitutes for GitHub Stack state. Always use `gh stack submit --auto` and
-`gh stack view --json`, and provide every branch or checkout argument explicitly as required by the skill.
+Use the repository-local `gh-stack` skill for every dependent branch or pull-request workflow. Root stacks on the remote
+default branch and preserve their state through non-interactive `gh stack` commands; ordinary push and PR commands are
+not substitutes.
 
 Consult the repository-local `evidence-first` skill as the default style guidance for human-facing engineering communication, including chat updates and final answers, reports, reviews, handoffs, PR and issue prose, READMEs, and technical documentation. It offers situational cues rather than a fixed template. Domain skills still determine the work and valid evidence, `open-knowledge-format` governs bundle structure and provenance, and `diataxis-docs` governs the purpose and top-level structure of reader-facing documentation.
 
-Use these canonical sources instead of creating shadow plans or duplicate status prose:
+Start at `.agents/docs/index.md` and follow its linked indexes for self-discovery. Use these canonical sources instead of creating shadow plans or duplicate status prose:
 
-- `docs/roadmap/roadmap.md` for milestone order and checkbox status;
-- `docs/planning/decision-register.md` for architectural decisions;
-- `docs/packages/*.md` for current package ownership, boundaries, and evidence;
-- `docs/log.md` for knowledge-bundle chronology.
+- `.agents/docs/roadmap/roadmap.md` for milestone order and checkbox status;
+- `.agents/docs/planning/decision-register.md` for architectural decisions;
+- `.agents/docs/packages/*.md` for current package ownership, boundaries, and evidence;
+- `.agents/docs/log.md` for knowledge-bundle chronology.
 
 Update affected canonical documentation in the same change as source. Package source or configuration changes require reviewing the matching package concept, re-pinning its `source_digest` with `mise exec -- pnpm scripts run docs:update`, and verifying with `mise exec -- pnpm scripts run docs:check`.
 
@@ -53,8 +47,9 @@ Before searching for or inventing a specialized maintenance command, run `mise e
 
 TypeScript checks use the repository-pinned compiler and the patched `@types/three` declaration graph. For TSL typing changes, begin with the focused regression fixture before running a package or application project.
 
-Use the repository-local `codemod` skill for TypeScript or TSX symbol renames, import moves, signature changes, and public
-API migrations. It uses pinned ts-morph and dated migration recipes; global find-and-replace is not an allowed code rename
-tool. Update non-code documentation only after the AST migration and residual-use inventory are clean.
+Use the repository-local `codemod` skill for TypeScript or TSX migrations only after the changed API has reached the
+remote default branch or external users. Unmerged feature work is edited directly and leaves no migration recipe for an
+API nobody received. Shipped migrations use pinned ts-morph rather than global text replacement; update non-code
+documentation only after the AST migration and residual-use inventory are clean.
 
 Create small Conventional Commits that each preserve one coherent invariant. Finish completed work with a clean worktree.

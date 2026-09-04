@@ -1,8 +1,8 @@
 import type { FontFeature } from './font-feature.js';
-import type { FormattedText, ParagraphSpan } from './formatted-text.js';
+import type { TextInput } from './formatted-text.js';
 import type { FontSelection } from './loaded-font.js';
 import { mergePropertyList } from './property-list.js';
-import type { AnyRasterTechnique } from './raster-technique.js';
+import type { RasterFormatMetadata } from './config/raster-format.js';
 
 export interface GlyphBufferCapacity {
   readonly size: number;
@@ -13,6 +13,20 @@ export interface GlyphBufferCapacity {
    * size content against the cap rather than discovering it after the fact.
    */
   readonly policy: 'grow' | 'chunk' | 'fixed';
+}
+
+/** @internal Validate and freeze one publication-capacity input at its user boundary. */
+export function normalizeGlyphBufferCapacity(value: GlyphBufferCapacity, label: string): GlyphBufferCapacity {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new TypeError(`${label} must be an object`);
+  }
+  if (!Number.isSafeInteger(value.size) || value.size <= 0) {
+    throw new RangeError(`${label} size must be a positive safe integer`);
+  }
+  if (value.policy !== 'grow' && value.policy !== 'chunk' && value.policy !== 'fixed') {
+    throw new TypeError(`${label} policy must be grow, chunk, or fixed`);
+  }
+  return Object.freeze({ size: value.size, policy: value.policy });
 }
 
 /** An object or nested, left-to-right property list; false and null entries are ignored. */
@@ -82,9 +96,9 @@ export interface TextStyle {
   readonly color?: ColorInput;
   /** Alpha multiplier inherited independently from color. */
   readonly opacity?: number;
-  /** Technique-supported outline color and width in paragraph-local units. */
+  /** Format-supported outline color and width in paragraph-local units. */
   readonly outline?: { readonly color: ColorInput; readonly width: number };
-  /** Technique-supported hard-shadow color and displacement in paragraph-local units. */
+  /** Format-supported hard-shadow color and displacement in paragraph-local units. */
   readonly shadow?: { readonly color: ColorInput; readonly offset: readonly [number, number] };
 }
 
@@ -104,8 +118,8 @@ export interface TextDecorationStyle {
   readonly offset?: number;
 }
 
-export interface ParagraphBaseProperties<Technique extends AnyRasterTechnique> {
-  readonly font: FontSelection<Technique>;
+export interface ParagraphBaseProperties<Format extends RasterFormatMetadata> {
+  readonly font: FontSelection<Format>;
   /** Text shaping and presentation properties inherited by inline spans. */
   readonly style?: PropertyList<TextStyle>;
   /** Paragraph flow properties such as wrapping, alignment, and line limits. */
@@ -116,12 +130,12 @@ export interface ParagraphBaseProperties<Technique extends AnyRasterTechnique> {
   readonly order?: number;
 }
 
-export type ParagraphContentProperties<Technique extends AnyRasterTechnique> =
-  | Readonly<{ text: string; spans?: readonly ParagraphSpan<Technique>[] }>
-  | Readonly<{ text: FormattedText<Technique>; spans?: never }>;
+export type ParagraphContentProperties<Format extends RasterFormatMetadata> = Readonly<{
+  text: TextInput<Format>;
+}>;
 
-export type ParagraphProperties<Technique extends AnyRasterTechnique> = ParagraphBaseProperties<Technique> &
-  ParagraphContentProperties<Technique>;
+export type ParagraphProperties<Format extends RasterFormatMetadata> = ParagraphBaseProperties<Format> &
+  ParagraphContentProperties<Format>;
 
 interface PropertyRegistry<Value extends object> {
   create<const Rules extends Readonly<Record<string, PropertyList<Value>>>>(

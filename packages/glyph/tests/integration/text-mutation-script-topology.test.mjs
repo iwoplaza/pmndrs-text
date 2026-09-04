@@ -46,8 +46,8 @@
 import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 
-import { bitmap } from '@pmndrs/glyph/three/bitmap';
-import { slug } from '@pmndrs/glyph/three/slug';
+import { bitmap } from '@pmndrs/glyph/raster/bitmap';
+import { slug } from '@pmndrs/glyph/raster/slug';
 
 import {
   assertMatchesFreshBuild,
@@ -61,19 +61,19 @@ import {
   timeout,
   unmount,
 } from '../support/text-mutation-lanes.mjs';
+import { findLineBreaks } from '../support/unicode-line-breaks.mjs';
 
-// The engine's own grapheme segmentation. `Intl.Segmenter` is a DIFFERENT implementation of UAX #29
-// and the two disagree on degenerate sequences, so snapping a span boundary with ICU can still land
-// it inside a cluster the engine sees -- which the engine rejects outright.
-import { findGraphemeBoundaries, findLineBreaks } from '../../dist/internal/unicode.js';
+// The package-pinned preflight segmentation. `Intl.Segmenter` follows host ICU and can disagree on
+// degenerate sequences, so it cannot be the oracle for the span compiler's deterministic behavior.
+import { findGraphemeBoundaries } from '../../dist/internal/graphemes.js';
 
 const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
-const bitmap16 = { technique: bitmap, options: { strikes: [16] } };
+const bitmap16 = bitmap({ strikes: [16] });
 
 const FIXTURES = {
   'amiri-bitmap': { file: 'amiri-bitmap-16.font.glb', raster: bitmap16 },
-  'amiri-slug': { file: 'amiri-slug.font.glb.gz', raster: { technique: slug } },
+  'amiri-slug': { file: 'amiri-slug.font.glb.gz', raster: slug },
   devanagari: { file: 'noto-sans-devanagari-bitmap-16.font.glb', raster: bitmap16 },
   cjk: { file: 'noto-sans-cjk-showcase-bitmap-16.font.glb', raster: bitmap16 },
   'dot-gothic': { file: 'dot-gothic-16-bitmap-16.font.glb', raster: bitmap16 },
@@ -559,7 +559,7 @@ test('the differential oracle fails when a single packed float is corrupted', { 
 
 function attributeNamed(mounted, name) {
   let found;
-  mounted.group.traverse((object) => {
+  mounted.scene.traverse((object) => {
     if (found !== undefined || object.userData.pmndrsGlyphRunStart === undefined) return;
     found = object.geometry?.attributes?.[name];
   });

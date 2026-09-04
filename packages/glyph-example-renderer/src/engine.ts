@@ -1,37 +1,30 @@
-import type { AnyRasterTechnique, ColorInput, Font, FontStack } from '@pmndrs/glyph';
-import {
-  type BackendFontBinding,
-  type BackendFontStackBinding,
-  type BackendPolicy,
-  type PlanCandidate,
-  type PlanTarget,
-  type PlanTargetControl,
-  type RenderPlanResourceId,
-  type ResourceHandle,
-  type RenderPlanner,
-  type RetainedText,
-  type GlyphEngine,
-} from '@pmndrs/glyph/core';
+import type {
+  ColorInput,
+  Font,
+  FontFaceSelection,
+  FontFaceRasterOf,
+  GlyphHandleFonts,
+  GlyphRootServices,
+  GlyphTextController,
+  RasterFormatRequest,
+} from '@pmndrs/glyph';
+import { glyphExample } from '@pmndrs/glyph-example-raster';
 
 import type { ExampleDrawList } from './draw-list.js';
-import type { ExampleRendererDevice, ExampleRendererResourceInput } from './device.js';
-import { readCandidate } from './plan-reader.js';
-import { exampleCapabilitySet, exampleRenderPolicyDescriptor } from './policy.js';
+import type { ExampleBindings, ExampleRootContext, ExampleTransform } from './config.js';
 
-const EXAMPLE_LIMITS = Object.freeze({
-  maxParagraphs: 64,
-  maxClusters: 16_384,
-  maxLines: 4_096,
-  maxRegions: 256,
-  maxExclusions: 256,
-  maxInlineObjects: 256,
-  maxSlotsPerBand: 32,
-  maxOutputBytes: 16 * 1024 * 1024,
-});
+const MAX_LINES = 4_096;
+
+/** Package-private construction capability held by configured example roots. */
+export const exampleTextConstructionToken: unique symbol = Symbol('pmndrs.glyph.example-renderer.construct');
 
 /** Initial state for one retained example-renderer text instance. */
-export interface ExampleTextOptions {
-  readonly font: BackendFontStackBinding;
+export type ExampleFontFaceSelection = FontFaceSelection<
+  typeof glyphExample | RasterFormatRequest<typeof glyphExample> | undefined
+>;
+
+export interface ExampleTextOptions<Selection extends ExampleFontFaceSelection = ExampleFontFaceSelection> {
+  readonly font: Selection;
   readonly text: string;
   readonly fontSize?: number;
   readonly width?: number;
@@ -42,164 +35,92 @@ export interface ExampleTextOptions {
 }
 
 /** Desired-state changes accepted by an example-renderer text instance. */
-export interface ExampleTextUpdate {
-  readonly font?: BackendFontStackBinding;
-  readonly text?: string;
-  readonly fontSize?: number;
-  readonly width?: number;
-  readonly height?: number;
-  readonly rasterPixelRatio?: number;
-  readonly color?: ColorInput;
-  readonly opacity?: number;
-}
+export type ExampleTextUpdate<Selection extends ExampleFontFaceSelection = ExampleFontFaceSelection> = Partial<
+  ExampleTextOptions<Selection>
+>;
 
-/** A complete third-party integration using root assets and the public `/core` backend contract. */
-export class ExampleTextEngine {
-  readonly #backend;
-  readonly #policy: BackendPolicy;
-  readonly #target: ExamplePlanTarget;
-  #planner: RenderPlanner | undefined;
+/** One retained Text owned by the root services supplied through GlyphConfig.root. */
+export class ExampleText<Selection extends ExampleFontFaceSelection = ExampleFontFaceSelection> {
+  readonly #fonts: GlyphHandleFonts;
+  readonly #controller: GlyphTextController<
+    FontFaceRasterOf<Selection>,
+    ExampleBindings['materialInput'],
+    ExampleTransform
+  >;
+  readonly #transform: ExampleTransform = Object.freeze({ kind: 'example-transform' });
+  #font: Font<FontFaceRasterOf<Selection>>;
+  #state: NormalizedExampleTextOptions<Selection>;
   #disposed = false;
 
-  constructor(glyphEngine: GlyphEngine, device?: ExampleRendererDevice) {
-    if (device !== undefined) assertExampleRendererDevice(device);
-    this.#backend = glyphEngine.createBackend({ integration: '@pmndrs/glyph-example-renderer' });
-    this.#target = new ExamplePlanTarget(device);
+  constructor(
+    token: typeof exampleTextConstructionToken,
+    fonts: GlyphHandleFonts,
+    services: GlyphRootServices<ExampleBindings, ExampleDrawList, ExampleRootContext>,
+    options: ExampleTextOptions<Selection>,
+  ) {
+    if (token !== exampleTextConstructionToken) {
+      throw new TypeError('ExampleText instances must be created by a configured Glyph handle');
+    }
+    this.#fonts = fonts;
+    this.#state = normalizeTextOptions(options);
+    this.#font = fonts.acquire(this.#state.font);
     try {
-      this.#policy = this.#backend.installPolicy(exampleRenderPolicyDescriptor);
+      this.#controller = services.createText(this.#coreState(this.#state, this.#font));
     } catch (error) {
-      this.#backend.dispose();
+      this.#font.dispose();
       throw error;
     }
   }
 
-  /** Binds one immutable font to this renderer backend. */
-  bindFont<Technique extends AnyRasterTechnique>(font: Font<Technique>): BackendFontBinding<Technique> {
-    this.#assertActive();
-    const shader = this.#target.shader;
-    if (shader !== undefined && shader.variant.techniqueId !== font.technique.id) {
-      throw new TypeError(
-        `example renderer shader "${shader.variant.techniqueId}" cannot render "${font.technique.id}"`,
-      );
-    }
-    return this.#backend.bindFont(font);
-  }
-
-  /** Binds an ordered immutable font stack to this renderer backend. */
-  bindFontStack<Technique extends AnyRasterTechnique>(
-    stack: FontStack<Technique, Font<Technique>>,
-  ): BackendFontStackBinding {
-    this.#assertActive();
-    const shader = this.#target.shader;
-    if (shader !== undefined) {
-      for (const font of stack.fonts) {
-        if (font.technique.id !== shader.variant.techniqueId) {
-          throw new TypeError(
-            `example renderer shader "${shader.variant.techniqueId}" cannot render "${font.technique.id}"`,
-          );
-        }
-      }
-    }
-    return this.#backend.bindFontStack(stack);
-  }
-
-  /** Opens the example engine's single render planner. */
-  openPlanner(): RenderPlanner {
-    this.#assertActive();
-    if (this.#planner !== undefined) throw new Error('example engine already has an open render planner');
-    this.#planner = this.#backend.createPlanner({
-      policy: this.#policy,
-      capabilitySet: exampleCapabilitySet,
-      target: (control) => {
-        this.#target.attachControl(control);
-        return this.#target;
-      },
-      limits: EXAMPLE_LIMITS,
-      requestCapacity: 64 * 1024,
-      resultCapacity: 256 * 1024,
-      textCapacity: 16 * 1024,
-    });
-    return this.#planner;
-  }
-
-  /** Creates one retained text instance in the open planner. */
-  createText(options: ExampleTextOptions): ExampleText {
-    const planner = this.#requirePlanner();
-    return new ExampleText(planner, () => this.publish(), options);
-  }
-
-  /** Publishes current desired state and returns the accepted decoded draw list. */
-  publish(): ExampleDrawList {
-    const result = this.#requirePlanner().publish();
-    if (!result.accepted) throw result.error;
-    return this.#target.lastDrawList;
-  }
-
-  /** Installs a caller-owned rebuilt device; the next publication is a complete checkpoint. */
-  replaceDevice(device: ExampleRendererDevice): void {
-    this.#assertActive();
-    assertExampleRendererDevice(device);
-    this.#target.replaceDevice(device);
-  }
-
-  /** Disposes the backend, planner, target, and retained payload leases. */
-  dispose(): void {
-    if (this.#disposed) return;
-    this.#disposed = true;
-    this.#backend.dispose();
-    this.#planner = undefined;
-  }
-
-  #requirePlanner(): RenderPlanner {
-    this.#assertActive();
-    return this.#planner ?? this.openPlanner();
-  }
-
-  #assertActive(): void {
-    if (this.#disposed) throw new Error('example engine is disposed');
-  }
-}
-
-/** One retained text instance owned by an {@link ExampleTextEngine} plan. */
-export class ExampleText {
-  readonly #text: RetainedText;
-  readonly #publish: () => ExampleDrawList;
-  #state: NormalizedExampleTextOptions;
-  #disposed = false;
-
-  constructor(planner: RenderPlanner, publish: () => ExampleDrawList, options: ExampleTextOptions) {
-    this.#publish = publish;
-    this.#state = normalizeTextOptions(options);
-    this.#text = planner.createText(coreTextOptions(this.#state));
-  }
-
-  /** Current desired text content. */
   get text(): string {
     return this.#state.text;
   }
 
-  /** Replaces part of the desired text state without publishing. */
-  update(update: ExampleTextUpdate): void {
+  update(update: ExampleTextUpdate<Selection>): void {
     this.#assertActive();
     if (typeof update !== 'object' || update === null || Array.isArray(update)) {
       throw new TypeError('example text updates must be objects');
     }
-    const state = normalizeTextOptions({ ...this.#state, ...update });
-    this.#text.update(coreTextOptions(state));
-    this.#state = state;
+    const next = normalizeTextOptions({ ...this.#state, ...update });
+    const nextFont = next.font === this.#state.font ? this.#font : this.#fonts.acquire(next.font);
+    try {
+      this.#controller.update(this.#coreState(next, nextFont));
+      if (nextFont !== this.#font) this.#font.dispose();
+      this.#font = nextFont;
+      this.#state = next;
+    } catch (error) {
+      if (nextFont !== this.#font) nextFont.dispose();
+      throw error;
+    }
   }
 
-  /** Publishes the owning plan and returns its accepted draw list. */
-  publish(): ExampleDrawList {
-    this.#assertActive();
-    return this.#publish();
-  }
-
-  /** Removes this retained text instance from its plan. */
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    this.#text.dispose();
+    try {
+      this.#controller.dispose();
+    } finally {
+      this.#font.dispose();
+    }
+  }
+
+  #coreState(state: NormalizedExampleTextOptions<Selection>, font: Font<FontFaceRasterOf<Selection>>) {
+    return {
+      font,
+      text: state.text,
+      transform: this.#transform,
+      style: {
+        fontSize: state.fontSize,
+        ...(state.color === undefined ? {} : { color: state.color }),
+        ...(state.opacity === undefined ? {} : { opacity: state.opacity }),
+      },
+      rasterPixelRatio: state.rasterPixelRatio,
+      constraints: {
+        width: { mode: 'at-most' as const, size: state.width },
+        height: { mode: 'at-most' as const, size: state.height },
+      },
+      layout: { maxLines: MAX_LINES },
+    };
   }
 
   #assertActive(): void {
@@ -207,191 +128,14 @@ export class ExampleText {
   }
 }
 
-class ExamplePlanTarget implements PlanTarget {
-  readonly delivery = 'borrowed' as const;
-  #device: ExampleRendererDevice | undefined;
-  #control: PlanTargetControl | undefined;
-  readonly #payloads = new Map<ResourceHandle, ReturnType<PlanCandidate['acquirePayload']>>();
-  readonly #resourcePayloads = new Map<
-    RenderPlanResourceId,
-    Readonly<{ generation: number; referenceId: ResourceHandle }>
-  >();
-  #lastDrawList: ExampleDrawList | undefined;
-  #disposed = false;
+type NormalizedExampleTextOptions<Selection extends ExampleFontFaceSelection> = Required<
+  Omit<ExampleTextOptions<Selection>, 'font' | 'color' | 'opacity'>
+> &
+  Pick<ExampleTextOptions<Selection>, 'font' | 'color' | 'opacity'>;
 
-  constructor(device: ExampleRendererDevice | undefined) {
-    this.#device = device;
-  }
-
-  get shader(): ExampleRendererDevice['shader'] | undefined {
-    return this.#device?.shader;
-  }
-
-  get lastDrawList(): ExampleDrawList {
-    if (this.#lastDrawList === undefined) throw new Error('example renderer has not accepted a plan');
-    return this.#lastDrawList;
-  }
-
-  attachControl(control: PlanTargetControl): void {
-    if (this.#control !== undefined) throw new Error('example plan target already has planner control');
-    this.#control = control;
-  }
-
-  replaceDevice(device: ExampleRendererDevice): void {
-    if (this.#disposed) throw new Error('example plan target is disposed');
-    const current = this.#device;
-    if (current === device) return;
-    if (current !== undefined && !sameShaderSelection(current.shader, device.shader)) {
-      throw new TypeError('replacement device must select the same renderer shader');
-    }
-    this.#control?.requestCheckpoint();
-    for (const payload of this.#payloads.values()) payload.dispose();
-    this.#payloads.clear();
-    this.#resourcePayloads.clear();
-    this.#lastDrawList = undefined;
-    this.#device = device;
-  }
-
-  accept(candidate: PlanCandidate) {
-    if (this.#disposed) return { accepted: false as const, error: new Error('example plan target is disposed') };
-    const list = readCandidate(candidate);
-    const device = this.#device;
-    if (device === undefined) {
-      this.#lastDrawList = list;
-      return { accepted: true as const };
-    }
-
-    const resources: ExampleRendererResourceInput[] = [];
-    const nextResourcePayloads = new Map(this.#resourcePayloads);
-    const acquired: Array<ReturnType<PlanCandidate['acquirePayload']>> = [];
-    const retained = new Set<ReturnType<PlanCandidate['acquirePayload']>>();
-    try {
-      for (const record of list.resourceRecords) {
-        if (record.referenceId === 0) continue;
-        nextResourcePayloads.set(record.id, { generation: record.generation, referenceId: record.referenceId });
-        if (this.#payloads.has(record.referenceId)) continue;
-        const payload = candidate.acquirePayload(record.referenceId);
-        if (payload.techniqueId !== device.shader.variant.techniqueId) {
-          payload.dispose();
-          throw new TypeError(`plan payload technique "${payload.techniqueId}" does not match the selected shader`);
-        }
-        acquired.push(payload);
-        resources.push({
-          id: record.referenceId,
-          generation: record.generation,
-          name: payload.resourceName,
-          resource: payload.payload,
-        });
-      }
-      for (const retirement of list.retirements) {
-        if (retirement.kind !== 'resource') continue;
-        const resourceId = retirement.id as RenderPlanResourceId;
-        const current = nextResourcePayloads.get(resourceId);
-        if (current?.generation === retirement.generation) nextResourcePayloads.delete(resourceId);
-      }
-      const pendingResources = device.prepareResources(resources);
-      try {
-        pendingResources.commit();
-      } catch (error) {
-        pendingResources.discard();
-        throw error;
-      }
-      for (const [index, payload] of acquired.entries()) {
-        this.#payloads.set(resources[index]!.id, payload);
-        retained.add(payload);
-      }
-
-      const pending = device.prepareSubmission(list);
-      try {
-        if (!pending.commit()) {
-          pending.discard();
-          return { accepted: false as const, error: new Error('example renderer rejected a superseded plan') };
-        }
-      } catch (error) {
-        pending.discard();
-        throw error;
-      }
-      this.#lastDrawList = list;
-      this.#resourcePayloads.clear();
-      for (const [id, payload] of nextResourcePayloads) this.#resourcePayloads.set(id, payload);
-      const activeReferences = new Set([...nextResourcePayloads.values()].map(({ referenceId }) => referenceId));
-      const retiredPayloads: Array<[ResourceHandle, ReturnType<PlanCandidate['acquirePayload']>]> = [];
-      for (const [referenceId, payload] of this.#payloads) {
-        if (activeReferences.has(referenceId)) continue;
-        retiredPayloads.push([referenceId, payload]);
-      }
-      device.releaseResources(retiredPayloads.map(([referenceId]) => referenceId));
-      for (const [referenceId, payload] of retiredPayloads) {
-        payload.dispose();
-        this.#payloads.delete(referenceId);
-      }
-      return { accepted: true as const };
-    } catch (error) {
-      for (const payload of acquired) if (!retained.has(payload)) payload.dispose();
-      return { accepted: false as const, error };
-    }
-  }
-
-  dispose(): void {
-    if (this.#disposed) return;
-    this.#disposed = true;
-    let failure: unknown;
-    const attempt = (release: () => void): void => {
-      try {
-        release();
-      } catch (error) {
-        failure ??= error;
-      }
-    };
-    const referenceIds = [...this.#payloads.keys()];
-    if (referenceIds.length !== 0) attempt(() => this.#device?.releaseResources(referenceIds));
-    for (const payload of this.#payloads.values()) attempt(() => payload.dispose());
-    this.#payloads.clear();
-    this.#resourcePayloads.clear();
-    this.#control = undefined;
-    if (failure !== undefined) throw failure;
-  }
-}
-
-function sameShaderSelection(left: ExampleRendererDevice['shader'], right: ExampleRendererDevice['shader']): boolean {
-  return (
-    left.variant.techniqueId === right.variant.techniqueId &&
-    left.variant.language === right.variant.language &&
-    left.programNamespace === right.programNamespace &&
-    left.programName === right.programName &&
-    left.programVariant === right.programVariant
-  );
-}
-
-function assertExampleRendererDevice(value: unknown): asserts value is ExampleRendererDevice {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new TypeError('example renderer device must be an object');
-  }
-  const device = value as Partial<ExampleRendererDevice>;
-  const shader = device.shader;
-  if (
-    typeof shader !== 'object' ||
-    shader === null ||
-    typeof shader.variant !== 'object' ||
-    shader.variant === null ||
-    typeof shader.variant.techniqueId !== 'string' ||
-    typeof shader.variant.language !== 'string'
-  ) {
-    throw new TypeError('example renderer device must select a shader');
-  }
-  if (
-    typeof device.prepareResources !== 'function' ||
-    typeof device.prepareSubmission !== 'function' ||
-    typeof device.releaseResources !== 'function'
-  ) {
-    throw new TypeError('example renderer device must implement resource and submission methods');
-  }
-}
-
-type NormalizedExampleTextOptions = Required<Omit<ExampleTextOptions, 'font' | 'color' | 'opacity'>> &
-  Pick<ExampleTextOptions, 'font' | 'color' | 'opacity'>;
-
-function normalizeTextOptions(options: ExampleTextOptions): NormalizedExampleTextOptions {
+function normalizeTextOptions<Selection extends ExampleFontFaceSelection>(
+  options: ExampleTextOptions<Selection>,
+): NormalizedExampleTextOptions<Selection> {
   if (typeof options !== 'object' || options === null || Array.isArray(options)) {
     throw new TypeError('example text options must be an object');
   }
@@ -405,26 +149,6 @@ function normalizeTextOptions(options: ExampleTextOptions): NormalizedExampleTex
     rasterPixelRatio: positiveFinite(options.rasterPixelRatio ?? 1, 'rasterPixelRatio'),
     ...(options.color === undefined ? {} : { color: options.color }),
     ...(options.opacity === undefined ? {} : { opacity: options.opacity }),
-  };
-}
-
-function coreTextOptions(state: NormalizedExampleTextOptions) {
-  return {
-    font: state.font,
-    text: state.text,
-    style: {
-      fontSize: state.fontSize,
-      ...(state.color === undefined ? {} : { color: state.color }),
-      ...(state.opacity === undefined ? {} : { opacity: state.opacity }),
-    },
-    rasterPixelRatio: state.rasterPixelRatio,
-    constraints: {
-      width: { mode: 'at-most' as const, size: state.width },
-      height: { mode: 'at-most' as const, size: state.height },
-    },
-    layout: {
-      maxLines: EXAMPLE_LIMITS.maxLines,
-    },
   };
 }
 

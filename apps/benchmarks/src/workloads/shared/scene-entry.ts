@@ -1,14 +1,14 @@
-import type { AnyRasterTechnique, Font, ParagraphLayoutSummary } from '@pmndrs/glyph';
-import { TextGroup, type Text } from '@pmndrs/glyph/three';
+import type { Font, ParagraphLayoutSummary, RasterFormatMetadata } from '@pmndrs/glyph';
+import { TextGroup, type Text, type ThreeRoot } from '@pmndrs/glyph/three';
 import type * as THREE from 'three/webgpu';
 
 /**
  * Comparison workloads are technique-generic by construction: the host resolves one concrete technique per lane and
- * hands every scene the same erased identity, so a single `ComparisonWorkloadDefinition` can serve Bitmap, MTSDF, and
- * Slug without threading a type parameter through the registry.
+ * hands every scene the same renderer-neutral metadata view, so a single `ComparisonWorkloadDefinition` can serve
+ * Bitmap, MTSDF, and Slug without recovering format-specific decoded data.
  */
-export type WorkloadFont = Font<AnyRasterTechnique>;
-export type WorkloadText = Text<AnyRasterTechnique>;
+export type WorkloadFont = Font<RasterFormatMetadata>;
+export type WorkloadText = Text<RasterFormatMetadata>;
 export type WorkloadTextGroup = TextGroup;
 
 export interface MutableSpanPaint {
@@ -22,12 +22,6 @@ export interface MutablePaintSpan {
   readonly start: number;
   readonly end: number;
   readonly style: MutableSpanPaint;
-}
-
-/** The retained `{ text, spans }` payload an animated workload republishes through `Text.set`. */
-export interface RetainedSpanUpdate {
-  readonly text: string;
-  readonly spans: readonly MutablePaintSpan[];
 }
 
 /**
@@ -52,9 +46,8 @@ export interface ComparisonWorkloadEntry {
   paintOutlineWidth?: number;
   paintShadowOffset?: readonly [number, number];
   readonly paintSpans?: MutablePaintSpan[];
-  readonly paintUpdate?: RetainedSpanUpdate;
   readonly offAxisSpans?: MutablePaintSpan[];
-  readonly offAxisPaintUpdate?: RetainedSpanUpdate;
+  readonly richTextCompanionFonts?: readonly [emphasis: WorkloadFont, foreign: WorkloadFont];
   lastWidth?: number;
   zoomLanguage?: string;
   zoomOpacity?: number;
@@ -65,6 +58,7 @@ export interface ComparisonWorkloadEntry {
 export interface WorkloadTextFactoryContext {
   readonly dpr: number;
   readonly font: WorkloadFont;
+  readonly root: ThreeRoot;
 }
 
 /**

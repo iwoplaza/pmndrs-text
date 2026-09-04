@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { assertPortableResource, portableResourceKinds, portableTopologies } from '../../dist/core.js';
-import { normalizePortableResource, portableResourceIdentity } from '../../dist/core/portable-resources.js';
+import {
+  assertPortableResource,
+  normalizePortableResource,
+  portableResourceKinds,
+  portableTopologies,
+} from '../../dist/config/resources.js';
 import { indexedQuadGeometry } from '../support/portable-geometry.mjs';
 
 function mutate(geometry, patch) {
@@ -14,22 +18,6 @@ function mutate(geometry, patch) {
 test('the reserved portable kinds and topologies are the frozen closed sets', () => {
   assert.deepEqual([...portableResourceKinds], ['buffer', 'texture', 'texture-array', 'geometry', 'group']);
   assert.deepEqual([...portableTopologies], ['triangle-list', 'triangle-strip']);
-});
-
-test('one normalized payload has a stable engine-independent realization identity', () => {
-  const resource = normalizePortableResource('buffer', 'table', {
-    kind: 'buffer',
-    bytes: new Uint8Array([1, 2, 3, 4]),
-    stride: 4,
-  });
-  const equivalent = normalizePortableResource('buffer', 'table', {
-    kind: 'buffer',
-    bytes: new Uint8Array([1, 2, 3, 4]),
-    stride: 4,
-  });
-
-  assert.equal(portableResourceIdentity(resource), portableResourceIdentity(resource));
-  assert.notEqual(portableResourceIdentity(resource), portableResourceIdentity(equivalent));
 });
 
 test('valid buffer, texture, and geometry payloads pass their reserved declared kind', () => {
@@ -482,7 +470,7 @@ test('normalizing a retained payload owns bytes and structural metadata', () => 
   assert(Object.isFrozen(normalized.accessors));
 });
 
-test('instance count and per-record data remain plan-owned', () => {
+test('instance count and per-record data remain command-buffer-owned', () => {
   const quad = indexedQuadGeometry();
   assert.throws(
     () =>
@@ -491,7 +479,7 @@ test('instance count and per-record data remain plan-owned', () => {
         'mesh',
         mutate(quad, (g) => (g.instances = { source: 'fixed', count: 0 })),
       ),
-    (error) => error instanceof TypeError && error.message.includes('instance count comes from plan records'),
+    (error) => error instanceof TypeError && error.message.includes('instance count comes from command-buffer records'),
   );
   assert.throws(
     () =>
@@ -500,7 +488,7 @@ test('instance count and per-record data remain plan-owned', () => {
         'mesh',
         mutate(quad, (g) => (g.instances = { source: 'records-plus' })),
       ),
-    (error) => error instanceof TypeError && error.message.includes('instance count comes from plan records'),
+    (error) => error instanceof TypeError && error.message.includes('instance count comes from command-buffer records'),
   );
   assert.throws(
     () =>

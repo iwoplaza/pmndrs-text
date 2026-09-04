@@ -1,0 +1,620 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { id as glyphId } from '../../dist/config/codec.js';
+import { defineRasterFormat, defineRasterResourceId } from '../../dist/config/raster-format.js';
+import { compileRasterFont, readCompiledRasterFont, registerRasterCodec } from '../../dist/config/raster.js';
+import { defineTechniqueSchema } from '../../dist/config/schema.js';
+import { fontBindingResources } from '../../dist/internal/font-binding.js';
+import { textShaperAbi } from '../../dist/generated/text-shaper-abi.js';
+import { createImmutableFontLease, immutableFontVariantIdentity } from '../../dist/loaded-font.js';
+import { indexedQuadGeometry } from '../support/portable-geometry.mjs';
+import { immutableTestFont } from '../support/immutable-font.mjs';
+
+const COLORS = defineRasterResourceId('test/colors');
+const MESH = defineRasterResourceId('test/mesh');
+const OTHER = defineRasterResourceId('test/other');
+const COLLIDING_RESOURCE_A = defineRasterResourceId('pmndrs.msdf/4wzx/16');
+const COLLIDING_RESOURCE_B = defineRasterResourceId('pmndrs.msdf/b6cd/16');
+const body = () => ({ inputs: [], operations: [], f32InputCount: 0, u32InputCount: 0 });
+
+function technique(id) {
+  return defineRasterFormat({
+    id,
+    kind: 'test',
+    extension: 'TEST_raster',
+    version: 0,
+    textEffects: [],
+    descriptor: () => ({}),
+    async decode() {
+      return {};
+    },
+    dispose() {},
+  });
+}
+
+function schemaFor(value) {
+  return defineTechniqueSchema({
+    technique: value.id,
+    scope: 'glyph',
+    binding: { f32: ['opacity'], u32: ['page'] },
+    buffers: {},
+    resources: {
+      colors: { kind: 'buffer' },
+      mesh: {
+        kind: 'geometry',
+        attributes: [
+          { semantic: 'position', componentType: 'f32', components: 3 },
+          { semantic: 'uv', componentType: 'f32', components: 2 },
+        ],
+      },
+    },
+    render: { resource: 'colors', geometry: { kind: 'quad', resource: 'mesh', coordinates: 'unit-square' } },
+  });
+}
+
+function loaded(value, glyphCount = 2) {
+  return immutableTestFont(value, {}, glyphCount);
+}
+
+function validCompile(compiler, colorBytes = new Uint8Array([1, 2, 3, 4])) {
+  compiler.retain('colors', COLORS, { kind: 'buffer', bytes: colorBytes, stride: 4 });
+  compiler.retain('mesh', MESH, indexedQuadGeometry());
+  return compiler.compile({
+    strikes: [0],
+    resource: () => COLORS,
+    f32: { opacity: () => 0.5 },
+    u32: { page: () => 0 },
+  });
+}
+
+test('registration preserves authenticated technique and schema witnesses', () => {
+  const value = technique('test.plan-registration');
+  const schema = schemaFor(value);
+  const source = { raster: value, schema, codecBody: body, compileFont: validCompile };
+  const registered = registerRasterCodec(source);
+
+  assert.equal(registered.raster, value);
+  assert.equal(registered.schema, schema);
+  assert.equal(registerRasterCodec(source), registered);
+  assert.equal(registerRasterCodec(registered), registered);
+  assert.throws(() => registerRasterCodec({ ...source }), /different raster codec/);
+  assert.throws(
+    () => registerRasterCodec({ ...source, schema: { ...schema } }),
+    /needs a schema from defineTechniqueSchema/,
+  );
+});
+
+test('registration rejects structural techniques and reserved Glyph identities', () => {
+  const structural = { id: 'test.structural', kind: 'test', extension: 'TEST_raster', version: 0 };
+  assert.throws(
+    () =>
+      registerRasterCodec({
+        raster: structural,
+        schema: defineTechniqueSchema({ technique: structural.id, scope: 'glyph', binding: {}, buffers: {} }),
+        codecBody: body,
+        compileFont() {},
+      }),
+    /need a format/,
+  );
+
+  const reserved = technique('pmndrs.test-plan');
+  assert.throws(
+    () =>
+      registerRasterCodec({
+        raster: reserved,
+        schema: schemaFor(reserved),
+        codecBody: body,
+        compileFont: validCompile,
+      }),
+    /reserved for Glyph-owned formats/,
+  );
+});
+
+test('registration rejects a resource-free schema before it can become an unusable font compiler', () => {
+  const value = technique('test.plan-resource-free');
+  const schema = defineTechniqueSchema({
+    technique: value.id,
+    scope: 'glyph',
+    binding: {},
+    buffers: {},
+  });
+  assert.throws(
+    () =>
+      registerRasterCodec({
+        raster: value,
+        schema,
+        codecBody: body,
+        compileFont() {},
+      }),
+    /needs at least one declared resource/,
+  );
+});
+
+test('one registered Codec owns a raster ID even when another format declares the same string', () => {
+  const first = technique('test.plan-witness');
+  const second = technique('test.plan-witness');
+  registerRasterCodec({
+    raster: first,
+    schema: schemaFor(first),
+    codecBody: body,
+    compileFont: validCompile,
+  });
+  assert.throws(
+    () =>
+      registerRasterCodec({
+        raster: second,
+        schema: schemaFor(second),
+        codecBody: body,
+        compileFont: validCompile,
+      }),
+    /different raster codec/,
+  );
+});
+
+test('font compilation accepts only live package fonts and exposes a constrained reader', () => {
+  const value = technique('test.plan-authentic-font');
+  let reader;
+  registerRasterCodec({
+    raster: value,
+    schema: schemaFor(value),
+    codecBody: body,
+    compileFont(compiler) {
+      reader = compiler.font;
+      assert.deepEqual(Object.keys(reader).sort(), ['data', 'glyphCount', 'raster']);
+      assert.equal(reader.raster, value);
+      assert.equal(reader.glyphCount, 3);
+      return validCompile(compiler);
+    },
+  });
+
+  assert.throws(() => compileRasterFont({ raster: value, disposed: false }, glyphId), /not created by this package/);
+  const font = loaded(value, 3);
+  assert.ok(compileRasterFont(font, glyphId));
+  assert.throws(() => reader.data, /no longer active/);
+  font.dispose();
+  assert.throws(() => compileRasterFont(font, glyphId), /disposed/);
+});
+
+test('a font created before Codec registration observes the later concrete compiler', () => {
+  const value = technique('test.codec-late-registration');
+  const expectedData = Object.freeze({ marker: 'late-registration' });
+  const font = immutableTestFont(value, expectedData, 3);
+  assert.equal(compileRasterFont(font, glyphId), undefined);
+
+  registerRasterCodec({
+    raster: value,
+    schema: schemaFor(value),
+    codecBody: body,
+    compileFont(compiler) {
+      assert.equal(compiler.font.data, expectedData);
+      return validCompile(compiler);
+    },
+  });
+
+  assert.ok(compileRasterFont(font, glyphId));
+  font.dispose();
+});
+
+test('font compilation owns binding metadata and normalizes retained payloads', () => {
+  const value = technique('test.plan-compile');
+  const sourceBytes = new Uint8Array([1, 2, 3, 4]);
+  registerRasterCodec({
+    raster: value,
+    schema: schemaFor(value),
+    codecBody: body,
+    compileFont: (compiler) => validCompile(compiler, sourceBytes),
+  });
+  const compiled = compileRasterFont(loaded(value), glyphId);
+  sourceBytes[0] = 255;
+
+  assert.ok(compiled.binding.byteLength > 0);
+  assert.equal(compiled.resources.get(COLORS).bytes[0], 1);
+  assert.equal(compiled.resources.get(MESH).kind, 'geometry');
+  assert.deepEqual(
+    [...compiled.declaredResources],
+    [
+      ['colors', [COLORS]],
+      ['mesh', [MESH]],
+    ],
+  );
+  assert.equal(typeof compiled.resources.set, 'undefined');
+  assert.equal(typeof compiled.declaredResources.clear, 'undefined');
+});
+
+test('compiled font views expose named fields and selected portable resources without decoded data', () => {
+  const value = technique('test.plan-read-compiled');
+  const program = registerRasterCodec({
+    raster: value,
+    schema: schemaFor(value),
+    codecBody: body,
+    compileFont(compiler) {
+      compiler.retain('colors', COLORS, { kind: 'buffer', bytes: new Uint8Array([1, 2, 3, 4]), stride: 4 });
+      compiler.retain('mesh', MESH, indexedQuadGeometry());
+      return compiler.compile({
+        strikes: [12, 24],
+        resource: (glyph, strike) => (glyph === 1 && strike === 1 ? undefined : COLORS),
+        f32: { opacity: (row) => row + 0.25 },
+        u32: { page: (row) => row + 10 },
+      });
+    },
+  });
+  const compiled = compileRasterFont(loaded(value, 2), glyphId);
+  const view = readCompiledRasterFont(compiled, program);
+
+  assert.equal(view.scope, 'glyph');
+  assert.equal(view.glyphCount, 2);
+  assert.deepEqual(view.strikes, [12, 24]);
+  assert.equal(view.f32('opacity', 1), 1.25);
+  assert.equal(view.u32('page', 0), 10);
+  assert.equal(view.resource(0, 1).key, COLORS);
+  assert.equal(view.resource(1, 1), undefined);
+  assert.equal(view.resources.find(({ key }) => key === COLORS).payload.bytes[0], 1);
+  assert.throws(() => view.f32('missing', 0), /no f32 field/);
+  assert.throws(() => view.u32('page', 2), /outside/);
+  assert.throws(() => readCompiledRasterFont({ ...compiled }, program), /not created by this package/);
+  assert.throws(() => readCompiledRasterFont(compiled, null), /registered RasterCodec/);
+});
+
+test('resource selection receives explicit glyph and strike coordinates', () => {
+  const value = technique('test.plan-resource-coordinates');
+  const calls = [];
+  registerRasterCodec({
+    raster: value,
+    schema: schemaFor(value),
+    codecBody: body,
+    compileFont(compiler) {
+      compiler.retain('colors', COLORS, { kind: 'buffer', bytes: new Uint8Array(4) });
+      compiler.retain('mesh', MESH, indexedQuadGeometry());
+      return compiler.compile({
+        strikes: [12, 24],
+        resource(glyphIndex, strikeIndex) {
+          calls.push([glyphIndex, strikeIndex]);
+          return COLORS;
+        },
+        f32: { opacity: () => 0.5 },
+        u32: { page: () => 0 },
+      });
+    },
+  });
+  const identities = glyphId;
+  const compiled = compileRasterFont(loaded(value, 3), identities);
+
+  assert.deepEqual(calls, [
+    [0, 0],
+    [1, 0],
+    [2, 0],
+    [0, 1],
+    [1, 1],
+    [2, 1],
+  ]);
+  const resourceIds = bindingResourceIds(compiled.binding);
+  const selected = bindingResourceIndices(compiled.binding);
+  assert.deepEqual(
+    selected.map((index) => resourceIds[index]),
+    Array.from({ length: 6 }, () => identities.resource(COLORS)),
+  );
+});
+
+test('one authored resource identity describes the same immutable payload across compiler calls', () => {
+  const value = technique('test.plan-stable-resource-identity');
+  registerRasterCodec({
+    raster: value,
+    schema: schemaFor(value),
+    codecBody: body,
+    compileFont(compiler) {
+      return validCompile(compiler, new Uint8Array([1, 2, 3, 4]));
+    },
+  });
+  const identities = glyphId;
+  const first = compileRasterFont(loaded(value), identities);
+  const second = compileRasterFont(loaded(value), identities);
+
+  assert.deepEqual(first.declaredResources.get('colors'), [COLORS]);
+  assert.deepEqual(second.declaredResources.get('colors'), [COLORS]);
+  assert.deepEqual(bindingResourceIds(first.binding), bindingResourceIds(second.binding));
+  assert.ok(bindingResourceIds(first.binding).includes(identities.resource(COLORS)));
+  assert.equal(first.resources.get(COLORS).bytes[0], 1);
+  assert.deepEqual(second.resources.get(COLORS), first.resources.get(COLORS));
+});
+
+test('standalone font compilation scopes dynamic resource collisions to one call', () => {
+  const value = technique('test.plan-independent-default-identities');
+  const program = registerRasterCodec({
+    raster: value,
+    schema: schemaFor(value),
+    codecBody: body,
+    compileFont(compiler) {
+      const colors = compiler.font.glyphCount === 2 ? COLLIDING_RESOURCE_A : COLLIDING_RESOURCE_B;
+      compiler.retain('colors', colors, { kind: 'buffer', bytes: new Uint8Array(4), stride: 4 });
+      compiler.retain('mesh', MESH, indexedQuadGeometry());
+      return compiler.compile({
+        strikes: [0],
+        resource: () => colors,
+        f32: { opacity: () => 0.5 },
+        u32: { page: () => 0 },
+      });
+    },
+  });
+
+  const first = compileRasterFont(loaded(value, 2));
+  const second = compileRasterFont(loaded(value, 3));
+  assert.ok(readCompiledRasterFont(first, program).resources.some(({ key }) => key === COLLIDING_RESOURCE_A));
+  assert.ok(readCompiledRasterFont(second, program).resources.some(({ key }) => key === COLLIDING_RESOURCE_B));
+});
+
+test('font resource identity mapping rejects counterfeit factories before reading keys', () => {
+  assert.throws(() => fontBindingResources([], {}), /font binding resource ids/);
+});
+
+test('one loaded font reuses its immutable compilation across engine identity registries', () => {
+  const value = technique('test.plan-compile-once');
+  let calls = 0;
+  registerRasterCodec({
+    raster: value,
+    schema: schemaFor(value),
+    codecBody: body,
+    compileFont(compiler) {
+      calls += 1;
+      return validCompile(compiler);
+    },
+  });
+  const font = loaded(value);
+  const first = compileRasterFont(font, glyphId);
+  const second = compileRasterFont(font, glyphId);
+
+  assert.equal(first, second);
+  assert.equal(calls, 1);
+});
+
+test('independent Font leases over one immutable variant share compilation', () => {
+  const value = technique('test.plan-compile-shared-variant');
+  let calls = 0;
+  registerRasterCodec({
+    raster: value,
+    schema: schemaFor(value),
+    codecBody: body,
+    compileFont(compiler) {
+      calls += 1;
+      return validCompile(compiler);
+    },
+  });
+  const firstFont = loaded(value);
+  const secondFont = createImmutableFontLease(immutableFontVariantIdentity(firstFont));
+  const first = compileRasterFont(firstFont, glyphId);
+  const second = compileRasterFont(secondFont, glyphId);
+
+  assert.equal(first, second);
+  assert.equal(calls, 1);
+  firstFont.dispose();
+  secondFont.dispose();
+});
+
+test('retention rejects undeclared, duplicate, missing, and wrong-kind resources', () => {
+  const cases = [
+    [
+      'test.plan-undeclared',
+      (compiler) => compiler.retain('foreign', OTHER, { kind: 'buffer', bytes: new Uint8Array(4) }),
+      /undeclared resource name "foreign"/,
+    ],
+    [
+      'test.plan-duplicate-name',
+      (compiler) => {
+        compiler.retain('colors', COLORS, { kind: 'buffer', bytes: new Uint8Array(4) });
+        compiler.retain('colors', OTHER, { kind: 'buffer', bytes: new Uint8Array(4) });
+      },
+      /more than once/,
+    ],
+    [
+      'test.plan-duplicate-key',
+      (compiler) => {
+        compiler.retain('colors', COLORS, { kind: 'buffer', bytes: new Uint8Array(4) });
+        compiler.retain('mesh', COLORS, indexedQuadGeometry());
+      },
+      /duplicate resource/,
+    ],
+    [
+      'test.plan-wrong-kind',
+      (compiler) => compiler.retain('mesh', MESH, { kind: 'buffer', bytes: new Uint8Array(4) }),
+      /wrong payload kind/,
+    ],
+    [
+      'test.plan-wrong-vertex-input',
+      (compiler) => {
+        const geometry = indexedQuadGeometry();
+        compiler.retain('mesh', MESH, {
+          ...geometry,
+          accessors: [{ ...geometry.accessors[0], components: 2 }, ...geometry.accessors.slice(1)],
+        });
+      },
+      /vertex input "position" needs f32x3/,
+    ],
+    [
+      'test.plan-missing-resource',
+      (compiler) => {
+        compiler.retain('colors', COLORS, { kind: 'buffer', bytes: new Uint8Array(4) });
+        return compiler.compile({
+          strikes: [0],
+          resource: () => COLORS,
+          f32: { opacity: () => 1 },
+          u32: { page: () => 0 },
+        });
+      },
+      /did not retain declared resource "mesh"/,
+    ],
+  ];
+
+  for (const [id, act, expected] of cases) {
+    const value = technique(id);
+    registerRasterCodec({
+      raster: value,
+      schema: schemaFor(value),
+      codecBody: body,
+      compileFont(compiler) {
+        const result = act(compiler);
+        return result ?? validCompile(compiler);
+      },
+    });
+    assert.throws(() => compileRasterFont(loaded(value), glyphId), expected);
+  }
+});
+
+test('binding readers and selected resources reject at compiler.compile', () => {
+  const missingReader = technique('test.plan-missing-reader');
+  registerRasterCodec({
+    raster: missingReader,
+    schema: schemaFor(missingReader),
+    codecBody: body,
+    compileFont(compiler) {
+      compiler.retain('colors', COLORS, { kind: 'buffer', bytes: new Uint8Array(4) });
+      compiler.retain('mesh', MESH, indexedQuadGeometry());
+      return compiler.compile({ strikes: [0], resource: () => COLORS, f32: {}, u32: { page: () => 0 } });
+    },
+  });
+  assert.throws(() => compileRasterFont(loaded(missingReader), glyphId), /needs f32 reader "opacity"/);
+
+  const unknownResource = technique('test.plan-unknown-selected-resource');
+  registerRasterCodec({
+    raster: unknownResource,
+    schema: schemaFor(unknownResource),
+    codecBody: body,
+    compileFont(compiler) {
+      compiler.retain('colors', COLORS, { kind: 'buffer', bytes: new Uint8Array(4) });
+      compiler.retain('mesh', MESH, indexedQuadGeometry());
+      return compiler.compile({
+        strikes: [0],
+        resource: () => OTHER,
+        f32: { opacity: () => 1 },
+        u32: { page: () => 0 },
+      });
+    },
+  });
+  assert.throws(() => compileRasterFont(loaded(unknownResource), glyphId), /outside render role "colors"/);
+});
+
+test('binding compilation snapshots reader accessors before serialization', () => {
+  const value = technique('test.plan-reader-snapshot');
+  let resourceReads = 0;
+  let opacityReads = 0;
+  registerRasterCodec({
+    raster: value,
+    schema: schemaFor(value),
+    codecBody: body,
+    compileFont(compiler) {
+      compiler.retain('colors', COLORS, { kind: 'buffer', bytes: new Uint8Array(4) });
+      compiler.retain('mesh', MESH, indexedQuadGeometry());
+      const binding = {
+        strikes: [0],
+        get resource() {
+          resourceReads += 1;
+          return resourceReads === 1 ? () => COLORS : undefined;
+        },
+        f32: {
+          get opacity() {
+            opacityReads += 1;
+            return opacityReads === 1 ? () => 0.5 : undefined;
+          },
+        },
+        u32: { page: () => 0 },
+      };
+      return compiler.compile(binding);
+    },
+  });
+
+  assert.doesNotThrow(() => compileRasterFont(loaded(value), glyphId));
+  assert.equal(resourceReads, 1);
+  assert.equal(opacityReads, 1);
+});
+
+test('a caught compiler input failure is terminal for that callback', () => {
+  const value = technique('test.plan-terminal-failure');
+  registerRasterCodec({
+    raster: value,
+    schema: schemaFor(value),
+    codecBody: body,
+    compileFont(compiler) {
+      try {
+        compiler.retain('foreign', OTHER, { kind: 'buffer', bytes: new Uint8Array(4) });
+      } catch {}
+      try {
+        validCompile(compiler);
+      } catch {}
+      return {};
+    },
+  });
+  assert.throws(() => compileRasterFont(loaded(value), glyphId), /undeclared resource name "foreign"/);
+});
+
+test('compileFont must synchronously return this compiler invocation result', () => {
+  const asynchronous = technique('test.plan-async');
+  registerRasterCodec({
+    raster: asynchronous,
+    schema: schemaFor(asynchronous),
+    codecBody: body,
+    async compileFont(compiler) {
+      return validCompile(compiler);
+    },
+  });
+  assert.throws(() => compileRasterFont(loaded(asynchronous), glyphId), /must return synchronously/);
+
+  const counterfeit = technique('test.plan-counterfeit');
+  registerRasterCodec({
+    raster: counterfeit,
+    schema: schemaFor(counterfeit),
+    codecBody: body,
+    compileFont(compiler) {
+      validCompile(compiler);
+      return { binding: new Uint8Array(), resources: new Map(), declaredResources: new Map() };
+    },
+  });
+  assert.throws(() => compileRasterFont(loaded(counterfeit), glyphId), /must return the result of compiler.compile/);
+});
+
+test('the compiler is revoked after its callback returns', () => {
+  const value = technique('test.plan-revoked');
+  let escaped;
+  registerRasterCodec({
+    raster: value,
+    schema: schemaFor(value),
+    codecBody: body,
+    compileFont(compiler) {
+      escaped = compiler;
+      return validCompile(compiler);
+    },
+  });
+  compileRasterFont(loaded(value), glyphId);
+  assert.throws(() => escaped.font, /no longer active/);
+  assert.throws(
+    () => escaped.retain('colors', COLORS, { kind: 'buffer', bytes: new Uint8Array(4) }),
+    /no longer active/,
+  );
+  assert.throws(
+    () =>
+      escaped.compile({
+        strikes: [0],
+        resource: () => COLORS,
+        f32: { opacity: () => 1 },
+        u32: { page: () => 0 },
+      }),
+    /no longer active/,
+  );
+});
+
+function bindingResourceIds(bytes) {
+  const request = textShaperAbi.layouts.fontBindingRequest;
+  const resource = textShaperAbi.layouts.fontBindingResource;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const resourcesOffset = view.getUint32(request.resourcesOffset, true);
+  return Array.from({ length: view.getUint32(request.resourceCount, true) }, (_, index) =>
+    view.getUint32(resourcesOffset + index * resource.size + resource.id, true),
+  );
+}
+
+function bindingResourceIndices(bytes) {
+  const request = textShaperAbi.layouts.fontBindingRequest;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const glyphCount = view.getUint32(request.glyphCount, true);
+  const strikeCount = view.getUint32(request.strikeCount, true);
+  const offset = view.getUint32(request.resourceIndicesOffset, true);
+  return Array.from({ length: glyphCount * strikeCount }, (_, index) => view.getUint32(offset + index * 4, true));
+}

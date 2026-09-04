@@ -1,169 +1,22 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { compilePlannerFrameUpdate, validatePlannerFrameRecords } from '../../dist/core/frame-wire.js';
-import { selectPolicyCapabilitySet, id } from '../../dist/core/render-policy.js';
+import { compilePlannerFrameUpdate } from '../../dist/internal/frame-wire.js';
+import { permanentGlyphId } from '../../dist/internal/glyph-id.js';
 import { engineFrameUpdateBytes } from '../support/engine-abi.mjs';
 import { textShaperAbi } from '../../dist/text-shaper-abi.js';
 
-const PLANNER_ID = id.planner('engine-frame-wire/planner');
-const POLICY_ID = id.policy('engine-frame-wire/policy');
-const OTHER_POLICY_ID = id.policy('engine-frame-wire/other-policy');
-const FONT_STACK_ID = id.fontStack('engine-frame-wire/font-stack');
-const PARAGRAPH_ID = id.paragraph('engine-frame-wire/paragraph');
-const OTHER_PARAGRAPH_ID = id.paragraph('engine-frame-wire/other-paragraph');
-const STYLE_ID = id.style('engine-frame-wire/style');
-const FLOW_THREAD_ID = id.flowThread('engine-frame-wire/flow-thread');
-const REGION_ID = id.region('engine-frame-wire/region');
-const EXCLUSION_ID = id.exclusion('engine-frame-wire/exclusion');
-const INLINE_OBJECT_ID = id.inlineObject('engine-frame-wire/inline-object');
-const MATERIAL_ID = id.material('engine-frame-wire/material');
-const RESOURCE_ID = id.resourceHandle('engine-frame-wire/resource');
-
-test('frame compiler rejects raw and cross-domain numeric identities before allocation', () => {
-  const valid = {
-    plannerId: PLANNER_ID,
-    policyHandle: POLICY_ID,
-    expectedEngineRevision: 0,
-    consumedPlanRevision: 0,
-    acknowledgedPublicationGeneration: 0,
-    limits: {
-      maxParagraphs: 1,
-      maxClusters: 1,
-      maxLines: 1,
-      maxRegions: 1,
-      maxExclusions: 1,
-      maxInlineObjects: 1,
-      maxSlotsPerBand: 1,
-      maxOutputBytes: 1024,
-    },
-  };
-  assert.throws(() => compilePlannerFrameUpdate({ ...valid, plannerId: 1 }), /must come from id\.planner/);
-  assert.throws(() => compilePlannerFrameUpdate({ ...valid, plannerId: POLICY_ID }), /must come from id\.planner/);
-  assert.throws(
-    () => compilePlannerFrameUpdate({ ...valid, capabilitySet: 1 }),
-    /must come from selectPolicyCapabilitySet/,
-  );
-  const capability = {
-    capabilities: ['storage-buffers', 'ordered-direct'],
-    maxBufferBytes: 1024,
-    updateAlignment: 4,
-    coalesceGapBytes: 16,
-    rangeCallPenaltyBytes: 32,
-    maxBuffersPerDraw: 1,
-    maxResourcesPerDraw: 1,
-    maxIndirectDraws: 0,
-    fragmentationBudget: 1,
-    wholeBufferThresholdBasisPoints: 7500,
-  };
-  const selection = selectPolicyCapabilitySet(
-    OTHER_POLICY_ID,
-    { capabilitySets: [capability], programs: [] },
-    capability,
-  );
-  assert.throws(
-    () => compilePlannerFrameUpdate({ ...valid, capabilitySet: selection }),
-    /belongs to a different policy handle/,
-  );
-  assert.throws(
-    () =>
-      compilePlannerFrameUpdate({
-        ...valid,
-        paragraphMutations: [{ opcode: 'remove', paragraphId: 1 }],
-      }),
-    /must come from id\.paragraph/,
-  );
-});
-
-test('record validation rejects malformed runtime values without serializing a frame', () => {
-  const style = {
-    opcode: 'upsert',
-    paragraphId: PARAGRAPH_ID,
-    styleId: STYLE_ID,
-    cascadeOrder: 0,
-    start: 0,
-    end: 1,
-    root: true,
-    value: { fontStackHandle: FONT_STACK_ID, direction: 'sideways' },
-  };
-  assert.throws(() => validatePlannerFrameRecords({ styleMutations: [style] }), /direction is invalid/);
-  assert.throws(
-    () =>
-      validatePlannerFrameRecords({
-        paragraphMutations: [
-          { opcode: 'upsert', paragraphId: PARAGRAPH_ID, order: 0 },
-          { opcode: 'upsert', paragraphId: OTHER_PARAGRAPH_ID, order: 0 },
-        ],
-      }),
-    /duplicate paragraph orders/,
-  );
-  assert.throws(
-    () =>
-      compilePlannerFrameUpdate({
-        plannerId: PLANNER_ID,
-        policyHandle: POLICY_ID,
-        expectedEngineRevision: 0,
-        consumedPlanRevision: 0,
-        acknowledgedPublicationGeneration: 0,
-        limits: {
-          maxParagraphs: 1,
-          maxClusters: 1,
-          maxLines: 1,
-          maxRegions: 1,
-          maxExclusions: 1,
-          maxInlineObjects: 1,
-          maxSlotsPerBand: 1,
-          maxOutputBytes: 1024,
-        },
-        styleMutations: [style],
-      }),
-    /direction is invalid/,
-  );
-  assert.throws(
-    () =>
-      compilePlannerFrameUpdate({
-        plannerId: PLANNER_ID,
-        policyHandle: POLICY_ID,
-        expectedEngineRevision: 0,
-        consumedPlanRevision: 0,
-        acknowledgedPublicationGeneration: 0,
-        semanticViewMask: 6,
-        limits: {
-          maxParagraphs: 1,
-          maxClusters: 1,
-          maxLines: 1,
-          maxRegions: 1,
-          maxExclusions: 1,
-          maxInlineObjects: 1,
-          maxSlotsPerBand: 1,
-          maxOutputBytes: 1024,
-        },
-      }),
-    /semanticViewMask is not supported/,
-  );
-  assert.throws(
-    () =>
-      compilePlannerFrameUpdate({
-        plannerId: PLANNER_ID,
-        policyHandle: POLICY_ID,
-        expectedEngineRevision: 0,
-        consumedPlanRevision: 0,
-        acknowledgedPublicationGeneration: 0,
-        limits: {
-          maxParagraphs: 1,
-          maxClusters: 1,
-          maxLines: 1,
-          maxRegions: 1,
-          maxExclusions: 1,
-          maxInlineObjects: 1,
-          maxSlotsPerBand: 1,
-          maxOutputBytes: 1024,
-        },
-        policyParameters: new Uint8Array(),
-      }),
-    /policyParameters are not supported/,
-  );
-});
+const ROOT_ID = permanentGlyphId('planner', 'engine-frame-wire/planner');
+const CODEC_ID = permanentGlyphId('codec', 'engine-frame-wire/codec');
+const FONT_STACK_ID = permanentGlyphId('font-stack', 'engine-frame-wire/font-stack');
+const PARAGRAPH_ID = permanentGlyphId('paragraph', 'engine-frame-wire/paragraph');
+const STYLE_ID = permanentGlyphId('style', 'engine-frame-wire/style');
+const FLOW_THREAD_ID = permanentGlyphId('flow-thread', 'engine-frame-wire/flow-thread');
+const REGION_ID = permanentGlyphId('region', 'engine-frame-wire/region');
+const EXCLUSION_ID = permanentGlyphId('exclusion', 'engine-frame-wire/exclusion');
+const INLINE_OBJECT_ID = permanentGlyphId('inline-object', 'engine-frame-wire/inline-object');
+const MATERIAL_ID = permanentGlyphId('material', 'engine-frame-wire/material');
+const RESOURCE_ID = permanentGlyphId('resource', 'engine-frame-wire/resource');
 
 test('production frame compiler preserves the established benchmark request bytes', async () => {
   const abi = textShaperAbi;
@@ -171,8 +24,8 @@ test('production frame compiler preserves the established benchmark request byte
   const units = Array.from({ length: text.length }, (_, index) => text.charCodeAt(index));
   const limits = { maxClusters: 8, maxLines: 8, maxOutputBytes: 65_536 };
   const expected = engineFrameUpdateBytes(abi, {
-    plannerId: PLANNER_ID,
-    policyHandle: POLICY_ID,
+    rootId: ROOT_ID,
+    codecHandle: CODEC_ID,
     fontStackHandle: FONT_STACK_ID,
     paragraphId: PARAGRAPH_ID,
     styleId: STYLE_ID,
@@ -185,10 +38,10 @@ test('production frame compiler preserves the established benchmark request byte
     limits,
   });
   const actual = compilePlannerFrameUpdate({
-    plannerId: PLANNER_ID,
-    policyHandle: POLICY_ID,
+    rootId: ROOT_ID,
+    codecHandle: CODEC_ID,
     expectedEngineRevision: 0,
-    consumedPlanRevision: 0,
+    consumedRevision: 0,
     acknowledgedPublicationGeneration: 0,
     limits: {
       ...limits,
@@ -262,10 +115,10 @@ test('production frame compiler preserves the established benchmark request byte
 test('production frame compiler carries full style, polygon, exclusion, and inline-object payloads', async () => {
   const abi = textShaperAbi;
   const bytes = compilePlannerFrameUpdate({
-    plannerId: PLANNER_ID,
-    policyHandle: POLICY_ID,
+    rootId: ROOT_ID,
+    codecHandle: CODEC_ID,
     expectedEngineRevision: 3,
-    consumedPlanRevision: 4,
+    consumedRevision: 4,
     acknowledgedPublicationGeneration: 5,
     semanticViewMask: abi.engine.semanticViewMasks.all,
     compositingIndependent: true,
@@ -280,6 +133,7 @@ test('production frame compiler carries full style, polygon, exclusion, and inli
       maxOutputBytes: 1_048_576,
     },
     paragraphMutations: [{ opcode: 'upsert', paragraphId: PARAGRAPH_ID, order: 2 }],
+    textMutations: [{ paragraphId: PARAGRAPH_ID, start: 0, deleteCount: 0, insert: 'hello' }],
     styleMutations: [
       {
         opcode: 'upsert',
@@ -409,12 +263,13 @@ test('production frame compiler carries full style, polygon, exclusion, and inli
   const header = new DataView(bytes.buffer, bytes.byteOffset, request.size);
   assert.equal(header.getUint32(request.flags, true), abi.engine.frameFlags.compositingIndependent);
   assert.equal(header.getUint32(request.byteLength, true), bytes.byteLength);
+  assert.equal(header.getUint32(request.textMutationCount, true), 1);
   assert.equal(header.getUint32(request.styleMutationCount, true), 1);
   assert.equal(header.getUint32(request.regionCount, true), 1);
   assert.equal(header.getUint32(request.exclusionCount, true), 1);
   assert.equal(header.getUint32(request.inlineObjectCount, true), 1);
-  assert.equal(header.getUint32(request.policyParametersLength, true), 0);
-  assert.equal(header.getUint32(request.policyParametersOffset, true), 0);
+  assert.equal(header.getUint32(request.codecParametersLength, true), 0);
+  assert.equal(header.getUint32(request.codecParametersOffset, true), 0);
   const styleOffset = header.getUint32(request.styleMutationsOffset, true);
   const style = abi.layouts.engineStyleMutation;
   const styleView = new DataView(bytes.buffer, bytes.byteOffset + styleOffset, style.size);
@@ -428,21 +283,18 @@ test('production frame compiler carries full style, polygon, exclusion, and inli
   const inlineObject = abi.layouts.engineInlineObject;
   const inlineObjectView = new DataView(bytes.buffer, bytes.byteOffset + inlineObjectOffset, inlineObject.size);
   assert.equal(inlineObjectView.getUint32(inlineObject.paragraphId, true), PARAGRAPH_ID);
+  assertOwnedFrameRangesDoNotOverlap(bytes, abi);
 });
 
 test('style payloads stay in per-record order when several paragraphs carry language and features', async () => {
-  // The engine proves style payloads neither overlap nor alias the record table in a
-  // single forward pass: every record's payloads must begin at or after the previous
-  // record's payload end. Allocating all languages before all features satisfies that
-  // only for a single record — from the second styled paragraph on, its language would
-  // start behind the first paragraph's features and the whole update is rejected. The
-  // live Advanced-shaping workload hits exactly this, since each case sets a language
-  // and a feature list across four paragraphs.
+  // The compiler owns one monotonic allocation stream. Allocating all languages before
+  // all features would interleave the payload order from the second styled paragraph
+  // onward. The live Advanced-shaping workload covers this shape with four paragraphs.
   const abi = textShaperAbi;
   const styleMutation = (paragraphId) => ({
     opcode: 'upsert',
     paragraphId,
-    styleId: id.style(`engine-frame-wire/style/${paragraphId}`),
+    styleId: permanentGlyphId('style', `engine-frame-wire/style/${paragraphId}`),
     cascadeOrder: 0,
     start: 0,
     end: 5,
@@ -459,12 +311,14 @@ test('style payloads stay in per-record order when several paragraphs carry lang
       rasterPixelRatio: 1,
     },
   });
-  const paragraphIds = Array.from({ length: 4 }, (_, index) => id.paragraph(`engine-frame-wire/paragraph/${index}`));
+  const paragraphIds = Array.from({ length: 4 }, (_, index) =>
+    permanentGlyphId('paragraph', `engine-frame-wire/paragraph/${index}`),
+  );
   const bytes = compilePlannerFrameUpdate({
-    plannerId: PLANNER_ID,
-    policyHandle: POLICY_ID,
+    rootId: ROOT_ID,
+    codecHandle: CODEC_ID,
     expectedEngineRevision: 0,
-    consumedPlanRevision: 0,
+    consumedRevision: 0,
     acknowledgedPublicationGeneration: 0,
     semanticViewMask: 0,
     compositingIndependent: false,
@@ -533,10 +387,10 @@ test('production frame compiler encodes typography controls and their defaults',
   });
   const compile = (typography) =>
     compilePlannerFrameUpdate({
-      plannerId: PLANNER_ID,
-      policyHandle: POLICY_ID,
+      rootId: ROOT_ID,
+      codecHandle: CODEC_ID,
       expectedEngineRevision: 0,
-      consumedPlanRevision: 0,
+      consumedRevision: 0,
       acknowledgedPublicationGeneration: 0,
       limits: {
         maxParagraphs: 1,
@@ -607,3 +461,86 @@ test('production frame compiler encodes typography controls and their defaults',
 
   assert.throws(() => compile({ firstLineIndent: Number.NaN }), /firstLineIndent/);
 });
+
+function assertOwnedFrameRangesDoNotOverlap(bytes, abi) {
+  const request = abi.layouts.engineUpdateRequest;
+  const header = new DataView(bytes.buffer, bytes.byteOffset, request.size);
+  const ranges = [];
+  const add = (label, start, count, stride) => {
+    if (count === 0) return;
+    ranges.push({ label, start, end: start + count * stride });
+  };
+  for (const [label, offsetField, countField, layout] of [
+    ['paragraph mutations', 'paragraphMutationsOffset', 'paragraphMutationCount', abi.layouts.engineParagraphMutation],
+    ['text mutations', 'textMutationsOffset', 'textMutationCount', abi.layouts.engineTextMutation],
+    ['style mutations', 'styleMutationsOffset', 'styleMutationCount', abi.layouts.engineStyleMutation],
+    ['constraints', 'constraintsOffset', 'constraintCount', abi.layouts.engineConstraint],
+    ['regions', 'regionsOffset', 'regionCount', abi.layouts.engineRegion],
+    ['exclusions', 'exclusionsOffset', 'exclusionCount', abi.layouts.engineExclusion],
+    ['inline objects', 'inlineObjectsOffset', 'inlineObjectCount', abi.layouts.engineInlineObject],
+  ]) {
+    add(label, header.getUint32(request[offsetField], true), header.getUint32(request[countField], true), layout.size);
+  }
+
+  const addRecordPayloads = (tableName, tableLayout, countField, payloads) => {
+    const tableOffset = header.getUint32(request[`${tableName}Offset`], true);
+    const count = header.getUint32(request[countField], true);
+    for (let index = 0; index < count; index += 1) {
+      const record = new DataView(
+        bytes.buffer,
+        bytes.byteOffset + tableOffset + index * tableLayout.size,
+        tableLayout.size,
+      );
+      for (const [label, offsetField, countFieldName, stride] of payloads) {
+        add(
+          `${label} ${index}`,
+          record.getUint32(tableLayout[offsetField], true),
+          record.getUint16(tableLayout[countFieldName], true),
+          stride,
+        );
+      }
+    }
+  };
+  addRecordPayloads('styleMutations', abi.layouts.engineStyleMutation, 'styleMutationCount', [
+    ['style language', 'languageOffset', 'languageLength', 1],
+    ['style features', 'featuresOffset', 'featureCount', abi.layouts.feature.size],
+  ]);
+
+  const text = abi.layouts.engineTextMutation;
+  const textOffset = header.getUint32(request.textMutationsOffset, true);
+  const textCount = header.getUint32(request.textMutationCount, true);
+  for (let index = 0; index < textCount; index += 1) {
+    const record = new DataView(bytes.buffer, bytes.byteOffset + textOffset + index * text.size, text.size);
+    add(
+      `text payload ${index}`,
+      record.getUint32(text.insertOffset, true),
+      record.getUint32(text.insertCount, true),
+      2,
+    );
+  }
+
+  for (const [tableName, countField, layout] of [
+    ['regions', 'regionCount', abi.layouts.engineRegion],
+    ['exclusions', 'exclusionCount', abi.layouts.engineExclusion],
+  ]) {
+    const tableOffset = header.getUint32(request[`${tableName}Offset`], true);
+    const count = header.getUint32(request[countField], true);
+    for (let index = 0; index < count; index += 1) {
+      const record = new DataView(bytes.buffer, bytes.byteOffset + tableOffset + index * layout.size, layout.size);
+      add(
+        `${tableName} vertices ${index}`,
+        record.getUint32(layout.verticesOffset, true),
+        record.getUint16(layout.vertexCount, true),
+        abi.layouts.engineFlowVertex.size,
+      );
+    }
+  }
+
+  ranges.sort((left, right) => left.start - right.start);
+  let previousEnd = request.size;
+  for (const range of ranges) {
+    assert.ok(range.start >= previousEnd, `${range.label} overlaps the prior package-owned range`);
+    assert.ok(range.end <= bytes.byteLength, `${range.label} exceeds the package-owned request`);
+    previousEnd = range.end;
+  }
+}

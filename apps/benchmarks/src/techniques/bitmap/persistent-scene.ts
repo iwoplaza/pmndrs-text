@@ -1,15 +1,14 @@
 import {
-  createFontLibrary,
+  glyph,
   type Constraints,
   type FontFeature,
   type Font,
-  type FontLibrary,
   type ParagraphLayout,
   type ParagraphLayoutSummary,
   type TextStyle,
 } from '@pmndrs/glyph';
-import { selectBitmapStrikePpem, type bitmap } from '@pmndrs/glyph/three/bitmap';
-import { Text } from '@pmndrs/glyph/three';
+import { selectBitmapStrikePpem, type bitmap } from '@pmndrs/glyph/raster/bitmap';
+import type { Text } from '@pmndrs/glyph/three';
 import * as THREE from 'three/webgpu';
 
 import type { BenchmarkFontFixture } from '../../benchmark/font-fixtures';
@@ -39,17 +38,9 @@ import {
 } from '../../renderer/persistent-render-host';
 import { createPersistentSceneActivation } from '../../renderer/persistent-scene-activation';
 import { loadBitmapFontAsset, type BitmapFontAsset } from '../../workloads/font-assets/bitmap';
-import {
-  captureGlyphOrigins,
-  createGlyphOriginTransition,
-  glyphOriginPolicy,
-  snapGlyphOrigins,
-  transitionPresentation,
-  type GlyphOriginPresentation,
-  type GlyphOriginTransition,
-  type ShapedTextIdentity,
-} from '../shared/glyph-origin-transition';
+import { retainedGlyphPresentation, type GlyphOriginPresentation } from '../shared/glyph-origin-presentation';
 import { bitmapAtlasConfiguration, type BitmapAtlasPageStats } from './metadata';
+import { createBenchmarkThreeRoot, disposeBenchmarkThreeRoot } from '../../three-root';
 
 export interface BitmapTextLiveStats {
   readonly technique: 'bitmap';
@@ -137,23 +128,10 @@ export interface BitmapTextSceneSnapshot extends GlyphOriginPresentation {
   readonly layoutHeight: number;
 }
 
-type BitmapTextPresentation =
-  | {
-      readonly kind: 'transitioning';
-      readonly revision: number;
-      readonly transition: GlyphOriginTransition;
-      readonly fromX: number;
-      readonly fromY: number;
-      readonly toX: number;
-      readonly toY: number;
-      readonly presented: GlyphOriginPresentation;
-      progress: number;
-    }
-  | {
-      readonly kind: 'settled';
-      readonly revision: number;
-      readonly presented: GlyphOriginPresentation;
-    };
+interface BitmapTextPresentation {
+  readonly revision: number;
+  readonly presented: GlyphOriginPresentation;
+}
 
 export interface BitmapTextPersistentSceneOptions {
   readonly anchor?: LiveTextAnchor;
@@ -191,8 +169,6 @@ export interface BitmapTextPersistentScene extends PersistentRenderScene {
    * that is resolved.
    */
   update(options: BitmapTextSceneUpdate): BitmapTextSceneSnapshot;
-  setPresentationProgress(revision: number, progress: number): BitmapTextSceneSnapshot;
-  finishPresentation(revision: number): BitmapTextSceneSnapshot;
 }
 
 /** The shaping and box inputs one committed generation of the live paragraph was built from. */
@@ -218,30 +194,8 @@ function countDraws(object: THREE.Object3D): number {
   return count;
 }
 
-function countRenderedGlyphs(object: THREE.Object3D): number {
-  let count = 0;
-  object.traverse((child) => {
-    if (child instanceof THREE.Mesh && child.geometry instanceof THREE.InstancedBufferGeometry) {
-      count += child.geometry.instanceCount;
-    }
-  });
-  return count;
-}
-
-function updateBitmapDrawVisibility(object: THREE.Object3D): void {
-  let glyphCount = 0;
-  object.traverse((child) => {
-    if (!(child instanceof THREE.Mesh)) return;
-    const availableVertexCount = child.geometry.index?.count ?? child.geometry.getAttribute('position')?.count ?? 0;
-    const vertexCount = Number.isFinite(child.geometry.drawRange.count)
-      ? Math.min(availableVertexCount, child.geometry.drawRange.count)
-      : availableVertexCount;
-    const instanceCount =
-      child.geometry instanceof THREE.InstancedBufferGeometry ? child.geometry.instanceCount : vertexCount > 0 ? 1 : 0;
-    child.visible = vertexCount > 0 && instanceCount > 0;
-    if (child.geometry instanceof THREE.InstancedBufferGeometry) glyphCount += child.geometry.instanceCount;
-  });
-  object.visible = glyphCount > 0;
+function countShapedGlyphs(text: Text<typeof bitmap>): number {
+  return text.measure().glyphCount;
 }
 
 function countMissingGlyphs(layout: ParagraphLayoutSummary): number {
@@ -268,7 +222,6 @@ function bitmapStyle(fontSize: number, shaping: BitmapTextShaping): TextStyle {
 }
 
 interface ActiveBitmapTextPersistentScene {
-  finishPresentation(revision: number): BitmapTextSceneSnapshot;
   frame(context: PersistentRenderFrameContext): void;
   hasFontFixture(fixture: BenchmarkFontFixture): boolean;
   loadFontFixture(fixture: BenchmarkFontFixture): Promise<void>;
@@ -276,7 +229,6 @@ interface ActiveBitmapTextPersistentScene {
   resetView(): void;
   resize(viewport: PersistentRenderViewport): void;
   setGridVisible(visible: boolean): void;
-  setPresentationProgress(revision: number, progress: number): BitmapTextSceneSnapshot;
   telemetry(
     snapshot: Parameters<NonNullable<PersistentRenderScene['telemetry']>>[0],
     viewport: PersistentRenderViewport,
@@ -354,12 +306,6 @@ export function createBitmapTextPersistentScene(options: BitmapTextPersistentSce
     update(update) {
       return active().update(update);
     },
-    setPresentationProgress(revision, progress) {
-      return active().setPresentationProgress(revision, progress);
-    },
-    finishPresentation(revision) {
-      return active().finishPresentation(revision);
-    },
   };
 }
 
@@ -397,10 +343,10 @@ async function activateBitmapTextPersistentScene(
   const renderer = context.renderer as THREE.WebGPURenderer;
   const canvasSurface = createCanvasSurface(renderer, width, viewportHeight, gridVisible);
   const textUpdateTelemetry = createTextUpdateTelemetry();
-  const library = createFontLibrary();
   let loadedFont: Font<typeof bitmap> | undefined;
   let fontFixtureController: RetainedFontFixtureController<BitmapPersistentFontFixture> | undefined;
   let line: Text<typeof bitmap> | undefined;
+  const glyphRoot = createBenchmarkThreeRoot(options.id ?? 'bitmap-text');
   try {
     const fontStarted = performance.now();
     const loadedAsset = await loadBitmapFontAsset({
@@ -408,7 +354,6 @@ async function activateBitmapTextPersistentScene(
       fixture: fontFixture,
       delivery,
       bitmapDensity: 'live',
-      library,
       signal: context.signal,
       ...(onBakeProgress === undefined ? {} : { onProgress: onBakeProgress }),
     });
@@ -424,7 +369,7 @@ async function activateBitmapTextPersistentScene(
       layout: bitmapLayout(currentTextAlign),
       style: bitmapStyle(fontSize, currentShaping),
     };
-    line = new Text({
+    line = glyphRoot.createText({
       font: committedState.font,
       text: committedState.text,
       constraints: committedState.constraints,
@@ -444,16 +389,14 @@ async function activateBitmapTextPersistentScene(
     if (expectedGlyphCount !== undefined) {
       const missing = countMissingGlyphs(initialLayout);
       if (missing !== 0) throw new Error(`benchmark specimen contains ${missing} missing glyphs`);
-      const glyphCount = countRenderedGlyphs(activeText);
+      const glyphCount = countShapedGlyphs(activeText);
       if (glyphCount !== expectedGlyphCount) {
-        throw new Error(`live workload rendered ${glyphCount} glyphs; expected ${expectedGlyphCount}`);
+        throw new Error(`live workload shaped ${glyphCount} glyphs; expected ${expectedGlyphCount}`);
       }
     }
     const textReadyMs = performance.now() - textStarted;
-    updateBitmapDrawVisibility(activeText);
     const atlas = bitmapAtlasConfiguration(loadedAsset.data);
     fontFixtureController = createRetainedFontFixtureController(
-      library,
       {
         fixture: fontFixture,
         asset: { atlas, font: loadedAsset.loaded, fontLoadMs, loaded: loadedAsset, loadedFont },
@@ -496,6 +439,8 @@ async function activateBitmapTextPersistentScene(
         layout: next.layout,
         style: next.style,
       });
+      activeText.visible = next.text.length > 0;
+      glyph.shape();
       activeText.updateMatrixWorld(true);
       if (activeText.error !== undefined) throw activeText.error;
     };
@@ -504,65 +449,28 @@ async function activateBitmapTextPersistentScene(
       committedState = next;
     };
     let presentation: BitmapTextPresentation = {
-      kind: 'settled',
       revision: 0,
-      presented: { transitioned: false, matchedGlyphs: 0, targetGlyphs: countRenderedGlyphs(activeText) },
-    };
-    const disposePresentation = (): void => {
-      if (presentation.kind !== 'transitioning') return;
-      presentation.transition.dispose();
+      presented: { transitioned: false, matchedGlyphs: 0, targetGlyphs: countShapedGlyphs(activeText) },
     };
     const presentationSnapshot = (): BitmapTextSceneSnapshot => {
       const layout = committedLayout();
       return {
         ...presentation.presented,
         revision: presentation.revision,
-        presentationProgress: presentation.kind === 'settled' ? 1 : presentation.progress,
-        glyphCount: countRenderedGlyphs(activeText),
+        presentationProgress: 1,
+        glyphCount: countShapedGlyphs(activeText),
         lineCount: layout.lineCount,
         layoutWidth: layout.width,
         layoutHeight: layout.height,
       };
     };
-    const setPresentationProgress = (revision: number, progress: number): BitmapTextSceneSnapshot => {
-      if (!Number.isFinite(progress) || progress < 0 || progress > 1) {
-        throw new RangeError('bitmap scene presentation progress must be in [0, 1]');
-      }
-      if (closing || disposed || presentation.revision !== revision) {
-        throw new DOMException('The bitmap scene presentation is stale', 'AbortError');
-      }
-      if (presentation.kind === 'settled') {
-        if (progress !== 1) {
-          throw new DOMException('The bitmap scene presentation is settled', 'InvalidStateError');
-        }
-        return presentationSnapshot();
-      }
-      presentation.transition.setProgress(progress);
-      updateBitmapDrawVisibility(activeText);
-      activeText.position.set(
-        presentation.fromX + (presentation.toX - presentation.fromX) * progress,
-        presentation.fromY + (presentation.toY - presentation.fromY) * progress,
-        0,
-      );
-      presentation.progress = progress;
-      if (progress === 1) {
-        presentation.transition.finish();
-        updateBitmapDrawVisibility(activeText);
-        presentation = { kind: 'settled', revision: presentation.revision, presented: presentation.presented };
-      }
-      return presentationSnapshot();
-    };
-    const loadFixtureAsset = async (
-      fixture: BenchmarkFontFixture,
-      fixtureLibrary: FontLibrary,
-    ): Promise<BitmapPersistentFontFixture> => {
+    const loadFixtureAsset = async (fixture: BenchmarkFontFixture): Promise<BitmapPersistentFontFixture> => {
       const fontStartedAt = performance.now();
       const loaded = await loadBitmapFontAsset({
         technique: 'bitmap',
         fixture,
         delivery,
         bitmapDensity: 'live',
-        library: fixtureLibrary,
         signal: context.signal,
         ...(onBakeProgress === undefined ? {} : { onProgress: onBakeProgress }),
       });
@@ -580,19 +488,9 @@ async function activateBitmapTextPersistentScene(
         throw error;
       }
     };
-    const committedShapedIdentity = (): ShapedTextIdentity => ({
-      fontFixture: activeFontFixture.current.fixture,
-      text: committedState.text,
-      language: currentShaping.language,
-      direction: currentShaping.direction,
-      features: currentShaping.features,
-    });
     const reflowToViewport = (update?: BitmapTextSceneUpdate): BitmapTextSceneSnapshot => {
       const updateStartedAt = performance.now();
       const revision = ++layoutRevision;
-      const fromX = activeText.position.x;
-      const fromY = activeText.position.y;
-      disposePresentation();
       const targetFontSize = update?.fontSize ?? currentFontSize;
       const targetAnchor = update?.anchor ?? anchor;
       const targetTextAlign = update?.textAlign ?? currentTextAlign;
@@ -605,17 +503,7 @@ async function activateBitmapTextPersistentScene(
       const targetContentWidth = benchmarkContentWidth(width, targetLayoutWidthRatio);
       const targetFixture = update?.fontFixture ?? activeFontFixture.current.fixture;
       const nextText = update?.text ?? committedState.text;
-      const policy = glyphOriginPolicy(committedShapedIdentity(), {
-        fontFixture: targetFixture,
-        text: nextText,
-        language: targetShaping.language,
-        direction: targetShaping.direction,
-        features: targetShaping.features,
-      });
-      // Capturing origins allocates one map entry per glyph, so a reflow that will snap never pays for the match.
-      const previousOrigins = policy === 'transition' ? captureGlyphOrigins(activeText) : undefined;
       const readyUpdateAt = activeFontFixture.commit(targetFixture, (fixture) => {
-        if (nextText.length === 0) activeText.visible = false;
         commitState({
           font: fixture.loadedFont,
           text: nextText,
@@ -624,7 +512,6 @@ async function activateBitmapTextPersistentScene(
           style: bitmapStyle(targetFontSize, targetShaping),
         });
         const committedAt = performance.now();
-        updateBitmapDrawVisibility(activeText);
         currentFontSize = targetFontSize;
         currentTextAlign = targetTextAlign;
         currentShaping = targetShaping;
@@ -636,32 +523,13 @@ async function activateBitmapTextPersistentScene(
         activeText.position.set(committedPosition[0], committedPosition[1], 0);
         return committedAt;
       });
-      if (currentExpectedGlyphCount !== undefined && countRenderedGlyphs(activeText) !== currentExpectedGlyphCount) {
+      if (currentExpectedGlyphCount !== undefined && countShapedGlyphs(activeText) !== currentExpectedGlyphCount) {
         throw new Error(
-          `live workload rendered ${countRenderedGlyphs(activeText)} glyphs; expected ${currentExpectedGlyphCount}`,
+          `live workload shaped ${countShapedGlyphs(activeText)} glyphs; expected ${currentExpectedGlyphCount}`,
         );
       }
       const reflowSceneStartedAt = performance.now();
-      if (previousOrigins === undefined) {
-        presentation = { kind: 'settled', revision, presented: snapGlyphOrigins(activeText) };
-      } else {
-        const targetPosition = targetLinePosition();
-        const transition = createGlyphOriginTransition(activeText, previousOrigins);
-        transition.setProgress(0);
-        updateBitmapDrawVisibility(activeText);
-        activeText.position.set(fromX, fromY, 0);
-        presentation = {
-          kind: 'transitioning',
-          revision,
-          transition,
-          fromX,
-          fromY,
-          toX: targetPosition[0],
-          toY: targetPosition[1],
-          presented: transitionPresentation(transition),
-          progress: 0,
-        };
-      }
+      presentation = { revision, presented: retainedGlyphPresentation(activeText) };
       const finishedAt = performance.now();
       textUpdateTelemetry.record({
         scheduleMs: 0,
@@ -686,7 +554,7 @@ async function activateBitmapTextPersistentScene(
         return;
       }
       try {
-        setPresentationProgress(reflowToViewport().revision, 1);
+        reflowToViewport();
       } catch (error) {
         if (!closing && !disposed && !(error instanceof DOMException && error.name === 'AbortError')) onError(error);
       }
@@ -695,7 +563,6 @@ async function activateBitmapTextPersistentScene(
       frame() {
         if (closing || disposed) return;
         const startedAt = performance.now();
-        updateBitmapDrawVisibility(activeText);
         canvasSurface.render(scene, camera);
         if (firstDrawMs === 0) firstDrawMs = performance.now() - startedAt;
       },
@@ -716,9 +583,9 @@ async function activateBitmapTextPersistentScene(
           dpr: viewport.dpr,
           showGrid: gridVisible,
           ...snapshot,
-          glyphCount: countRenderedGlyphs(activeText),
+          glyphCount: countShapedGlyphs(activeText),
           missingGlyphCount: countMissingGlyphs(layout),
-          drawCount: countDraws(activeText),
+          drawCount: countDraws(scene),
           layoutWidth: layout.width,
           layoutHeight: layout.height,
           lineCount: layout.lineCount,
@@ -776,18 +643,14 @@ async function activateBitmapTextPersistentScene(
         }
         return reflowToViewport(next);
       },
-      setPresentationProgress,
-      finishPresentation(revision) {
-        return setPresentationProgress(revision, 1);
-      },
       dispose() {
         if (disposed) return;
         closing = true;
         disposed = true;
         layoutRevision += 1;
-        disposePresentation();
         activeText.removeFromParent();
         activeText.dispose();
+        disposeBenchmarkThreeRoot(glyphRoot);
         activeFontFixture.dispose();
         canvasSurface.dispose();
       },
@@ -797,6 +660,7 @@ async function activateBitmapTextPersistentScene(
       line.removeFromParent();
       line.dispose();
     }
+    disposeBenchmarkThreeRoot(glyphRoot);
     if (fontFixtureController === undefined) loadedFont?.dispose();
     else fontFixtureController.dispose();
     canvasSurface.dispose();

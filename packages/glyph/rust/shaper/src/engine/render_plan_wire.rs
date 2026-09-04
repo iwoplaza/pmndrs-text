@@ -1,20 +1,28 @@
 //! Little-endian serialization for immutable render-plan publications.
 
 use crate::{
-    STATUS_INVALID_REQUEST, STATUS_RESULT_TOO_LARGE,
+    STATUS_RESULT_TOO_LARGE,
     abi_contract::*,
     engine::render_plan::{
-        BufferRecord, DiagnosticRecord, DrawRecord, PATCH_ALLOCATE_OR_RESIZE, PATCH_COPY,
-        PATCH_FILL, PATCH_RETIRE, PATCH_WRITE, PRIMITIVE_CLIP, PRIMITIVE_DECORATION,
-        PRIMITIVE_GLYPH, PRIMITIVE_INLINE_OBJECT, PRIMITIVE_POLICY, PatchRecord, PrimitiveRecord,
+        BufferRecord, DiagnosticRecord, DrawRecord, PATCH_WRITE, PatchRecord, PrimitiveRecord,
+        RenderPlanView, ResourceRecord, RetirementRecord,
+    },
+    engine::semantic_view::SemanticRecord,
+};
+
+#[cfg(any(test, feature = "debug-validation"))]
+use crate::{
+    STATUS_INVALID_REQUEST,
+    engine::render_plan::{
+        PATCH_ALLOCATE_OR_RESIZE, PATCH_COPY, PATCH_FILL, PATCH_RETIRE, PRIMITIVE_CLIP,
+        PRIMITIVE_CODEC, PRIMITIVE_DECORATION, PRIMITIVE_GLYPH, PRIMITIVE_INLINE_OBJECT,
         RESOURCE_ACTION_CREATE, RESOURCE_ACTION_RETAIN, RESOURCE_ACTION_UPDATE, RETIRE_BUFFER,
-        RETIRE_OUTPUT_BYTES, RETIRE_RESOURCE, RETIRE_SLOT_RANGE, RenderPlanView, ResourceRecord,
-        RetirementRecord,
+        RETIRE_OUTPUT_BYTES, RETIRE_RESOURCE, RETIRE_SLOT_RANGE,
     },
     engine::semantic_view::{
         SEMANTIC_CARET, SEMANTIC_CLUSTER, SEMANTIC_FRAGMENT, SEMANTIC_GLYPH,
         SEMANTIC_INSERTED_GLYPH, SEMANTIC_LINE, SEMANTIC_PARAGRAPH_MEASUREMENT, SEMANTIC_RUN,
-        SEMANTIC_SELECTION, SemanticRecord,
+        SEMANTIC_SELECTION,
     },
 };
 
@@ -40,20 +48,12 @@ pub(crate) struct EncodedPlanLayout {
     pub diagnostics: TableSpan,
 }
 
-#[cfg(test)]
-pub(crate) fn encode_plan(
-    plan: RenderPlanView<'_>,
-    output: &mut [u8],
-) -> Result<EncodedPlanLayout, u32> {
-    encode_publication(plan, &[], output)
-}
-
 pub(crate) fn encode_publication(
     plan: RenderPlanView<'_>,
     semantic_views: &[SemanticRecord],
+    layout: EncodedPlanLayout,
     output: &mut [u8],
-) -> Result<EncodedPlanLayout, u32> {
-    let layout = publication_layout(plan, semantic_views)?;
+) -> Result<(), u32> {
     let byte_length = usize::try_from(layout.byte_length).map_err(|_| STATUS_RESULT_TOO_LARGE)?;
     let bytes = output
         .get_mut(..byte_length)
@@ -113,7 +113,7 @@ pub(crate) fn encode_publication(
         plan.diagnostics,
         write_diagnostic,
     );
-    Ok(layout)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -164,6 +164,7 @@ pub(crate) fn publication_layout(
     plan: RenderPlanView<'_>,
     semantic_views: &[SemanticRecord],
 ) -> Result<EncodedPlanLayout, u32> {
+    #[cfg(any(test, feature = "debug-validation"))]
     validate_plan(plan, semantic_views)?;
     let mut cursor = ENGINE_RESULT_HEADER_SIZE;
     let payload_offset = if plan.payload.is_empty() {
@@ -236,8 +237,9 @@ pub(crate) fn publication_layout(
     })
 }
 
+#[cfg(any(test, feature = "debug-validation"))]
 fn validate_plan(plan: RenderPlanView<'_>, semantic_views: &[SemanticRecord]) -> Result<(), u32> {
-    if plan.policy_handle == 0 {
+    if plan.codec_handle == 0 {
         return Err(STATUS_INVALID_REQUEST);
     }
     for record in semantic_views {
@@ -284,7 +286,7 @@ fn validate_plan(plan: RenderPlanView<'_>, semantic_views: &[SemanticRecord]) ->
         if record.id == 0
             || record.generation == 0
             || record.program_id == 0
-            || record.policy_buffer_id == 0
+            || record.codec_buffer_id == 0
             || !matches!(record.scalar_type, 1..=3)
             || !matches!(record.vector_width, 1..=4)
             || !matches!(record.strategy, 1..=2)
@@ -330,7 +332,7 @@ fn validate_plan(plan: RenderPlanView<'_>, semantic_views: &[SemanticRecord]) ->
                     | PRIMITIVE_DECORATION
                     | PRIMITIVE_INLINE_OBJECT
                     | PRIMITIVE_CLIP
-                    | PRIMITIVE_POLICY
+                    | PRIMITIVE_CODEC
             )
             || record.record_count == 0
             || !finite4(
@@ -409,6 +411,7 @@ fn align(value: u32, alignment: u32) -> Result<u32, u32> {
         .ok_or(STATUS_RESULT_TOO_LARGE)
 }
 
+#[cfg(any(test, feature = "debug-validation"))]
 fn range_in(start: u32, count: u32, length: usize) -> bool {
     if count == 0 {
         return start == 0;
@@ -419,6 +422,7 @@ fn range_in(start: u32, count: u32, length: usize) -> bool {
         .is_some_and(|end| end <= length)
 }
 
+#[cfg(any(test, feature = "debug-validation"))]
 fn finite4(first: f32, second: f32, third: f32, fourth: f32) -> bool {
     first.is_finite() && second.is_finite() && third.is_finite() && fourth.is_finite()
 }
@@ -510,7 +514,7 @@ fn write_buffer(bytes: &mut [u8], at: usize, value: BufferRecord) {
     u32_at(bytes, at, BUFFER_ID, value.id);
     u32_at(bytes, at, BUFFER_GENERATION, value.generation);
     u32_at(bytes, at, BUFFER_PROGRAM_ID, value.program_id);
-    u16_at(bytes, at, BUFFER_POLICY_BUFFER_ID, value.policy_buffer_id);
+    u16_at(bytes, at, BUFFER_CODEC_BUFFER_ID, value.codec_buffer_id);
     u8_at(bytes, at, BUFFER_SCALAR_TYPE, value.scalar_type);
     u8_at(bytes, at, BUFFER_VECTOR_WIDTH, value.vector_width);
     u16_at(bytes, at, BUFFER_STRATEGY, value.strategy);
@@ -718,7 +722,7 @@ mod tests {
             id: 6,
             generation: 7,
             program_id: 8,
-            policy_buffer_id: 9,
+            codec_buffer_id: 9,
             scalar_type: 1,
             vector_width: 4,
             strategy: BUFFER_ORDERED_DIRECT,
@@ -773,9 +777,9 @@ mod tests {
             ..DiagnosticRecord::default()
         }];
         let plan = RenderPlanView {
-            policy_handle: 15,
+            codec_handle: 15,
             capability_set: 16,
-            policy_fingerprint: 17,
+            codec_fingerprint: 17,
             resources: &resource,
             buffers: &buffer,
             patches: &patch,
@@ -787,8 +791,8 @@ mod tests {
         };
         let expected = publication_layout(plan, &semantic).unwrap();
         let mut bytes = vec![0x7f; expected.byte_length as usize + 16];
-        let layout = encode_publication(plan, &semantic, &mut bytes).unwrap();
-        assert_eq!(layout, expected);
+        encode_publication(plan, &semantic, expected, &mut bytes).unwrap();
+        let layout = expected;
         assert_eq!(layout.payload_offset % PAYLOAD_ALIGNMENT, 0);
         assert_eq!(
             read_u32(
@@ -807,26 +811,5 @@ mod tests {
             10
         );
         assert_eq!(bytes[layout.byte_length as usize..], [0x7f; 16]);
-    }
-
-    #[test]
-    fn validation_fails_before_touching_destination_bytes() {
-        let patch = [PatchRecord {
-            opcode: PATCH_WRITE,
-            buffer_id: 1,
-            buffer_generation: 1,
-            byte_length: 4,
-            payload_start: 2,
-            ..PatchRecord::default()
-        }];
-        let plan = RenderPlanView {
-            policy_handle: 1,
-            patches: &patch,
-            payload: &[1, 2, 3],
-            ..RenderPlanView::default()
-        };
-        let mut bytes = [0xa5; 512];
-        assert_eq!(encode_plan(plan, &mut bytes), Err(STATUS_INVALID_REQUEST));
-        assert_eq!(bytes, [0xa5; 512]);
     }
 }

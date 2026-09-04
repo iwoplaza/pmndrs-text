@@ -1,6 +1,6 @@
 /* @workflow {
   "name": "probe:live-update-latency",
-  "summary": "Measures input-to-visible-frame latency and glyph-transition behaviour for live text, font-size, and layout-width changes per technique.",
+  "summary": "Measures input-to-visible-frame latency and verifies retained reflow for live text, font-size, layout-width, and viewport changes per raster format.",
   "requirements": "Playwright Chromium with WebGPU. Set PROBE_BACKEND=webgl2 to measure the fallback backend.",
   "writes": "stdout only"
 } */
@@ -23,8 +23,8 @@ import { launchProjectChromium } from './support/project-chromium.mts';
 const root = fileURLToPath(new URL('..', import.meta.url));
 process.chdir(root);
 
-const techniques = ['bitmap', 'mtsdf', 'slug'] as const;
-type Technique = (typeof techniques)[number];
+const rasterFormats = ['bitmap', 'mtsdf', 'slug'] as const;
+type RasterFormatName = (typeof rasterFormats)[number];
 
 interface Scenario {
   readonly change: 'text' | 'typewriter' | 'font-size' | 'layout-width';
@@ -57,7 +57,7 @@ interface FrameObservation {
 }
 
 interface ScenarioResult extends Scenario {
-  readonly technique: Technique;
+  readonly technique: RasterFormatName;
   readonly observations: readonly FrameObservation[];
   readonly idle: FrameObservation;
   readonly framesPerSecond: number;
@@ -92,12 +92,17 @@ try {
     headless: true,
     args: ['--enable-gpu', '--ignore-gpu-blocklist', '--enable-unsafe-webgpu'],
   });
-  for (const technique of techniques) {
+  for (const format of rasterFormats) {
+    let resizeVerified = false;
     for (const scenario of scenarios) {
       const page = await browser.newPage({ viewport: { width: 1_280, height: 720 } });
       try {
-        await openWorkload(page, technique, scenario.workload);
-        results.push(await runScenario(page, technique, scenario));
+        await openWorkload(page, format, scenario.workload);
+        if (scenario.workload === 'benchmark-ipsum' && !resizeVerified) {
+          await verifyRetainedResize(page, format);
+          resizeVerified = true;
+        }
+        results.push(await runScenario(page, format, scenario));
       } finally {
         await page.close();
       }
@@ -110,7 +115,7 @@ try {
 
 report(results);
 
-async function openWorkload(page: Page, technique: Technique, workload: Scenario['workload']): Promise<void> {
+async function openWorkload(page: Page, technique: RasterFormatName, workload: Scenario['workload']): Promise<void> {
   const url =
     `http://127.0.0.1:${port}/?mode=benchmark&technique=${technique}` +
     `&backend=${backend}&delivery=baked&dpr=1&font=inter&workload=${workload}`;
@@ -140,9 +145,39 @@ async function openWorkload(page: Page, technique: Technique, workload: Scenario
   }
   await page.evaluate(installCanvasProbe);
   await page.waitForTimeout(600);
+  await assertNoLiveError(page);
 }
 
-async function runScenario(page: Page, technique: Technique, scenario: Scenario): Promise<ScenarioResult> {
+/** Proves a real viewport resize commits through the retained Text without entering the detached-glyph helper. */
+async function verifyRetainedResize(page: Page, technique: RasterFormatName): Promise<void> {
+  const testId = `${technique}-live-viewport`;
+  const before = Number(await page.getByTestId(testId).getAttribute('data-layout-width'));
+  await page.setViewportSize({ width: 1_080, height: 720 });
+  await page.waitForFunction(
+    ({ expectedTestId, previousWidth }) => {
+      const viewport = document.querySelector<HTMLElement>(`[data-testid="${expectedTestId}"]`);
+      return (
+        viewport?.dataset.presentationPending === 'false' &&
+        viewport.dataset.presentationTransitioned === 'false' &&
+        Number(viewport.dataset.glyphCount) > 0 &&
+        Number(viewport.dataset.drawCount) > 0 &&
+        Number(viewport.dataset.layoutWidth) !== previousWidth
+      );
+    },
+    { expectedTestId: testId, previousWidth: before },
+    { timeout: 30_000 },
+  );
+  await assertNoLiveError(page);
+  await page.setViewportSize({ width: 1_280, height: 720 });
+  await page.waitForFunction(() => window.innerWidth === 1_280);
+}
+
+async function assertNoLiveError(page: Page): Promise<void> {
+  const errors = await page.locator('[data-testid$="-live-error"]').allTextContents();
+  if (errors.length > 0) throw new Error(`live benchmark rendered an error: ${errors.join(' | ')}`);
+}
+
+async function runScenario(page: Page, technique: RasterFormatName, scenario: Scenario): Promise<ScenarioResult> {
   const idle = await page.evaluate((windowMs) => window.liveUpdateCanvasProbe.observe(windowMs), observationWindowMs);
   const observations =
     scenario.control === undefined
@@ -157,6 +192,10 @@ async function runScenario(page: Page, technique: Technique, scenario: Scenario)
       targetGlyphs: viewport?.dataset.presentationTargetGlyphs,
     };
   }, `${technique}-live-viewport`);
+  await assertNoLiveError(page);
+  if (evidence.transitioned !== 'false') {
+    throw new Error(`${technique} benchmark reflow unexpectedly entered detached presentation`);
+  }
   return { ...scenario, technique, observations, idle, ...evidence };
 }
 

@@ -6,20 +6,16 @@ import {
   bitmapCoverageSlot,
   bitmapVertex,
   bitmapVertexSnapped,
-  msdfAtlasSizeAccessor,
-  msdfFragment,
-  msdfPixelRangeAccessor,
-  msdfSampleSlot,
   type TypeGpuBitmapFragmentInput,
   type TypeGpuBitmapFragmentOutput,
   type TypeGpuBitmapInstance,
   type TypeGpuBitmapVertexInput,
   type TypeGpuBitmapVertexOutput,
-} from '@pmndrs/glyph/typegpu';
+} from '@pmndrs/glyph/typegpu/bitmap';
+import { msdfAtlasSizeAccessor, msdfFragment, msdfPixelRangeAccessor, msdfSampleSlot } from '@pmndrs/glyph/typegpu';
 
-// The `/typegpu` subpath is one shader library, importable without any renderer so
-// WebGPU hosts reuse the canonical technique realizations instead of reimplementing
-// coverage math.
+// The technique-specific TypeGPU subpath is importable without any renderer, so a
+// WebGPU host pays only for the realization it selects.
 declare const vertexInput: TypeGpuBitmapVertexInput;
 const vertexOut: TypeGpuBitmapVertexOutput = bitmapVertex(vertexInput);
 const snappedOut: TypeGpuBitmapVertexOutput = bitmapVertexSnapped(vertexInput);

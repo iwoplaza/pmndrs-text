@@ -18,9 +18,10 @@ try {
   const portable = await bundle(
     'portable',
     `
-      import '@pmndrs/glyph-example-raster';
-      import { resolveRasterPlanProgram } from '@pmndrs/glyph/core';
-      if (resolveRasterPlanProgram(${JSON.stringify(glyphExample.id)}) === undefined) {
+      import { glyphExampleCodec } from '@pmndrs/glyph-example-raster';
+      import { registerRasterCodec } from '@pmndrs/glyph/config/raster';
+      if (glyphExampleCodec.raster.id !== ${JSON.stringify(glyphExample.id)} ||
+          registerRasterCodec(glyphExampleCodec) !== glyphExampleCodec) {
         throw new Error('portable root registration was tree-shaken');
       }
       process.stdout.write('portable-registered');
@@ -43,20 +44,19 @@ try {
       `,
     );
     assert(!shader.code.includes('@pmndrs/glyph/three'), `${subpath} bundle imports the Three integration`);
-    assert(!shader.code.includes('registerThreeRasterPlanProgram'), `${subpath} bundle registers a renderer`);
+    assert(!shader.code.includes('registerThreeRasterProgram'), `${subpath} bundle registers a renderer`);
     assert.equal(await execute(shader.file), language);
   }
 
   const three = await bundle(
     'explicit-three',
     `
-      import { registerThreeRasterPlanProgram } from '@pmndrs/glyph/three';
-      import { glyphExamplePlanProgram } from '@pmndrs/glyph-example-raster';
+      import { registerThreeRasterProgram } from '@pmndrs/glyph/three';
+      import { glyphExampleCodec } from '@pmndrs/glyph-example-raster';
       import { glyphExampleTslVariant } from '@pmndrs/glyph-example-raster/tsl';
 
-      registerThreeRasterPlanProgram({
-        technique: glyphExamplePlanProgram.technique,
-        schema: glyphExamplePlanProgram.schema,
+      registerThreeRasterProgram({
+        codec: glyphExampleCodec,
         variant: {
           ...glyphExampleTslVariant,
           id: 'bundle-tsl',

@@ -1,7 +1,6 @@
-import { span, txt, type AnyRasterTechnique, type Font, type TextLiteral } from '@pmndrs/glyph';
-import { Text } from '@pmndrs/glyph/three';
+import { span, txt, type Font, type RasterFormatMetadata, type TextLiteral } from '@pmndrs/glyph';
 
-import type { RasterTechnique } from '../../benchmark/url-state';
+import type { RasterFormatName } from '../../benchmark/url-state';
 import type { ComparisonWorkloadConfiguration, ComparisonWorkloadDefinition } from '../comparison/contracts';
 import { benchmarkContentWidth, LIVE_TEXT_COLOR_CSS, LIVE_TEXT_LINE_HEIGHT } from '../shared/text-style';
 import {
@@ -47,8 +46,8 @@ export const RICH_TEXT_SMALL_CAPS_FEATURE = 'smcp';
  * fallback: no Latin fixture can shape Devanagari at all.
  */
 export interface RichTextCompanionFonts {
-  readonly emphasis: Font<AnyRasterTechnique>;
-  readonly foreign: Font<AnyRasterTechnique>;
+  readonly emphasis: Font<RasterFormatMetadata>;
+  readonly foreign: Font<RasterFormatMetadata>;
 }
 
 export interface RichTextComposition {
@@ -114,7 +113,7 @@ export function richTextComposition(
 export function richTextLiteral(
   fonts: RichTextCompanionFonts,
   composition: RichTextComposition,
-): TextLiteral<AnyRasterTechnique> {
+): TextLiteral<RasterFormatMetadata> {
   const properNoun = composition.smallCaps
     ? span(fonts.emphasis, { features: [{ tag: RICH_TEXT_SMALL_CAPS_FEATURE }] })
     : span(fonts.emphasis);
@@ -140,7 +139,10 @@ export function richTextSpanNames(composition: RichTextComposition): readonly Ri
 }
 
 /** The authored ranges are load-bearing evidence, so prose drift must fail loudly rather than silently re-attribute. */
-export function assertRichTextSpans(literal: TextLiteral<AnyRasterTechnique>, composition: RichTextComposition): void {
+export function assertRichTextSpans(
+  literal: TextLiteral<RasterFormatMetadata>,
+  composition: RichTextComposition,
+): void {
   const expected = richTextSpanNames(composition).map((name) => ({ name, ...richTextSpanRange(name) }));
   if (literal.spans.length !== expected.length) {
     throw new Error(`rich text composed ${String(literal.spans.length)} spans instead of ${String(expected.length)}`);
@@ -218,6 +220,7 @@ export const richTextWorkload = {
       dpr: context.dpr,
       elapsedMs: context.animationElapsedMs,
       font: context.font,
+      root: context.root,
       fontSize: context.configuration.fontSize,
       layoutWidthRatio: context.configuration.layoutWidthRatio,
       paintOpacity: context.configuration.paintOpacity,
@@ -250,7 +253,7 @@ export function richTextCompanionFonts(companions: readonly WorkloadFont[]): Ric
  * the same technique gate the paint-effects lane already encodes.
  */
 function richTextParagraphPaint(
-  technique: RasterTechnique,
+  technique: RasterFormatName,
   fontSize: number,
   paintOpacity: number,
   paintShadowEnabled: boolean,
@@ -278,7 +281,7 @@ export function createRichTextEntries(
     readonly paintOpacity: number;
     readonly paintShadowEnabled: boolean;
     readonly paintStrokeWidth: number;
-    readonly technique: RasterTechnique;
+    readonly technique: RasterFormatName;
     readonly viewportWidth: number;
   },
 ): readonly ComparisonWorkloadEntry[] {
@@ -298,7 +301,7 @@ export function createRichTextEntries(
     });
     const literal = richTextLiteral(context.companionFonts, composition);
     assertRichTextSpans(literal, composition);
-    const text = new Text({
+    const text = context.root.createText({
       font: context.font,
       rasterPixelRatio: context.dpr,
       text: literal,
@@ -306,7 +309,14 @@ export function createRichTextEntries(
       constraints: { width },
       layout: { wrap: 'word' },
     });
-    return { animationPhase: index, node: text, role: 'primary', sourceText: literal.text, text };
+    return {
+      animationPhase: index,
+      node: text,
+      role: 'primary',
+      sourceText: literal.text,
+      text,
+      richTextCompanionFonts: [context.companionFonts.emphasis, context.companionFonts.foreign],
+    };
   });
 }
 
@@ -365,7 +375,7 @@ export function applyRichTextRetainedConfiguration(
     ComparisonWorkloadConfiguration,
     'fontSize' | 'paintOpacity' | 'paintShadowEnabled' | 'paintStrokeWidth'
   >,
-  technique: RasterTechnique,
+  technique: RasterFormatName,
 ): void {
   const paint = richTextParagraphPaint(
     technique,
@@ -390,16 +400,11 @@ export function applyRichTextRetainedConfiguration(
 }
 
 /**
- * Recovers the companion faces from the retained paragraph rather than caching them beside the entry. The spans that
- * selected them are the authoritative record, so reading them back keeps a retained update from ever republishing a
- * face the committed paragraph does not already hold a lease on.
+ * Reads the immutable companion leases retained beside the entry. `Text` intentionally does not expose the command
+ * compiler's generated span records as mutable public state.
  */
 function retainedCompanionFonts(entry: ComparisonWorkloadEntry): RichTextCompanionFonts {
-  const selected = (name: RichTextSpanName): WorkloadFont => {
-    const range = richTextSpanRange(name);
-    const selection = entry.text.spans.find(({ start, end }) => start === range.start && end === range.end)?.font;
-    if (selection === undefined) throw new Error(`rich text paragraph lost its ${name} span font`);
-    return 'fonts' in selection ? selection.fonts[0] : selection;
-  };
-  return { emphasis: selected('face'), foreign: selected('foreign') };
+  const fonts = entry.richTextCompanionFonts;
+  if (fonts === undefined) throw new Error('rich text paragraph lost its retained companion fonts');
+  return { emphasis: fonts[0], foreign: fonts[1] };
 }

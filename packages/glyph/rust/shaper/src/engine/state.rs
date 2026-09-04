@@ -8,19 +8,19 @@ use crate::{
 
 use super::{
     cluster_state::{ClusterArena, ClusterBuildInput},
+    codec::{ALLOCATION_ORDERED_DIRECT, CapabilitySetId, ValidatedCodec},
+    codec_gather::{
+        CodecGatherWorkspace, DEFAULT_GATHER_RECORD_CAPACITY, GatherError, LayoutPlanInput,
+        RetainedGather,
+    },
     flow_composition::{EllipsisReplacement, FlowLayoutArena},
     flow_geometry::FlowGeometryArena,
     font_binding::FontRenderBinding,
     frame::{
         CommittedUpdate, MeasuredParagraph, OVERFLOW_CLIP, OVERFLOW_ELLIPSIS, OVERFLOW_VISIBLE,
-        PlannerRevision, PreparedUpdate, UpdateRequest,
+        PreparedUpdate, RootRevision, UpdateRequest,
     },
     identity_index::IdentityIndex,
-    policy::{ALLOCATION_ORDERED_DIRECT, CapabilitySetId, ValidatedPolicy},
-    policy_gather::{
-        DEFAULT_GATHER_RECORD_CAPACITY, GatherError, LayoutPlanInput, PolicyGatherWorkspace,
-        RetainedGather,
-    },
     positioning::{PositionedGlyphArena, SEMANTIC_F32_FIELD_COUNT, SEMANTIC_U32_FIELD_COUNT},
     render_plan::RenderPlanView,
     render_plan_compiler::{RenderPlanCompiler, RenderPlanCompilerError},
@@ -59,10 +59,10 @@ impl FrameFault {
 pub enum EngineError {
     InvalidHandle,
     HandleConflict,
-    PolicyMissing,
+    CodecMissing,
     FontStackMissing,
-    PlannerConflict,
-    PlannerMissing,
+    RootConflict,
+    RootMissing,
     RevisionConflict,
     RevisionExhausted,
     /// The request was rejected for a cause the engine does not classify further: a malformed
@@ -70,7 +70,7 @@ pub enum EngineError {
     /// Every cause a caller can act on has its own variant below; this one never names one.
     InvalidRequest,
     ResultTooLarge,
-    /// A backend tried to dispose a policy or font stack still named by committed planner state.
+    /// A renderer tried to dispose a codec or font stack still named by committed root state.
     RegistrationInUse,
     /// A style's `[start, end)` is inverted, reaches past the end of the paragraph's text, or lands
     /// inside a UTF-16 surrogate pair.
@@ -131,11 +131,11 @@ impl EngineError {
 
 #[derive(Default)]
 pub struct TextEngine {
-    policies: BTreeMap<u32, ValidatedPolicy>,
+    codecs: BTreeMap<u32, ValidatedCodec>,
     font_bindings: Vec<RegisteredFontBinding>,
     font_stacks: Vec<RegisteredFontStack>,
     planners: BTreeMap<u32, PlannerState>,
-    gather: PolicyGatherWorkspace,
+    gather: CodecGatherWorkspace,
     gather_cache: Option<GatherCacheKey>,
     prepared_gather_cache: Option<GatherCacheKey>,
 }
@@ -193,7 +193,7 @@ struct BoundaryCandidate {
 /// it leave-committed before preparing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SpeculativeTransaction {
-    revision: PlannerRevision,
+    revision: RootRevision,
     /// Increments whenever a queried paragraph's semantic prefix (text/style) or the
     /// lifecycle input rebuilds cold; geometry-only extension keeps the generation.
     generation: u32,
@@ -204,9 +204,9 @@ struct SpeculativeTransaction {
 
 #[derive(Default)]
 struct PlannerState {
-    revision: PlannerRevision,
+    revision: RootRevision,
     acknowledged_publication_generation: u32,
-    policy_binding: Option<PolicyBinding>,
+    codec_binding: Option<CodecBinding>,
     speculative: Option<SpeculativeTransaction>,
     plan: RenderPlanCompiler,
     semantic_records: Vec<super::semantic_view::SemanticRecord>,
@@ -289,17 +289,17 @@ struct ParagraphState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct PolicyBinding {
+struct CodecBinding {
     handle: u32,
     fingerprint: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct GatherCacheKey {
-    planner_id: u32,
-    revision: PlannerRevision,
-    policy_handle: u32,
-    policy_fingerprint: u64,
+    root_id: u32,
+    revision: RootRevision,
+    codec_handle: u32,
+    codec_fingerprint: u64,
     capability_set: u32,
 }
 
@@ -476,58 +476,58 @@ impl TextEngine {
         })
     }
 
-    pub fn register_policy(
+    pub fn register_codec(
         &mut self,
         handle: u32,
-        policy: ValidatedPolicy,
+        codec: ValidatedCodec,
     ) -> Result<(), EngineError> {
         if handle == 0 {
             return Err(EngineError::InvalidHandle);
         }
-        if let Some(existing) = self.policies.get(&handle) {
-            return if existing == &policy {
+        if let Some(existing) = self.codecs.get(&handle) {
+            return if existing == &codec {
                 Ok(())
             } else {
                 Err(EngineError::HandleConflict)
             };
         }
         self.gather
-            .reserve_policy(&policy, DEFAULT_GATHER_RECORD_CAPACITY)
+            .reserve_codec(&codec, DEFAULT_GATHER_RECORD_CAPACITY)
             .map_err(|_| EngineError::ResultTooLarge)?;
-        self.policies.insert(handle, policy);
+        self.codecs.insert(handle, codec);
         self.invalidate_gather_cache();
         Ok(())
     }
 
-    pub fn dispose_policy(&mut self, handle: u32) -> Result<(), EngineError> {
+    pub fn dispose_codec(&mut self, handle: u32) -> Result<(), EngineError> {
         if self.planners.values().any(|planner| {
             planner
-                .policy_binding
+                .codec_binding
                 .is_some_and(|binding| binding.handle == handle)
         }) {
             return Err(EngineError::RegistrationInUse);
         }
-        self.policies
+        self.codecs
             .remove(&handle)
-            .ok_or(EngineError::PolicyMissing)?;
+            .ok_or(EngineError::CodecMissing)?;
         self.invalidate_gather_cache();
         Ok(())
     }
 
-    pub fn policy(&self, handle: u32) -> Result<&ValidatedPolicy, EngineError> {
-        self.policies.get(&handle).ok_or(EngineError::PolicyMissing)
+    pub fn codec(&self, handle: u32) -> Result<&ValidatedCodec, EngineError> {
+        self.codecs.get(&handle).ok_or(EngineError::CodecMissing)
     }
 
-    pub fn policy_count(&self) -> u32 {
-        self.policies.len().try_into().unwrap_or(u32::MAX)
+    pub fn codec_count(&self) -> u32 {
+        self.codecs.len().try_into().unwrap_or(u32::MAX)
     }
 
-    pub fn create_planner(&mut self, handle: u32) -> Result<(), EngineError> {
+    pub fn create_root(&mut self, handle: u32) -> Result<(), EngineError> {
         if handle == 0 {
             return Err(EngineError::InvalidHandle);
         }
         if self.planners.contains_key(&handle) {
-            return Err(EngineError::PlannerConflict);
+            return Err(EngineError::RootConflict);
         }
         let mut planner = PlannerState::default();
         let mut spare = ParagraphState::default();
@@ -537,48 +537,48 @@ impl TextEngine {
         Ok(())
     }
 
-    pub fn dispose_planner(&mut self, handle: u32) -> Result<(), EngineError> {
+    pub fn dispose_root(&mut self, handle: u32) -> Result<(), EngineError> {
         self.planners
             .remove(&handle)
-            .ok_or(EngineError::PlannerMissing)?;
+            .ok_or(EngineError::RootMissing)?;
         if self
             .gather_cache
-            .is_some_and(|cache| cache.planner_id == handle)
+            .is_some_and(|cache| cache.root_id == handle)
             || self
                 .prepared_gather_cache
-                .is_some_and(|cache| cache.planner_id == handle)
+                .is_some_and(|cache| cache.root_id == handle)
         {
             self.invalidate_gather_cache();
         }
         Ok(())
     }
 
-    pub fn reserve_planner_text(&mut self, handle: u32, capacity: u32) -> Result<(), EngineError> {
+    pub fn reserve_root_text(&mut self, handle: u32, capacity: u32) -> Result<(), EngineError> {
         let capacity = usize::try_from(capacity).map_err(|_| EngineError::ResultTooLarge)?;
         let planner = self
             .planners
             .get_mut(&handle)
-            .ok_or(EngineError::PlannerMissing)?;
+            .ok_or(EngineError::RootMissing)?;
         if let Some(paragraph) = planner.spare_paragraph.as_mut() {
             paragraph.reserve_text(capacity)?;
         }
         Ok(())
     }
 
-    pub(crate) fn planner_revision(&self, handle: u32) -> Result<PlannerRevision, EngineError> {
+    pub(crate) fn root_revision(&self, handle: u32) -> Result<RootRevision, EngineError> {
         self.planners
             .get(&handle)
             .map(|planner| planner.revision)
-            .ok_or(EngineError::PlannerMissing)
+            .ok_or(EngineError::RootMissing)
     }
 
     #[cfg(test)]
-    pub(crate) fn planner_text(&self, handle: u32) -> Result<&[u16], EngineError> {
+    pub(crate) fn root_text(&self, handle: u32) -> Result<&[u16], EngineError> {
         self.planners
             .get(&handle)
             .and_then(PlannerState::first_paragraph_state)
             .map(|paragraph| paragraph.text.committed().units.as_slice())
-            .ok_or(EngineError::PlannerMissing)
+            .ok_or(EngineError::RootMissing)
     }
 
     #[cfg(test)]
@@ -587,7 +587,7 @@ impl TextEngine {
             .get(&handle)
             .and_then(PlannerState::first_paragraph_state)
             .map(|paragraph| paragraph.styles.committed().arena.len())
-            .ok_or(EngineError::PlannerMissing)
+            .ok_or(EngineError::RootMissing)
     }
 
     #[cfg(test)]
@@ -596,7 +596,7 @@ impl TextEngine {
             .get(&handle)
             .and_then(PlannerState::first_paragraph_state)
             .map(|paragraph| paragraph.styles.committed().resolved.segments().len())
-            .ok_or(EngineError::PlannerMissing)
+            .ok_or(EngineError::RootMissing)
     }
 
     #[cfg(test)]
@@ -605,10 +605,10 @@ impl TextEngine {
             .get(&handle)
             .and_then(PlannerState::first_paragraph_state)
             .map(|paragraph| paragraph.shaping_runs.committed().runs().len())
-            .ok_or(EngineError::PlannerMissing)
+            .ok_or(EngineError::RootMissing)
     }
 
-    pub fn planner_count(&self) -> u32 {
+    pub fn root_count(&self) -> u32 {
         self.planners.len().try_into().unwrap_or(u32::MAX)
     }
 
@@ -633,13 +633,13 @@ impl TextEngine {
     /// Builds a complete independent render plan for selected committed glyph records.
     ///
     /// This query leaves the planner revisions, publication generation, active output slot, and
-    /// acknowledgement fence untouched. The returned compiler owns compacted policy buffers that
+    /// acknowledgement fence untouched. The returned compiler owns compacted codec buffers that
     /// the transport can encode as a one-shot checkpoint for a renderer to import.
     pub(crate) fn copy_glyphs(
         &self,
-        planner_id: u32,
+        root_id: u32,
         paragraph_id: u32,
-        policy_handle: u32,
+        codec_handle: u32,
         capability_set_id: u32,
         stable_ids: &[u32],
     ) -> Result<RenderPlanCompiler, EngineError> {
@@ -653,28 +653,26 @@ impl TextEngine {
         }
         let planner = self
             .planners
-            .get(&planner_id)
-            .ok_or(EngineError::PlannerMissing)?;
-        let binding = planner.policy_binding.ok_or(EngineError::InvalidRequest)?;
-        if binding.handle != policy_handle {
+            .get(&root_id)
+            .ok_or(EngineError::RootMissing)?;
+        let binding = planner.codec_binding.ok_or(EngineError::InvalidRequest)?;
+        if binding.handle != codec_handle {
             return Err(EngineError::InvalidRequest);
         }
-        let policy = self
-            .policies
-            .get(&policy_handle)
-            .ok_or(EngineError::PolicyMissing)?;
-        if binding.fingerprint != policy.fingerprint() {
+        let codec = self
+            .codecs
+            .get(&codec_handle)
+            .ok_or(EngineError::CodecMissing)?;
+        if binding.fingerprint != codec.fingerprint() {
             return Err(EngineError::InvalidRequest);
         }
         let capability_set = CapabilitySetId(capability_set_id);
-        if policy.capability_set(capability_set).is_none() {
+        if codec.capability_set(capability_set).is_none() {
             return Err(EngineError::InvalidRequest);
         }
 
-        let mut gather = PolicyGatherWorkspace::default();
-        gather
-            .begin(policy, requested.len())
-            .map_err(gather_error)?;
+        let mut gather = CodecGatherWorkspace::default();
+        gather.begin(codec, requested.len()).map_err(gather_error)?;
         let paragraph = planner
             .paragraph(paragraph_id)
             .ok_or(EngineError::InvalidRequest)?;
@@ -697,7 +695,7 @@ impl TextEngine {
             let mut glyph = *source;
             // Detached decoration plans use 0/2 for CSS under/over passes. Keep copied glyphs in
             // the middle so renderers can restore the original paint order across both objects.
-            glyph.depth_key = 1;
+            glyph.depth_key = super::codec_gather::PAINT_LAYER_GLYPH;
             let semantic_index = usize::try_from(source.semantic_glyph_index)
                 .map_err(|_| EngineError::InvalidRequest)?;
             let semantic = source_semantic
@@ -730,7 +728,7 @@ impl TextEngine {
         let semantic_u32_refs: Vec<&[u32]> = semantic_u32.iter().map(Vec::as_slice).collect();
         gather
             .append(
-                policy,
+                codec,
                 capability_set,
                 LayoutPlanInput {
                     transform_id: paragraph_id,
@@ -751,7 +749,7 @@ impl TextEngine {
         let mut compiler = RenderPlanCompiler::default();
         compiler
             .prepare(
-                policy,
+                codec,
                 capability_set,
                 gather.view().plan_input(),
                 true,
@@ -765,28 +763,28 @@ impl TextEngine {
     /// Builds a complete independent plan for one committed paragraph's decorations.
     pub(crate) fn copy_decorations(
         &self,
-        planner_id: u32,
-        policy_handle: u32,
+        root_id: u32,
+        codec_handle: u32,
         capability_set_id: u32,
         paragraph_id: u32,
     ) -> Result<RenderPlanCompiler, EngineError> {
         let planner = self
             .planners
-            .get(&planner_id)
-            .ok_or(EngineError::PlannerMissing)?;
-        let binding = planner.policy_binding.ok_or(EngineError::InvalidRequest)?;
-        if binding.handle != policy_handle {
+            .get(&root_id)
+            .ok_or(EngineError::RootMissing)?;
+        let binding = planner.codec_binding.ok_or(EngineError::InvalidRequest)?;
+        if binding.handle != codec_handle {
             return Err(EngineError::InvalidRequest);
         }
-        let policy = self
-            .policies
-            .get(&policy_handle)
-            .ok_or(EngineError::PolicyMissing)?;
-        if binding.fingerprint != policy.fingerprint() {
+        let codec = self
+            .codecs
+            .get(&codec_handle)
+            .ok_or(EngineError::CodecMissing)?;
+        if binding.fingerprint != codec.fingerprint() {
             return Err(EngineError::InvalidRequest);
         }
         let capability_set = CapabilitySetId(capability_set_id);
-        if policy.capability_set(capability_set).is_none() {
+        if codec.capability_set(capability_set).is_none() {
             return Err(EngineError::InvalidRequest);
         }
         let paragraph = planner
@@ -794,35 +792,35 @@ impl TextEngine {
             .ok_or(EngineError::InvalidRequest)?;
         let positioned = paragraph.state.positioned.committed();
 
-        let mut gather = PolicyGatherWorkspace::default();
+        let mut gather = CodecGatherWorkspace::default();
         gather
-            .begin(policy, positioned.decorations().len())
+            .begin(codec, positioned.decorations().len())
             .map_err(gather_error)?;
         let content_revision = planner.revision.engine.max(1);
         gather
             .append_decorations(
-                policy,
+                codec,
                 capability_set,
                 positioned.decorations(),
                 paragraph_id,
                 content_revision,
-                super::policy_gather::DecorationPass::Under,
+                super::codec_gather::DecorationPass::Under,
             )
             .map_err(gather_error)?;
         gather
             .append_decorations(
-                policy,
+                codec,
                 capability_set,
                 positioned.decorations(),
                 paragraph_id,
                 content_revision,
-                super::policy_gather::DecorationPass::Over,
+                super::codec_gather::DecorationPass::Over,
             )
             .map_err(gather_error)?;
         let mut compiler = RenderPlanCompiler::default();
         compiler
             .prepare(
-                policy,
+                codec,
                 capability_set,
                 gather.view().plan_input(),
                 true,
@@ -866,30 +864,30 @@ impl TextEngine {
         if !request.limits.all_nonzero() {
             return Err(EngineError::InvalidRequest);
         }
-        let policy = self
-            .policies
-            .get(&request.policy_handle)
-            .ok_or(EngineError::PolicyMissing)?;
-        if policy
+        let codec = self
+            .codecs
+            .get(&request.codec_handle)
+            .ok_or(EngineError::CodecMissing)?;
+        if codec
             .capability_set(CapabilitySetId(request.capability_set))
             .is_none()
         {
             return Err(EngineError::InvalidRequest);
         }
-        let policy_fingerprint = policy.fingerprint();
+        let codec_fingerprint = codec.fingerprint();
         let font_bindings = &self.font_bindings;
         let font_stacks = &self.font_stacks;
         let planner = self
             .planners
-            .get_mut(&request.planner_id)
-            .ok_or(EngineError::PlannerMissing)?;
-        if planner.policy_binding.is_some_and(|binding| {
-            binding.handle != request.policy_handle || binding.fingerprint != policy_fingerprint
+            .get_mut(&request.root_id)
+            .ok_or(EngineError::RootMissing)?;
+        if planner.codec_binding.is_some_and(|binding| {
+            binding.handle != request.codec_handle || binding.fingerprint != codec_fingerprint
         }) {
             return Err(EngineError::InvalidRequest);
         }
         if request.expected_engine_revision != planner.revision.engine
-            || request.consumed_plan_revision > planner.revision.plan
+            || request.consumed_revision > planner.revision.root
         {
             return Err(EngineError::RevisionConflict);
         }
@@ -1065,7 +1063,7 @@ impl TextEngine {
             next_content_revision,
         });
         Ok(MeasuredParagraph {
-            planner_id: request.planner_id,
+            root_id: request.root_id,
             revision: planner.revision,
         })
     }
@@ -1079,17 +1077,17 @@ impl TextEngine {
         if !request.limits.all_nonzero() {
             return Err(EngineError::InvalidRequest);
         }
-        let policy = self
-            .policies
-            .get(&request.policy_handle)
-            .ok_or(EngineError::PolicyMissing)?;
-        if policy
+        let codec = self
+            .codecs
+            .get(&request.codec_handle)
+            .ok_or(EngineError::CodecMissing)?;
+        if codec
             .capability_set(CapabilitySetId(request.capability_set))
             .is_none()
         {
             return Err(EngineError::InvalidRequest);
         }
-        let policy_fingerprint = policy.fingerprint();
+        let codec_fingerprint = codec.fingerprint();
         let cached_gather = self.gather_cache;
         let font_bindings = &self.font_bindings;
         let font_stacks = &self.font_stacks;
@@ -1098,15 +1096,15 @@ impl TextEngine {
         let prepared_gather_cache = &mut self.prepared_gather_cache;
         let planner = self
             .planners
-            .get_mut(&request.planner_id)
-            .ok_or(EngineError::PlannerMissing)?;
-        if planner.policy_binding.is_some_and(|binding| {
-            binding.handle != request.policy_handle || binding.fingerprint != policy_fingerprint
+            .get_mut(&request.root_id)
+            .ok_or(EngineError::RootMissing)?;
+        if planner.codec_binding.is_some_and(|binding| {
+            binding.handle != request.codec_handle || binding.fingerprint != codec_fingerprint
         }) {
             return Err(EngineError::InvalidRequest);
         }
         if request.expected_engine_revision != planner.revision.engine
-            || request.consumed_plan_revision > planner.revision.plan
+            || request.consumed_revision > planner.revision.root
             || publication_generation == 0
             || request.acknowledged_publication_generation
                 < planner.acknowledged_publication_generation
@@ -1134,23 +1132,23 @@ impl TextEngine {
             None => None,
         };
         planner.speculative = None;
-        let next = PlannerRevision {
+        let next = RootRevision {
             engine: planner
                 .revision
                 .engine
                 .checked_add(1)
                 .ok_or(EngineError::RevisionExhausted)?,
-            plan: planner
+            root: planner
                 .revision
-                .plan
+                .root
                 .checked_add(1)
                 .ok_or(EngineError::RevisionExhausted)?,
         };
         let current_gather_key = GatherCacheKey {
-            planner_id: request.planner_id,
+            root_id: request.root_id,
             revision: planner.revision,
-            policy_handle: request.policy_handle,
-            policy_fingerprint,
+            codec_handle: request.codec_handle,
+            codec_fingerprint,
             capability_set: request.capability_set,
         };
         let next_gather_key = GatherCacheKey {
@@ -1158,7 +1156,7 @@ impl TextEngine {
             ..current_gather_key
         };
         let checkpoint =
-            planner.revision.plan == 0 || request.consumed_plan_revision != planner.revision.plan;
+            planner.revision.root == 0 || request.consumed_revision != planner.revision.root;
         // A completed renderer fence is external monotonic state. It remains accepted even if
         // plan preparation or publication later aborts.
         planner.acknowledged_publication_generation = request.acknowledged_publication_generation;
@@ -1277,7 +1275,7 @@ impl TextEngine {
             let reuse_ordered_plan = !checkpoint
                 && !positioned_changed
                 && request.compositing_independent == planner.compositing_independent
-                && policy
+                && codec
                     .programs()
                     .iter()
                     .all(|program| program.allocation_strategy == ALLOCATION_ORDERED_DIRECT);
@@ -1309,24 +1307,24 @@ impl TextEngine {
                     cached_gather == Some(current_gather_key) && !planner_has_decorations(planner);
                 let retained = attempted_retained
                     && gather
-                        .begin_retained(policy, record_count)
+                        .begin_retained(codec, record_count)
                         .map_err(gather_error)?;
                 if retained {
                     append_planner_gather(
                         gather,
                         planner,
-                        policy,
+                        codec,
                         capability_set,
                         font_bindings,
                         true,
                     )?;
                 }
                 if !retained {
-                    gather.begin(policy, record_count).map_err(gather_error)?;
+                    gather.begin(codec, record_count).map_err(gather_error)?;
                     append_planner_gather(
                         gather,
                         planner,
-                        policy,
+                        codec,
                         capability_set,
                         font_bindings,
                         false,
@@ -1338,7 +1336,7 @@ impl TextEngine {
                 planner
                     .plan
                     .prepare(
-                        policy,
+                        codec,
                         CapabilitySetId(request.capability_set),
                         plan_input,
                         checkpoint,
@@ -1392,14 +1390,14 @@ impl TextEngine {
             *prepared_gather_cache = Some(next_gather_key);
         }
         Ok(PreparedUpdate {
-            planner_id: request.planner_id,
+            root_id: request.root_id,
             previous: planner.revision,
             next,
-            required_base_revision: if checkpoint { 0 } else { planner.revision.plan },
+            required_base_revision: if checkpoint { 0 } else { planner.revision.root },
             checkpoint,
-            policy_handle: request.policy_handle,
+            codec_handle: request.codec_handle,
             capability_set: request.capability_set,
-            policy_fingerprint,
+            codec_fingerprint,
         })
     }
 
@@ -1409,17 +1407,17 @@ impl TextEngine {
     ) -> Result<RenderPlanView<'_>, EngineError> {
         let planner = self
             .planners
-            .get(&prepared.planner_id)
-            .ok_or(EngineError::PlannerMissing)?;
+            .get(&prepared.root_id)
+            .ok_or(EngineError::RootMissing)?;
         if planner.revision != prepared.previous {
             return Err(EngineError::RevisionConflict);
         }
         planner
             .plan
             .plan_view(
-                prepared.policy_handle,
+                prepared.codec_handle,
                 CapabilitySetId(prepared.capability_set),
-                prepared.policy_fingerprint,
+                prepared.codec_fingerprint,
             )
             .map_err(plan_error)
     }
@@ -1430,8 +1428,8 @@ impl TextEngine {
     ) -> Result<&[super::semantic_view::SemanticRecord], EngineError> {
         let planner = self
             .planners
-            .get(&prepared.planner_id)
-            .ok_or(EngineError::PlannerMissing)?;
+            .get(&prepared.root_id)
+            .ok_or(EngineError::RootMissing)?;
         if planner.revision != prepared.previous {
             return Err(EngineError::RevisionConflict);
         }
@@ -1444,8 +1442,8 @@ impl TextEngine {
     pub(crate) fn abort_measure(&mut self, measured: MeasuredParagraph) -> Result<(), EngineError> {
         let planner = self
             .planners
-            .get_mut(&measured.planner_id)
-            .ok_or(EngineError::PlannerMissing)?;
+            .get_mut(&measured.root_id)
+            .ok_or(EngineError::RootMissing)?;
         if planner.revision != measured.revision {
             return Err(EngineError::RevisionConflict);
         }
@@ -1459,8 +1457,8 @@ impl TextEngine {
     ) -> Result<&[super::semantic_view::SemanticRecord], EngineError> {
         let planner = self
             .planners
-            .get(&measured.planner_id)
-            .ok_or(EngineError::PlannerMissing)?;
+            .get(&measured.root_id)
+            .ok_or(EngineError::RootMissing)?;
         if planner.revision != measured.revision {
             return Err(EngineError::RevisionConflict);
         }
@@ -1471,8 +1469,8 @@ impl TextEngine {
         let next_gather_key = prepared_gather_key(prepared, prepared.next);
         let planner = self
             .planners
-            .get_mut(&prepared.planner_id)
-            .ok_or(EngineError::PlannerMissing)?;
+            .get_mut(&prepared.root_id)
+            .ok_or(EngineError::RootMissing)?;
         if planner.revision != prepared.previous {
             return Err(EngineError::RevisionConflict);
         }
@@ -1491,8 +1489,8 @@ impl TextEngine {
         let next_gather_key = prepared_gather_key(prepared, prepared.next);
         let planner = self
             .planners
-            .get_mut(&prepared.planner_id)
-            .ok_or(EngineError::PlannerMissing)?;
+            .get_mut(&prepared.root_id)
+            .ok_or(EngineError::RootMissing)?;
         if planner.revision != prepared.previous {
             return Err(EngineError::RevisionConflict);
         }
@@ -1503,9 +1501,9 @@ impl TextEngine {
         planner.pending_next_glyph_id = 0;
         planner.pending_next_content_revision = 0;
         planner.compositing_independent = planner.pending_compositing_independent;
-        planner.policy_binding = Some(PolicyBinding {
-            handle: prepared.policy_handle,
-            fingerprint: prepared.policy_fingerprint,
+        planner.codec_binding = Some(CodecBinding {
+            handle: prepared.codec_handle,
+            fingerprint: prepared.codec_fingerprint,
         });
         planner.revision = prepared.next;
         if self.prepared_gather_cache == Some(next_gather_key) {
@@ -1515,7 +1513,7 @@ impl TextEngine {
             self.gather_cache = Some(next_gather_key);
         }
         Ok(CommittedUpdate {
-            planner_id: prepared.planner_id,
+            root_id: prepared.root_id,
             revision: prepared.next,
             required_base_revision: prepared.required_base_revision,
             checkpoint: prepared.checkpoint,
@@ -1523,12 +1521,12 @@ impl TextEngine {
     }
 }
 
-fn prepared_gather_key(prepared: PreparedUpdate, revision: PlannerRevision) -> GatherCacheKey {
+fn prepared_gather_key(prepared: PreparedUpdate, revision: RootRevision) -> GatherCacheKey {
     GatherCacheKey {
-        planner_id: prepared.planner_id,
+        root_id: prepared.root_id,
         revision,
-        policy_handle: prepared.policy_handle,
-        policy_fingerprint: prepared.policy_fingerprint,
+        codec_handle: prepared.codec_handle,
+        codec_fingerprint: prepared.codec_fingerprint,
         capability_set: prepared.capability_set,
     }
 }
@@ -1722,9 +1720,9 @@ fn append_paragraph_measurement(
 }
 
 fn append_planner_gather(
-    gather: &mut PolicyGatherWorkspace,
+    gather: &mut CodecGatherWorkspace,
     planner: &PlannerState,
-    policy: &ValidatedPolicy,
+    codec: &ValidatedCodec,
     capability_set: CapabilitySetId,
     font_bindings: &[RegisteredFontBinding],
     retained: bool,
@@ -1758,47 +1756,41 @@ fn append_planner_gather(
         };
         gather
             .append_decorations(
-                policy,
+                codec,
                 capability_set,
                 positioned.decorations(),
                 ordered.id,
                 planner.revision.engine.max(1),
-                super::policy_gather::DecorationPass::Under,
+                super::codec_gather::DecorationPass::Under,
             )
             .map_err(gather_error)?;
         if retaining {
             match gather
-                .append_retained(policy, capability_set, input, binding_for_font)
+                .append_retained(codec, capability_set, input, binding_for_font)
                 .map_err(gather_error)?
             {
                 RetainedGather::Complete => {}
                 RetainedGather::RebuildFrom(source_start) => {
                     gather.truncate_to_retained_prefix();
                     gather
-                        .append_from(
-                            policy,
-                            capability_set,
-                            input,
-                            source_start,
-                            binding_for_font,
-                        )
+                        .append_from(codec, capability_set, input, source_start, binding_for_font)
                         .map_err(gather_error)?;
                     retaining = false;
                 }
             }
         } else {
             gather
-                .append(policy, capability_set, input, binding_for_font)
+                .append(codec, capability_set, input, binding_for_font)
                 .map_err(gather_error)?;
         }
         gather
             .append_decorations(
-                policy,
+                codec,
                 capability_set,
                 positioned.decorations(),
                 ordered.id,
                 planner.revision.engine.max(1),
-                super::policy_gather::DecorationPass::Over,
+                super::codec_gather::DecorationPass::Over,
             )
             .map_err(gather_error)?;
     }
@@ -3206,14 +3198,6 @@ impl ParagraphState {
         if geometry.is_empty() {
             return Ok(());
         }
-        let text_length = if self.text.is_prepared() {
-            self.text.pending().units.len()
-        } else {
-            self.text.committed().units.len()
-        };
-        geometry
-            .validate_text_length(text_length)
-            .map_err(|_| EngineError::InvalidRequest)?;
         self.geometry.pending_mut().build(geometry)?;
         self.pending_geometry_fingerprint = geometry.fingerprint();
         if geometry.inline_object_count() == 0
@@ -4357,6 +4341,12 @@ mod tests {
         },
         bidi::DIRECTION_RTL,
         engine::{
+            codec::{
+                ALLOCATION_ORDERED_DIRECT, BATCH_ORDER, BATCH_PROGRAM, BATCH_RESOURCE,
+                BATCH_TECHNIQUE, BUFFER_USAGE_COPY_DST, BUFFER_USAGE_STORAGE, BufferId,
+                BufferSchema, CAP_ORDERED_DIRECT, CapabilitySet, CodecDescriptor, Operation,
+                ProgramCapabilities, ProgramDescriptor, ProgramId, ScalarType, TechniqueId,
+            },
             font_binding::{
                 FieldTable, FontRenderBinding, FontResource, FontStrike, MISSING_RESOURCE_INDEX,
             },
@@ -4365,12 +4355,6 @@ mod tests {
                 STYLE_FIELD_FONT_SIZE, STYLE_FIELD_FONT_STACK, STYLE_FIELD_LINE_HEIGHT,
                 STYLE_FIELD_RASTER_PIXEL_RATIO, STYLE_FLAG_ROOT, STYLE_MUTATION_REMOVE,
                 STYLE_MUTATION_UPSERT, TEXT_ENCODING_UTF16_LE, TEXT_MUTATION_REPLACE_UTF16,
-            },
-            policy::{
-                ALLOCATION_ORDERED_DIRECT, BATCH_ORDER, BATCH_PROGRAM, BATCH_RESOURCE,
-                BATCH_TECHNIQUE, BUFFER_USAGE_COPY_DST, BUFFER_USAGE_STORAGE, BufferId,
-                BufferSchema, CAP_ORDERED_DIRECT, CapabilitySet, Operation, PolicyDescriptor,
-                ProgramCapabilities, ProgramDescriptor, ProgramId, ScalarType, TechniqueId,
             },
             semantic_wire::{
                 parse_paragraph_mutations, parse_style_mutations, parse_text_mutations,
@@ -4382,17 +4366,17 @@ mod tests {
 
     #[test]
     fn registration_is_idempotent_but_rejects_handle_conflicts() {
-        let first = validated_policy(TechniqueId(1));
+        let first = validated_codec(TechniqueId(1));
         let mut engine = TextEngine::default();
-        assert_eq!(engine.register_policy(1, first.clone()), Ok(()));
-        assert_eq!(engine.register_policy(1, first), Ok(()));
-        assert_eq!(engine.policy_count(), 1);
+        assert_eq!(engine.register_codec(1, first.clone()), Ok(()));
+        assert_eq!(engine.register_codec(1, first), Ok(()));
+        assert_eq!(engine.codec_count(), 1);
         assert_eq!(
-            engine.register_policy(1, validated_policy(TechniqueId(2))),
+            engine.register_codec(1, validated_codec(TechniqueId(2))),
             Err(EngineError::HandleConflict)
         );
         assert_eq!(
-            engine.policy(1).unwrap().programs()[0].technique,
+            engine.codec(1).unwrap().programs()[0].technique,
             TechniqueId(1)
         );
     }
@@ -4515,37 +4499,34 @@ mod tests {
     fn disposal_is_exact_and_missing_handles_are_observable() {
         let mut engine = TextEngine::default();
         assert_eq!(
-            engine.register_policy(0, validated_policy(TechniqueId(1))),
+            engine.register_codec(0, validated_codec(TechniqueId(1))),
             Err(EngineError::InvalidHandle)
         );
-        assert_eq!(engine.dispose_policy(1), Err(EngineError::PolicyMissing));
+        assert_eq!(engine.dispose_codec(1), Err(EngineError::CodecMissing));
         engine
-            .register_policy(1, validated_policy(TechniqueId(1)))
+            .register_codec(1, validated_codec(TechniqueId(1)))
             .unwrap();
-        assert_eq!(engine.dispose_policy(1), Ok(()));
-        assert_eq!(engine.dispose_policy(1), Err(EngineError::PolicyMissing));
+        assert_eq!(engine.dispose_codec(1), Ok(()));
+        assert_eq!(engine.dispose_codec(1), Err(EngineError::CodecMissing));
     }
 
     #[test]
     fn update_preparation_is_revisioned_and_commit_is_explicit() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
+        engine.create_root(4).unwrap();
 
         let first = engine.prepare_update(update(0, 0, 0), 1).unwrap();
         let first_plan = engine.prepared_plan(first).unwrap();
-        assert_eq!(first_plan.policy_handle, 9);
+        assert_eq!(first_plan.codec_handle, 9);
         assert_eq!(first_plan.capability_set, 1);
-        assert_eq!(
-            engine.planner_revision(4).unwrap(),
-            PlannerRevision::default()
-        );
+        assert_eq!(engine.root_revision(4).unwrap(), RootRevision::default());
         let first = engine.commit_update(first).unwrap();
         assert!(first.checkpoint);
         assert_eq!(first.required_base_revision, 0);
-        assert_eq!(first.revision, PlannerRevision { engine: 1, plan: 1 });
+        assert_eq!(first.revision, RootRevision { engine: 1, root: 1 });
         assert_eq!(
             engine.gather_cache.map(|cache| cache.revision),
             Some(first.revision)
@@ -4558,7 +4539,7 @@ mod tests {
         );
         assert_eq!(
             engine.prepared_gather_cache.map(|cache| cache.revision),
-            Some(PlannerRevision { engine: 2, plan: 2 })
+            Some(RootRevision { engine: 2, root: 2 })
         );
         let second = engine.commit_update(second).unwrap();
         assert!(!second.checkpoint);
@@ -4572,37 +4553,34 @@ mod tests {
             engine.prepare_update(update(1, 2, 1), 3),
             Err(EngineError::RevisionConflict)
         );
-        assert_eq!(engine.planner_count(), 1);
-        assert_eq!(engine.dispose_planner(4), Ok(()));
-        assert_eq!(engine.dispose_planner(4), Err(EngineError::PlannerMissing));
+        assert_eq!(engine.root_count(), 1);
+        assert_eq!(engine.dispose_root(4), Ok(()));
+        assert_eq!(engine.dispose_root(4), Err(EngineError::RootMissing));
     }
 
     #[test]
-    fn update_rejects_a_capability_set_outside_the_registered_policy() {
+    fn update_rejects_a_capability_set_outside_the_registered_codec() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
+        engine.create_root(4).unwrap();
         let mut request = update(0, 0, 0);
         request.capability_set = 3;
         assert_eq!(
             engine.prepare_update(request, 1),
             Err(EngineError::InvalidRequest)
         );
-        assert_eq!(
-            engine.planner_revision(4).unwrap(),
-            PlannerRevision::default()
-        );
+        assert_eq!(engine.root_revision(4).unwrap(), RootRevision::default());
     }
 
     #[test]
-    fn a_committed_planner_accepts_another_capability_set_from_the_same_policy() {
+    fn a_committed_planner_accepts_another_capability_set_from_the_same_codec() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
+        engine.create_root(4).unwrap();
         let first = engine.prepare_update(update(0, 0, 0), 1).unwrap();
         engine.commit_update(first).unwrap();
 
@@ -4617,9 +4595,9 @@ mod tests {
     fn renderer_fence_acknowledgment_is_monotonic_and_cannot_name_the_pending_publication() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
+        engine.create_root(4).unwrap();
         let first = engine.prepare_update(update(0, 0, 0), 1).unwrap();
         engine.commit_update(first).unwrap();
         let second = engine.prepare_update(update(1, 1, 1), 2).unwrap();
@@ -4639,18 +4617,15 @@ mod tests {
     fn aborting_a_prepared_plan_preserves_revisions_and_allows_retry() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
+        engine.create_root(4).unwrap();
         let prepared = engine.prepare_update(update(0, 0, 0), 1).unwrap();
         assert!(engine.prepared_gather_cache.is_some());
         engine.abort_update(prepared).unwrap();
         assert!(engine.gather_cache.is_none());
         assert!(engine.prepared_gather_cache.is_none());
-        assert_eq!(
-            engine.planner_revision(4).unwrap(),
-            PlannerRevision::default()
-        );
+        assert_eq!(engine.root_revision(4).unwrap(), RootRevision::default());
         let retry = engine.prepare_update(update(0, 0, 0), 1).unwrap();
         engine.commit_update(retry).unwrap();
     }
@@ -4659,10 +4634,10 @@ mod tests {
     fn sequential_measure_queries_extend_one_retained_speculative_transaction() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
-        engine.reserve_planner_text(4, 8).unwrap();
+        engine.create_root(4).unwrap();
+        engine.reserve_root_text(4, 8).unwrap();
 
         let initial_bytes = text_mutation_bytes(&[(0, 0, &[0x61, 0x62, 0x63, 0x64])]);
         let mut initial = update(0, 0, 0);
@@ -4678,7 +4653,7 @@ mod tests {
         query.text_mutations =
             parse_text_mutations(&edit_bytes, ENGINE_UPDATE_REQUEST_HEADER_SIZE, 1).unwrap();
         engine.measure_paragraph(query, 1).unwrap();
-        assert_eq!(engine.planner_text(4).unwrap(), &[0x61, 0x62, 0x63, 0x64]);
+        assert_eq!(engine.root_text(4).unwrap(), &[0x61, 0x62, 0x63, 0x64]);
         let planner = engine.planners.get(&4).unwrap();
         let state = planner.first_paragraph_state().unwrap();
         assert!(state.text.is_prepared());
@@ -4718,15 +4693,15 @@ mod tests {
                 .units,
             [0x61, 0x62, 0x63, 0x64, 0x5a]
         );
-        assert_eq!(engine.planner_text(4).unwrap(), &[0x61, 0x62, 0x63, 0x64]);
+        assert_eq!(engine.root_text(4).unwrap(), &[0x61, 0x62, 0x63, 0x64]);
 
         // An ordinary frame drops the transaction leave-committed at entry and
         // proceeds exactly as if no query had happened.
         let follow = engine.prepare_update(update(1, 1, 1), 2).unwrap();
         assert!(engine.planners.get(&4).unwrap().speculative.is_none());
         let committed = engine.commit_update(follow).unwrap();
-        assert_eq!(committed.revision, PlannerRevision { engine: 2, plan: 2 });
-        assert_eq!(engine.planner_text(4).unwrap(), &[0x61, 0x62, 0x63, 0x64]);
+        assert_eq!(committed.revision, RootRevision { engine: 2, root: 2 });
+        assert_eq!(engine.root_text(4).unwrap(), &[0x61, 0x62, 0x63, 0x64]);
     }
 
     #[test]
@@ -4751,10 +4726,10 @@ mod tests {
     fn one_transaction_retains_queries_for_different_existing_paragraphs() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
-        engine.reserve_planner_text(4, 8).unwrap();
+        engine.create_root(4).unwrap();
+        engine.reserve_root_text(4, 8).unwrap();
 
         // Commit two paragraphs.
         let lifecycle_bytes = paragraph_mutation_bytes(&[
@@ -4822,9 +4797,9 @@ mod tests {
     fn a_planner_prewarms_only_its_reusable_paragraph() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
+        engine.create_root(4).unwrap();
 
         let lifecycle_bytes = paragraph_mutation_bytes(&[
             (PARAGRAPH_MUTATION_UPSERT, 1, 0),
@@ -4874,10 +4849,10 @@ mod tests {
     fn one_lifecycle_retains_queries_for_different_new_paragraphs() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
-        engine.reserve_planner_text(4, 8).unwrap();
+        engine.create_root(4).unwrap();
+        engine.reserve_root_text(4, 8).unwrap();
 
         let lifecycle_bytes = paragraph_mutation_bytes(&[
             (PARAGRAPH_MUTATION_UPSERT, 1, 1),
@@ -4918,10 +4893,10 @@ mod tests {
     fn replacement_lifecycle_retains_queries_after_a_paragraph_removal() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
-        engine.reserve_planner_text(4, 8).unwrap();
+        engine.create_root(4).unwrap();
+        engine.reserve_root_text(4, 8).unwrap();
 
         let initial_bytes = paragraph_mutation_bytes(&[
             (PARAGRAPH_MUTATION_UPSERT, 1, 0),
@@ -4972,10 +4947,10 @@ mod tests {
     fn a_speculative_candidate_paragraph_survives_queries_and_yields_to_the_frame() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
-        engine.reserve_planner_text(4, 8).unwrap();
+        engine.create_root(4).unwrap();
+        engine.reserve_root_text(4, 8).unwrap();
         let prepared = engine.prepare_update(update(0, 0, 0), 1).unwrap();
         engine.commit_update(prepared).unwrap();
 
@@ -5022,10 +4997,10 @@ mod tests {
     fn ordered_utf16_replacements_commit_and_abort_with_the_planner_transaction() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
-        engine.reserve_planner_text(4, 8).unwrap();
+        engine.create_root(4).unwrap();
+        engine.reserve_root_text(4, 8).unwrap();
 
         let initial_bytes = text_mutation_bytes(&[(0, 0, &[0x61, 0x62, 0x63, 0x64])]);
         let initial_batch =
@@ -5033,9 +5008,9 @@ mod tests {
         let mut initial = update(0, 0, 0);
         initial.text_mutations = initial_batch;
         let prepared = engine.prepare_update(initial, 1).unwrap();
-        assert!(engine.planner_text(4).unwrap().is_empty());
+        assert!(engine.root_text(4).unwrap().is_empty());
         engine.commit_update(prepared).unwrap();
-        assert_eq!(engine.planner_text(4).unwrap(), &[0x61, 0x62, 0x63, 0x64]);
+        assert_eq!(engine.root_text(4).unwrap(), &[0x61, 0x62, 0x63, 0x64]);
         assert_eq!(
             engine
                 .planners
@@ -5068,7 +5043,7 @@ mod tests {
         edit.text_mutations = edit_batch;
         let prepared = engine.prepare_update(edit, 2).unwrap();
         engine.abort_update(prepared).unwrap();
-        assert_eq!(engine.planner_text(4).unwrap(), &[0x61, 0x62, 0x63, 0x64]);
+        assert_eq!(engine.root_text(4).unwrap(), &[0x61, 0x62, 0x63, 0x64]);
         let planner = engine.planners.get(&4).unwrap();
         let paragraph = planner.first_paragraph_state().unwrap();
         assert_eq!(paragraph.text.committed().unit_ids, [1, 2, 3, 4]);
@@ -5077,7 +5052,7 @@ mod tests {
         let retry = engine.prepare_update(edit, 2).unwrap();
         engine.commit_update(retry).unwrap();
         assert_eq!(
-            engine.planner_text(4).unwrap(),
+            engine.root_text(4).unwrap(),
             &[0x61, 0x58, 0x59, 0x63, 0x64, 0x21]
         );
         assert_eq!(
@@ -5133,9 +5108,9 @@ mod tests {
     fn invalid_utf16_aborts_text_and_unicode_analysis_together() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
+        engine.create_root(4).unwrap();
 
         let invalid_bytes = text_mutation_bytes(&[(0, 0, &[0xd800])]);
         let mut invalid = update(0, 0, 0);
@@ -5184,10 +5159,10 @@ mod tests {
     fn root_direction_reanalyzes_bidi_without_a_text_mutation() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
         engine.register_font_stack(7, &[42]).unwrap();
-        engine.create_planner(4).unwrap();
+        engine.create_root(4).unwrap();
 
         let text_bytes = text_mutation_bytes(&[(0, 0, &[0x61, 0x62, 0x63, 0x64])]);
         let mut text = update(0, 0, 0);
@@ -5242,7 +5217,7 @@ mod tests {
             engine.dispose_font_stack(7),
             Err(EngineError::RegistrationInUse)
         );
-        engine.dispose_planner(4).unwrap();
+        engine.dispose_root(4).unwrap();
         assert_eq!(engine.dispose_font_stack(7), Ok(()));
     }
 
@@ -5250,10 +5225,10 @@ mod tests {
     fn retained_style_upserts_commit_and_root_removal_aborts_transactionally() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
         engine.register_font_stack(7, &[42]).unwrap();
-        engine.create_planner(4).unwrap();
+        engine.create_root(4).unwrap();
 
         let initial_bytes = text_mutation_bytes(&[(0, 0, &[0x61, 0x62, 0x63, 0x64])]);
         let mut initial = update(0, 0, 0);
@@ -5305,9 +5280,9 @@ mod tests {
     fn an_invalid_later_replacement_cannot_partially_mutate_committed_text() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
+        engine.create_root(4).unwrap();
         let bytes = text_mutation_bytes(&[(0, 0, &[0x61]), (9, 0, &[0x62])]);
         let batch = parse_text_mutations(&bytes, ENGINE_UPDATE_REQUEST_HEADER_SIZE, 2).unwrap();
         let mut request = update(0, 0, 0);
@@ -5316,17 +5291,17 @@ mod tests {
             engine.prepare_update(request, 1),
             Err(EngineError::InvalidRequest)
         );
-        assert!(engine.planner_text(4).unwrap().is_empty());
+        assert!(engine.root_text(4).unwrap().is_empty());
     }
 
     #[test]
     fn ordered_paragraphs_commit_reorder_and_remove_as_one_planner() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
-        engine.reserve_planner_text(4, 8).unwrap();
+        engine.create_root(4).unwrap();
+        engine.reserve_root_text(4, 8).unwrap();
 
         let lifecycle_bytes = paragraph_mutation_bytes(&[
             (PARAGRAPH_MUTATION_UPSERT, 2, 1),
@@ -5446,9 +5421,9 @@ mod tests {
     fn a_later_paragraph_failure_rolls_back_every_child_and_lifecycle_change() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
+        engine.create_root(4).unwrap();
         let lifecycle_bytes = paragraph_mutation_bytes(&[
             (PARAGRAPH_MUTATION_UPSERT, 1, 0),
             (PARAGRAPH_MUTATION_UPSERT, 2, 1),
@@ -5482,7 +5457,7 @@ mod tests {
         );
 
         let planner = engine.planners.get(&4).unwrap();
-        assert_eq!(planner.revision, PlannerRevision { engine: 1, plan: 1 });
+        assert_eq!(planner.revision, RootRevision { engine: 1, root: 1 });
         assert_eq!(
             planner
                 .ordered_paragraphs
@@ -5506,9 +5481,9 @@ mod tests {
     fn paragraph_limits_unknown_semantics_and_order_collisions_are_atomic() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
+        engine.create_root(4).unwrap();
         let lifecycle_bytes = paragraph_mutation_bytes(&[
             (PARAGRAPH_MUTATION_UPSERT, 1, 0),
             (PARAGRAPH_MUTATION_UPSERT, 2, 1),
@@ -5566,9 +5541,9 @@ mod tests {
     fn single_paragraph_planner_rejects_mixed_and_rebound_paragraph_ids() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
+        engine.create_root(4).unwrap();
 
         let mut mixed_bytes = text_mutation_bytes(&[(0, 0, &[0x61]), (1, 0, &[0x62])]);
         let second =
@@ -5607,32 +5582,29 @@ mod tests {
             engine.prepare_update(rebound, 2),
             Err(EngineError::InvalidRequest)
         );
-        assert_eq!(engine.planner_text(4).unwrap(), &[0x61]);
+        assert_eq!(engine.root_text(4).unwrap(), &[0x61]);
     }
 
     #[test]
-    fn a_committed_planner_retains_its_policy_registration() {
+    fn a_committed_planner_retains_its_codec_registration() {
         let mut engine = TextEngine::default();
         engine
-            .register_policy(9, validated_policy(TechniqueId(1)))
+            .register_codec(9, validated_codec(TechniqueId(1)))
             .unwrap();
-        engine.create_planner(4).unwrap();
+        engine.create_root(4).unwrap();
         let first = engine.prepare_update(update(0, 0, 0), 1).unwrap();
         engine.commit_update(first).unwrap();
 
-        assert_eq!(
-            engine.dispose_policy(9),
-            Err(EngineError::RegistrationInUse)
-        );
-        engine.dispose_planner(4).unwrap();
-        engine.dispose_policy(9).unwrap();
+        assert_eq!(engine.dispose_codec(9), Err(EngineError::RegistrationInUse));
+        engine.dispose_root(4).unwrap();
+        engine.dispose_codec(9).unwrap();
         engine
-            .register_policy(9, validated_policy(TechniqueId(2)))
+            .register_codec(9, validated_codec(TechniqueId(2)))
             .unwrap();
     }
 
-    fn validated_policy(technique: TechniqueId) -> ValidatedPolicy {
-        ValidatedPolicy::new(PolicyDescriptor {
+    fn validated_codec(technique: TechniqueId) -> ValidatedCodec {
+        ValidatedCodec::new(CodecDescriptor {
             capability_sets: vec![
                 CapabilitySet {
                     id: CapabilitySetId(1),
@@ -5669,16 +5641,20 @@ mod tests {
                 capability_set: CapabilitySetId(0),
                 resource_kind_mask: 1,
                 semantic_view_mask: 0,
-                storage_key_mask: BATCH_TECHNIQUE | BATCH_PROGRAM | BATCH_RESOURCE,
+                storage_key_mask: BATCH_TECHNIQUE
+                    | BATCH_PROGRAM
+                    | BATCH_RESOURCE
+                    | crate::engine::codec::BATCH_DEPTH,
                 draw_key_mask: BATCH_TECHNIQUE
                     | BATCH_PROGRAM
                     | BATCH_RESOURCE
+                    | crate::engine::codec::BATCH_DEPTH
                     | BATCH_ORDER
-                    | crate::engine::policy::BATCH_TRANSFORM,
+                    | crate::engine::codec::BATCH_TRANSFORM,
                 allocation_strategy: ALLOCATION_ORDERED_DIRECT,
                 f32_input_count: 1,
                 u32_input_count: 0,
-                inputs: vec![crate::engine::policy::InputSource::semantic(0)],
+                inputs: vec![crate::engine::codec::InputSource::semantic(0)],
                 capabilities: ProgramCapabilities::default(),
                 buffers: vec![BufferSchema::packed(
                     BufferId(1),
@@ -5736,15 +5712,15 @@ mod tests {
 
     fn update(
         expected_engine_revision: u32,
-        consumed_plan_revision: u32,
+        consumed_revision: u32,
         acknowledged_publication_generation: u32,
     ) -> UpdateRequest<'static> {
         UpdateRequest {
-            planner_id: 4,
+            root_id: 4,
             expected_engine_revision,
-            consumed_plan_revision,
+            consumed_revision,
             acknowledged_publication_generation,
-            policy_handle: 9,
+            codec_handle: 9,
             capability_set: 1,
             semantic_view_mask: 0,
             compositing_independent: false,

@@ -1,4 +1,5 @@
-import { definePortableVertexSemantic, type PortableGeometryPayload } from '../../dist/core.js';
+import type { PortableGeometryPayload } from '../../dist/index.js';
+import { definePortableVertexSemantic } from '../../dist/config/resources.js';
 
 const geometry = {
   kind: 'geometry',
@@ -32,7 +33,7 @@ const instanceAttribute = {
   ],
 } as const;
 
-// @ts-expect-error Per-record data belongs in named policy buffers, not finite geometry streams.
+// @ts-expect-error Per-record data belongs in named codec buffers, not finite geometry streams.
 const impossibleAttribute: PortableGeometryPayload = instanceAttribute;
 void impossibleAttribute;
 

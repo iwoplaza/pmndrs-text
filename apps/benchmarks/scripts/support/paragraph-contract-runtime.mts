@@ -1,17 +1,22 @@
 import { readFile } from 'node:fs/promises';
 
 import {
+  glyph,
   type Constraints,
-  type Font,
+  type FontFace,
   type GlyphLayoutInspection,
   type ParagraphLayout,
+  type RasterFormatRequest,
   type TextStyle,
 } from '@pmndrs/glyph';
 import { validateFontArtifact } from '@pmndrs/glyph/bake';
-import { bitmap } from '@pmndrs/glyph/three/bitmap';
-import { FontLoader, Text, TextGroup } from '@pmndrs/glyph/three';
+import { bitmap } from '@pmndrs/glyph/raster/bitmap';
+import { defineThreeConfig } from '@pmndrs/glyph/three';
 
-export type ContractFont = Font<typeof bitmap>;
+await glyph.init();
+let nextContractHandle = 1;
+
+export type ContractFont = FontFace<RasterFormatRequest<typeof bitmap>>;
 
 /** Fixture-owned font plus authenticated shaping identity retained outside the public Font API. */
 export interface ContractFontFixture {
@@ -34,32 +39,25 @@ export interface LegacyConstraints {
   readonly overflow?: 'visible' | 'clip' | 'ellipsis';
 }
 
-export async function createParagraphContractRuntime() {
-  const loader = new FontLoader();
-  return {
-    async loadFont(url: URL, coverage?: string) {
-      const bytes = await readFile(url);
-      const [font, artifact] = await Promise.all([
-        loader.loadAsync({
-          input: { baked: { bytes, ownership: 'copy' } },
-          raster: {
-            technique: bitmap,
-            options: { strikes: [16], ...(coverage === undefined ? {} : { coverage: { text: coverage } }) },
-          },
-        }),
-        validateFontArtifact(bytes),
-      ]);
-      return { font, shapingHash: artifact.shapingHash, dispose: () => font.dispose() } satisfies ContractFontFixture;
-    },
-    dispose() {
-      loader.dispose();
-    },
-  };
+export async function loadContractFont(url: URL, coverage?: string): Promise<ContractFontFixture> {
+  const bytes = await readFile(url);
+  const font = glyph.fontFace(new Blob([Uint8Array.from(bytes)]), {
+    format: bitmap({
+      strikes: [16],
+      ...(coverage === undefined ? {} : { coverage: { text: coverage } }),
+    }),
+  });
+  const [loaded, artifact] = await Promise.all([font.load(), validateFontArtifact(bytes)]);
+  return { font: loaded, shapingHash: artifact.shapingHash, dispose: () => font.dispose() };
 }
 
 export function createContractText(font: ContractFont, text: string, style: TextStyle) {
-  const group = new TextGroup({ capacity: { size: Math.max(1_024, text.length * 4), policy: 'grow' } });
-  const value = new Text({ font, text, style });
+  const handle = glyph.handle(
+    `paragraph-contract:${String(nextContractHandle++)}`,
+    defineThreeConfig({ capacity: { size: Math.max(1_024, text.length * 4), policy: 'grow' } }),
+  );
+  const group = handle.createTextGroup();
+  const value = handle.createText({ font, text, style });
   group.add(value);
   return {
     group,
@@ -75,6 +73,7 @@ export function createContractText(font: ContractFont, text: string, style: Text
     dispose() {
       value.dispose();
       group.dispose();
+      handle.dispose();
     },
   };
 }

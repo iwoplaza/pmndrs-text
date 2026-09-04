@@ -86,6 +86,15 @@ test('bakes canonical Inter deterministically through the public direct-memory s
   assert.ok(first.artifacts.every(({ role }) => role === 'raster'));
   assert.match(first.artifacts[0].id, new RegExp(`^bitmap-${shapingHash}-[0-9a-f]{64}\\.glb$`));
   assert.deepEqual([...first.artifacts[0].bytes.subarray(0, 4)], [0x67, 0x6c, 0x54, 0x46]);
+  const validated = await validateBitmapArtifact(first.artifacts[0].bytes, {
+    rasterKey: first.rasterKey,
+    shapingHash,
+    glyphCount: 2937,
+    glyphIdWidth: 16,
+    descriptor,
+  });
+  assert.equal(validated.strikes[0].records.byteLength, first.report.metadataBytes);
+  assert.equal(validated.strikes[0].pages.length, first.report.pages.length);
   assert.deepEqual(progress.at(-1), [2937, 2937]);
   assert.ok(progress.every((entry) => entry[1] === 2937));
 });
@@ -155,17 +164,21 @@ test('bakes bounded coverage with deterministic progress and a validated selecti
     dispose() {},
   };
   const data = await bitmap.decode(font, runtimeRaster);
+  assert.equal(data.strikes[0].pages[0].resource, `pmndrs.bitmap/${shapingHash}/${rasterKey}/0/0`);
   assert.equal(data.coverage[43 >> 3] & (1 << (43 & 7)), 1 << (43 & 7));
   assert.equal(data.coverage[45 >> 3] & (1 << (45 & 7)), 0);
   bitmap.dispose(data);
 
-  const mismatchedPolicy = {
+  const mismatchedDescriptor = {
     ...runtimeRaster,
     extensionData: structuredClone(runtimeRaster.extensionData),
   };
-  mismatchedPolicy.extensionData.strikes[0].ppemX = 17;
-  mismatchedPolicy.extensionData.strikes[0].ppemY = 17;
-  await assert.rejects(bitmap.decode(font, mismatchedPolicy), /raster key does not match its generation policy/);
+  mismatchedDescriptor.extensionData.strikes[0].ppemX = 17;
+  mismatchedDescriptor.extensionData.strikes[0].ppemY = 17;
+  await assert.rejects(
+    bitmap.decode(font, mismatchedDescriptor),
+    /raster key does not match its generation descriptor/,
+  );
 });
 
 test('rejects mismatched shaping context and honors pre-bake cancellation', async () => {
@@ -181,7 +194,7 @@ test('rejects mismatched shaping context and honors pre-bake cancellation', asyn
       packaging: { artifact: 'external', pages: 'embedded' },
       descriptor,
     }),
-    (error) => error.code === 'INVALID_GLYPH_COUNT',
+    (error) => error.reason === 'INVALID_GLYPH_COUNT',
   );
 
   const controller = new AbortController();

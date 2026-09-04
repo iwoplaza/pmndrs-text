@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import type { AnyRasterBakerModule, RasterBakePlan } from '../bake.js';
+import type { RasterBakePlan } from '../bake.js';
 import type { UnicodeRange } from '../font-baker/index.js';
 import { normalizeUnicodeRanges } from '../internal/font-selection.js';
 import {
@@ -416,9 +416,14 @@ async function bakeDirect(options: DirectBakeArguments): Promise<NodeFontBakeRep
   }
 }
 
-async function directRasterPlans(options: DirectBakeArguments): Promise<RasterBakePlan<AnyRasterBakerModule>[]> {
+type DirectRasterBakePlan =
+  | RasterBakePlan<typeof import('../bakers/bitmap.js').bitmapBaker>
+  | RasterBakePlan<typeof import('../bakers/msdf.js').msdfBaker>
+  | RasterBakePlan<typeof import('../bakers/slug.js').slugBaker>;
+
+async function directRasterPlans(options: DirectBakeArguments): Promise<DirectRasterBakePlan[]> {
   const packaging = { artifact: 'embedded', pages: 'embedded' } as const;
-  const rasters: RasterBakePlan<AnyRasterBakerModule>[] = [];
+  const rasters: DirectRasterBakePlan[] = [];
   if (options.bitmapStrikes !== undefined) {
     const { bitmapBaker } = await import('../bakers/bitmap.js');
     rasters.push({ baker: bitmapBaker, packaging, options: { strikes: options.bitmapStrikes } });
@@ -487,7 +492,7 @@ async function packageVersion(): Promise<string> {
 
 function writeFailure(io: CliIo, error: unknown): void {
   if (error instanceof NodeBakeError) {
-    io.stderr.write(`${error.code}: ${error.message}${error.path === undefined ? '' : ` (${error.path})`}\n`);
+    io.stderr.write(`${error.reason}: ${error.message}${error.path === undefined ? '' : ` (${error.path})`}\n`);
   } else {
     io.stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
   }
@@ -499,7 +504,7 @@ function topLevelUsage(): string {
 Portable font baking for @pmndrs/glyph.
 
 Commands:
-  bake                  Bake font shaping data and optional raster techniques
+  bake                  Bake font shaping data and optional raster formats
   glyphs <font>         List Unicode mappings and font-provided glyph names
 
 Global options:
@@ -534,7 +539,7 @@ function bakeUsage(): string {
   glyph bake [discovery options]
   glyph bake --input <font> --output <font.glb> [options]
 
-Bake one known font directly, or discover defineFont() declarations in a project.
+Bake one known font directly, or discover glyph.fontFace() declarations in a project.
 Direct options and discovery options cannot be mixed. With no bake options, discovery
 scans the current project and writes beside each source asset.
 

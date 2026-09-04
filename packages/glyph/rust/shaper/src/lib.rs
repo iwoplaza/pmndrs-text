@@ -31,10 +31,10 @@ pub const STATUS_HANDLE_CONFLICT: u32 = 4;
 pub const STATUS_FONT_MISSING: u32 = 5;
 pub const STATUS_INVALID_REQUEST: u32 = 6;
 pub const STATUS_RESULT_TOO_LARGE: u32 = 7;
-pub const STATUS_POLICY_CONFLICT: u32 = 8;
-pub const STATUS_POLICY_MISSING: u32 = 9;
-pub const STATUS_PLANNER_CONFLICT: u32 = 10;
-pub const STATUS_PLANNER_MISSING: u32 = 11;
+pub const STATUS_CODEC_CONFLICT: u32 = 8;
+pub const STATUS_CODEC_MISSING: u32 = 9;
+pub const STATUS_ROOT_CONFLICT: u32 = 10;
+pub const STATUS_ROOT_MISSING: u32 = 11;
 pub const STATUS_REVISION_CONFLICT: u32 = 12;
 pub const STATUS_FONT_STACK_MISSING: u32 = 13;
 pub const STATUS_FONT_IN_USE: u32 = 14;
@@ -359,7 +359,7 @@ impl ShaperRegistry {
             .unwrap_or(u32::MAX)
     }
 
-    pub fn plan_count(&self) -> u32 {
+    pub fn shape_plan_count(&self) -> u32 {
         self.fonts
             .iter()
             .map(|font| u32::try_from(font.plans.len()).unwrap_or(u32::MAX))
@@ -706,12 +706,6 @@ pub(crate) fn valid_language_bytes(bytes: &[u8]) -> bool {
     true
 }
 
-pub(crate) fn valid_tag(tag: u32) -> bool {
-    tag.to_be_bytes()
-        .iter()
-        .all(|byte| (0x20..=0x7e).contains(byte))
-}
-
 pub(crate) fn valid_utf16_boundary(text: &[u16], offset: u32) -> bool {
     let Ok(offset) = usize::try_from(offset) else {
         return false;
@@ -859,12 +853,6 @@ mod tests {
             decode_utf16_range(&text, 1, 5).unwrap(),
             [0x1f600, 0xfffd, 0x42]
         );
-    }
-
-    #[test]
-    fn tags_reject_non_opentype_bytes() {
-        assert!(valid_tag(u32::from_be_bytes(*b"Latn")));
-        assert!(!valid_tag(u32::from_be_bytes([b'L', 0, b't', b'n'])));
     }
 
     #[test]

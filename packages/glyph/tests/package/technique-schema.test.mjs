@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { defineTechniqueGeometryKind, defineTechniqueSchema, schemaPolicyBuffers, id } from '../../dist/core.js';
+import { id } from '../../dist/config/codec.js';
+import { defineTechniqueGeometryKind, defineTechniqueSchema, schemaCodecBuffers } from '../../dist/config/schema.js';
 import { textShaperAbi } from '../../dist/generated/text-shaper-abi.js';
 import { bitmapSchema } from '@pmndrs/glyph/raster/bitmap';
 import { msdfSchema } from '@pmndrs/glyph/raster/msdf';
@@ -70,7 +71,7 @@ test('malformed schema containers fail with named call-time diagnostics', () => 
   );
   assert.throws(
     () => defineTechniqueSchema({ ...declaration(), buffers: null }),
-    (error) => error instanceof TypeError && error.message.includes('policy buffers need a declaration object'),
+    (error) => error instanceof TypeError && error.message.includes('codec buffers need a declaration object'),
   );
   assert.throws(
     () => defineTechniqueSchema({ ...declaration(), resources: null }),
@@ -116,8 +117,8 @@ test('schemas own their data: caller accessors cannot change validated widths', 
   };
   const schema = defineTechniqueSchema(accessorInput);
   assert.deepEqual([...schema.buffers.sneaky.lanes], ['x']);
-  assert.equal(schemaPolicyBuffers(schema)[0].vectorWidth, 1);
-  assert.equal(schemaPolicyBuffers(schema)[0].vectorWidth, 1);
+  assert.equal(schemaCodecBuffers(schema)[0].vectorWidth, 1);
+  assert.equal(schemaCodecBuffers(schema)[0].vectorWidth, 1);
 });
 
 test('schema lookups do not accept inherited prototype names', () => {
@@ -172,10 +173,10 @@ test('Slug table-start lanes name the table each value indexes', () => {
   ]);
 });
 
-test('schemaPolicyBuffers derives the wire buffer list from each authoritative schema', () => {
+test('schemaCodecBuffers derives the wire buffer list from each authoritative schema', () => {
   for (const schema of [bitmapSchema, msdfSchema, slugSchema]) {
     assert.deepEqual(
-      schemaPolicyBuffers(schema),
+      schemaCodecBuffers(schema),
       Object.values(schema.buffers).map((buffer) => ({
         id: buffer.id,
         scalar: buffer.scalar,
@@ -183,7 +184,7 @@ test('schemaPolicyBuffers derives the wire buffer list from each authoritative s
       })),
     );
   }
-  const derived = schemaPolicyBuffers(defineTechniqueSchema(declaration()));
+  const derived = schemaCodecBuffers(defineTechniqueSchema(declaration()));
   assert.deepEqual(derived, [
     { id: ORIGIN_BUFFER_ID, scalar: 'f32', vectorWidth: 2 },
     { id: FLAGS_BUFFER_ID, scalar: 'u32', vectorWidth: 1 },
@@ -468,12 +469,12 @@ test('portable resource declarations are closed and geometry owns its vertex-inp
 test('declaring a render contract leaves wire buffer derivation and the generated primitive enum untouched', () => {
   const withRender = defineTechniqueSchema(suppliedGeometryDeclaration());
   const withoutRender = defineTechniqueSchema(declaration());
-  assert.deepEqual(schemaPolicyBuffers(withRender), schemaPolicyBuffers(withoutRender));
+  assert.deepEqual(schemaCodecBuffers(withRender), schemaCodecBuffers(withoutRender));
   assert.deepEqual(textShaperAbi.engine.primitiveKinds, {
     glyph: 1,
     decoration: 2,
     inlineObject: 3,
     clip: 4,
-    policy: 5,
+    codec: 5,
   });
 });

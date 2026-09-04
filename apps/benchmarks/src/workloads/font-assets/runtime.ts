@@ -1,18 +1,15 @@
 import {
-  type AnyRasterTechnique,
   type BakeProgressListener,
-  type FontLibrary,
   type Font,
-  type RuntimeFontBake,
-  type RuntimeFontBakeRequest,
-  type RasterTechniqueInput,
+  type RasterFormatInput,
+  type RasterFormatMetadata,
+  type RasterFormatRequest,
 } from '@pmndrs/glyph';
-import { FontLoader } from '@pmndrs/glyph/three';
-import * as THREE from 'three/webgpu';
 
 import type { FontDelivery } from '../../benchmark/url-state';
 import type { BenchmarkFontFixture } from '../../benchmark/font-fixtures';
 import type { FontDeliveryMetrics } from './contracts';
+import { benchmarkFontLibrary, type RuntimeFontBake, type RuntimeFontBakeRequest } from './library';
 
 import amiriSourceUrl from '../../../fixtures/fonts/amiri-1.002/Amiri-Regular.ttf?url';
 import dancingScriptSourceUrl from '../../../fixtures/fonts/dancing-script-3.000/DancingScript-Regular.otf?url';
@@ -33,6 +30,14 @@ const sourceUrls: Readonly<Record<BenchmarkFontFixture, string>> = {
   'source-serif-4': sourceSerifSourceUrl,
   'dancing-script': dancingScriptSourceUrl,
 };
+
+const retainedBakedPreloads = new Map<string, Promise<Font<RasterFormatMetadata>>>();
+
+if (import.meta.hot !== undefined) {
+  import.meta.hot.dispose(() => {
+    void disposeBakedFontPreloads();
+  });
+}
 
 export function sourceUrlForFixture(fixture: BenchmarkFontFixture): string {
   return sourceUrls[fixture];
@@ -72,78 +77,80 @@ export function measuredRuntimeFontBake(
   };
 }
 
-/**
- * The Three font loader keys one text engine per loading manager, and every `Text` in a paragraph batch must share one
- * engine. A caller-supplied immutable library gives an isolated benchmark surface one manager and loader domain.
- */
-const sharedLoadingManager = new THREE.LoadingManager();
-const isolatedLoadingManagers = new WeakMap<FontLibrary, THREE.LoadingManager>();
-const fontLoaders = new WeakMap<THREE.LoadingManager, FontLoader>();
-
-/**
- * Loads one font from artifact bytes the caller already fetched and authenticated. `LoadedFontInput` accepts URLs
- * rather than bytes, so the authenticated artifact is published as a blob URL that is revoked once the load settles.
- */
-export async function loadBakedFont<Technique extends AnyRasterTechnique>({
+/** Loads one font from artifact bytes the caller already fetched and authenticated. */
+export async function loadBakedFont<Format extends RasterFormatMetadata>({
   artifact,
   raster,
-  library,
   signal,
 }: {
-  readonly artifact: Uint8Array<ArrayBuffer>;
-  readonly raster: RasterTechniqueInput<Technique>;
-  readonly library?: FontLibrary | undefined;
+  readonly artifact: string;
+  readonly raster: RasterFormatInput<Format>;
   readonly signal?: AbortSignal | undefined;
-}): Promise<Font<Technique>> {
-  const url = URL.createObjectURL(new Blob([artifact], { type: 'model/gltf-binary' }));
-  try {
-    return await fontLoader(library).loadAsync({
-      input: { baked: url },
-      raster,
-      ...(signal === undefined ? {} : { signal }),
+}): Promise<Font<Format>> {
+  return loadThroughBenchmarkLibrary({ baked: artifact }, raster, signal);
+}
+
+/**
+ * Keeps one application-lifetime owner for a baked fixture. Short-lived scenes still acquire and dispose their own
+ * Font leases, while the retained owner keeps the decoded source and raster variant warm across technique switches.
+ */
+export async function preloadBakedFont<Format extends RasterFormatMetadata>({
+  artifact,
+  raster,
+  signal,
+}: {
+  readonly artifact: string;
+  readonly raster: RasterFormatRequest<Format>;
+  readonly signal?: AbortSignal | undefined;
+}): Promise<void> {
+  const key = retainedBakedPreloadKey(artifact, raster);
+  let retained = retainedBakedPreloads.get(key);
+  if (retained === undefined) {
+    const pending = loadBakedFont({ artifact, raster, signal });
+    retained = pending;
+    retainedBakedPreloads.set(key, pending);
+    void pending.catch(() => {
+      if (retainedBakedPreloads.get(key) === pending) retainedBakedPreloads.delete(key);
     });
-  } finally {
-    URL.revokeObjectURL(url);
   }
+  await retained;
+}
+
+/** Releases the benchmark application's retained preload owners. Scene-owned Font leases remain independently valid. */
+export async function disposeBakedFontPreloads(): Promise<void> {
+  const retained = [...retainedBakedPreloads.values()];
+  retainedBakedPreloads.clear();
+  const results = await Promise.allSettled(retained);
+  for (const result of results) if (result.status === 'fulfilled') result.value.dispose();
+}
+
+function retainedBakedPreloadKey<Format extends RasterFormatMetadata>(
+  artifact: string,
+  input: RasterFormatRequest<Format>,
+): string {
+  return `${artifact}\u0000${input.raster.id}\u0000${JSON.stringify(input.options ?? null)}`;
 }
 
 /** Loads one font from its source URL, baking the core artifact and the selected raster through the measured bakers. */
-export function loadSourceFont<Technique extends AnyRasterTechnique>({
+export function loadSourceFont<Format extends RasterFormatMetadata>({
   source,
   raster,
   runtimeBake,
-  library,
   signal,
 }: {
   readonly source: string;
-  readonly raster: RasterTechniqueInput<Technique>;
+  readonly raster: RasterFormatInput<Format>;
   readonly runtimeBake: RuntimeFontBake;
-  readonly library?: FontLibrary | undefined;
   readonly signal?: AbortSignal | undefined;
-}): Promise<Font<Technique>> {
-  return fontLoader(library).loadAsync({
-    input: { source, runtimeBake },
-    raster,
-    ...(signal === undefined ? {} : { signal }),
-  });
+}): Promise<Font<Format>> {
+  return loadThroughBenchmarkLibrary({ source, runtimeBake }, raster, signal);
 }
 
-function fontLoader(library: FontLibrary | undefined): FontLoader {
-  const manager = loadingManager(library);
-  let loader = fontLoaders.get(manager);
-  if (loader === undefined) {
-    loader = new FontLoader(manager, library === undefined ? {} : { library });
-    fontLoaders.set(manager, loader);
-  }
-  return loader;
-}
-
-function loadingManager(library: FontLibrary | undefined): THREE.LoadingManager {
-  if (library === undefined) return sharedLoadingManager;
-  let manager = isolatedLoadingManagers.get(library);
-  if (manager === undefined) {
-    manager = new THREE.LoadingManager();
-    isolatedLoadingManagers.set(library, manager);
-  }
-  return manager;
+function loadThroughBenchmarkLibrary<Format extends RasterFormatMetadata>(
+  input: Parameters<typeof benchmarkFontLibrary.loadFont>[0],
+  raster: RasterFormatInput<Format>,
+  signal: AbortSignal | undefined,
+): Promise<Font<Format>> {
+  const options = signal === undefined ? {} : { signal };
+  return benchmarkFontLibrary.loadFont(input, raster, options);
 }

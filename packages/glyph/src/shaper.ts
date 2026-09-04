@@ -1,5 +1,6 @@
 import type { RegisteredFont } from './font.js';
 import { textShaperAbi } from './generated/text-shaper-abi.js';
+import { textShaperWasmUrl } from './internal/shaper-wasm-url.js';
 import type { FontHandle } from './identity.js';
 import { getRegisteredFontData } from './internal/registered-font.js';
 import { FontRegistry } from './loader.js';
@@ -20,7 +21,7 @@ export interface RuntimeShaperOptions {
 export interface RuntimeShaperMemoryReport {
   readonly fontCount: number;
   readonly retainedFontBytes: number;
-  readonly planCount: number;
+  readonly shapePlanCount: number;
   readonly wasmMemoryBytes: number;
 }
 
@@ -57,7 +58,7 @@ interface ShaperExports {
   readonly disposeFont: (handle: number) => number;
   readonly fontCount: () => number;
   readonly retainedFontBytes: () => number;
-  readonly planCount: () => number;
+  readonly shapePlanCount: () => number;
   readonly registerFontBinding: (
     bindingHandle: number,
     shapingFontHandle: number,
@@ -68,29 +69,33 @@ interface ShaperExports {
   readonly fontBindingCount: () => number;
   readonly registerFontStack: (handle: number, pointer: number, count: number) => number;
   readonly disposeFontStack: (handle: number) => number;
-  readonly registerPolicy: (handle: number, pointer: number, length: number) => number;
-  readonly disposePolicy: (handle: number) => number;
-  readonly createPlanner: (
+  readonly registerCodec: (handle: number, pointer: number, length: number) => number;
+  readonly disposeCodec: (handle: number) => number;
+  readonly createRoot: (
     handle: number,
     requestCapacity: number,
     resultCapacity: number,
     textCapacity: number,
   ) => number;
-  readonly reservePlanner: (
+  readonly reserveRoot: (
     handle: number,
     requestCapacity: number,
     resultCapacity: number,
     textCapacity: number,
   ) => number;
-  readonly disposePlanner: (handle: number) => number;
+  readonly disposeRoot: (handle: number) => number;
   readonly requestPointer: (handle: number) => number;
   readonly requestCapacity: (handle: number) => number;
+  readonly reserveUpdateBatch: (count: number) => number;
+  readonly updateBatchPointer: () => number;
+  readonly updateBatchCapacity: () => number;
   readonly textUpdate: (handle: number, pointer: number, length: number) => number;
+  readonly textUpdateBatch: (entriesPointer: number, count: number) => number;
   readonly measureParagraph: (handle: number, pointer: number, length: number, paragraphId: number) => number;
   readonly copyGlyphs: (
     handle: number,
     paragraphId: number,
-    policyHandle: number,
+    codecHandle: number,
     capabilitySet: number,
     maxOutputBytes: number,
     stableIdsPointer: number,
@@ -98,7 +103,7 @@ interface ShaperExports {
   ) => number;
   readonly copyDecorations: (
     handle: number,
-    policyHandle: number,
+    codecHandle: number,
     capabilitySet: number,
     paragraphId: number,
     maxOutputBytes: number,
@@ -194,7 +199,7 @@ class RuntimeShaperImpl implements RuntimeShaper {
     return {
       fontCount: this.#exports.fontCount(),
       retainedFontBytes: this.#exports.retainedFontBytes(),
-      planCount: this.#exports.planCount(),
+      shapePlanCount: this.#exports.shapePlanCount(),
       wasmMemoryBytes: this.#exports.memory.buffer.byteLength,
     };
   }
@@ -229,7 +234,7 @@ class RuntimeShaperImpl implements RuntimeShaper {
 }
 
 async function fetchDefaultWasm(): Promise<ArrayBuffer> {
-  const url = new URL('../dist/text-shaper.wasm', import.meta.url);
+  const url = textShaperWasmUrl();
   if (url.protocol === 'file:' && typeof process !== 'undefined' && typeof process.getBuiltinModule === 'function') {
     const fileSystem = process.getBuiltinModule('node:fs') as typeof import('node:fs');
     const bytes = fileSystem.readFileSync(url);
@@ -258,20 +263,24 @@ function readModule(instance: WebAssembly.Instance): ShaperModule {
       disposeFont: exportedFunction(instance, functions.disposeFont),
       fontCount: exportedFunction(instance, functions.fontCount),
       retainedFontBytes: exportedFunction(instance, functions.retainedFontBytes),
-      planCount: exportedFunction(instance, functions.planCount),
+      shapePlanCount: exportedFunction(instance, functions.shapePlanCount),
       registerFontBinding: exportedFunction(instance, functions.registerFontBinding),
       disposeFontBinding: exportedFunction(instance, functions.disposeFontBinding),
       fontBindingCount: exportedFunction(instance, functions.fontBindingCount),
       registerFontStack: exportedFunction(instance, functions.registerFontStack),
       disposeFontStack: exportedFunction(instance, functions.disposeFontStack),
-      registerPolicy: exportedFunction(instance, functions.registerPolicy),
-      disposePolicy: exportedFunction(instance, functions.disposePolicy),
-      createPlanner: exportedFunction(instance, functions.createPlanner),
-      reservePlanner: exportedFunction(instance, functions.reservePlanner),
-      disposePlanner: exportedFunction(instance, functions.disposePlanner),
+      registerCodec: exportedFunction(instance, functions.registerCodec),
+      disposeCodec: exportedFunction(instance, functions.disposeCodec),
+      createRoot: exportedFunction(instance, functions.createRoot),
+      reserveRoot: exportedFunction(instance, functions.reserveRoot),
+      disposeRoot: exportedFunction(instance, functions.disposeRoot),
       requestPointer: exportedFunction(instance, functions.requestPointer),
       requestCapacity: exportedFunction(instance, functions.requestCapacity),
+      reserveUpdateBatch: exportedFunction(instance, functions.reserveUpdateBatch),
+      updateBatchPointer: exportedFunction(instance, functions.updateBatchPointer),
+      updateBatchCapacity: exportedFunction(instance, functions.updateBatchCapacity),
       textUpdate: exportedFunction(instance, functions.textUpdate),
+      textUpdateBatch: exportedFunction(instance, functions.textUpdateBatch),
       measureParagraph: exportedFunction(instance, functions.measureParagraph),
       copyGlyphs: exportedFunction(instance, functions.copyGlyphs),
       copyDecorations: exportedFunction(instance, functions.copyDecorations),

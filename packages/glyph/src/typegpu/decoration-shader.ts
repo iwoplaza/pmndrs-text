@@ -34,7 +34,17 @@ export function decorationPaint(packed: d.v2u): d.v4f {
   );
 }
 
-/** Decode the packed decoration record and place its unit quad in paragraph space. */
+/**
+ * Decodes the packed decoration record and places its unit quad in paragraph space: a solid
+ * quad covering the record's rectangle, colored by the packed decoration paint. The unit quad
+ * spans `[0, 1]` with the origin at the upper-left corner, matching the glyph raster programs.
+ * Only solid lines reach this function: the public boundary rejects other line styles, and
+ * `packed.y` retains the style bits for the later patterned-paint implementation.
+ *
+ * The packed bytes are sRGB-encoded — the same wire encoding whose glyph counterpart the Rust
+ * gather decodes through its sRGB-to-linear table — so the color channels pass through the sRGB
+ * EOTF into the renderer's linear working space. Alpha stays linear.
+ */
 export const decorationShader: TgpuFn<(input: typeof TypeGpuDecorationInput) => typeof TypeGpuDecorationOutput> =
   tgpu.fn(
     [TypeGpuDecorationInput],

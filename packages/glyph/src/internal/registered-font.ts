@@ -8,11 +8,22 @@ export interface RegisteredBufferView {
 
 export interface RegisteredRasterSourceData {
   reference: RasterReference;
-  readonly extensionData?: JsonValue;
-  readonly binaryBytes?: Uint8Array;
-  readonly bufferViews?: readonly RegisteredBufferView[];
+  extensionData?: JsonValue;
+  binaryBytes?: Uint8Array;
+  bufferViews?: readonly RegisteredBufferView[];
+  /** Complete authenticated external or runtime-generated raster artifact. Embedded rasters use the main artifact. */
+  artifactBytes?: Uint8Array<ArrayBuffer>;
+  artifactHash?: string;
+  /** Content identities actually resolved while decoding this raster. */
+  readonly resourceIdentities: Set<string>;
   readonly externalCandidates: RegisteredRasterExternalCandidate[];
   readonly resourceCandidates: RegisteredRasterResourceCandidate[];
+}
+
+export interface RegisteredRasterResourceData {
+  readonly artifactHash: string;
+  readonly byteLength: number;
+  readonly bytes: Uint8Array<ArrayBuffer>;
 }
 
 export interface RegisteredRasterExternalCandidate {
@@ -30,6 +41,8 @@ export interface RegisteredRasterResourceCandidate {
 export interface RegisteredFontData {
   /** Complete immutable GLB backing. Every embedded payload is a view into this allocation. */
   readonly artifactBytes: Uint8Array<ArrayBuffer>;
+  /** Content identity of the complete main GLB, independent of its locator or shaping payload. */
+  readonly artifactHash: string;
   readonly fontFaceIndex: number;
   readonly sourceHash: string;
   sourceBytes?: Uint8Array;
@@ -38,6 +51,8 @@ export interface RegisteredFontData {
   readonly glyphExtents: Uint8Array;
   readonly glyphExtentsAvailability: Uint8Array;
   readonly rasterSources: Map<string, RegisteredRasterSourceData>;
+  /** Authenticated external resources shared by every raster through canonical content identity. */
+  readonly resources: Map<string, RegisteredRasterResourceData>;
   readonly unicodeVersion: string;
 }
 

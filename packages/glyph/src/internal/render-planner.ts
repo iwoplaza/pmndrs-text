@@ -1,0 +1,1862 @@
+import { alignSpansToClusters } from '../formatted-text.js';
+import { textShaperAbi } from '../generated/text-shaper-abi.js';
+import { GlyphError } from '../glyph-error.js';
+import { copyGlyphLayoutInspection, type GlyphLayoutInspection, type ParagraphLayoutSummary } from '../layout.js';
+import {
+  assertConstraints,
+  assertParagraphLayout,
+  assertTextStyle,
+  assertTextStyleFeatureRanges,
+  type Constraints,
+  type ParagraphLayout,
+  type TextStyle,
+} from '../text-properties.js';
+import {
+  compileEngineGeometry,
+  assertTextEffectsSupported,
+  engineStyleId,
+  engineStyleValue,
+  minimalTextMutation,
+  normalizedColumns,
+} from '../engine-encoding.js';
+import {
+  compilePlannerFrameUpdate,
+  MAX_TEXT_ENGINE_OUTPUT_BYTES,
+  type PlannerConstraint,
+  type PlannerExclusion,
+  type PlannerFrameLimits,
+  type PlannerInlineObject,
+  type PlannerParagraphMutation,
+  type PlannerRegion,
+  type PlannerStyleMutation,
+} from './frame-wire.js';
+import type {
+  HandleFontStackBinding,
+  HandleMaterialBinding,
+  HandleBindingLease,
+  CodecRegistration,
+  HandleResourceBinding,
+  HandleTransformBinding,
+  GlyphHandleState,
+  PlanPublication,
+  PlanTransport,
+} from './handle-state.js';
+import { RenderPlanView, type RenderPlanTable } from './plan-view.js';
+import { readPlannerLayouts, readPlannerMeasurements } from './layout-query-view.js';
+import type { PortableResource } from '../config/resources.js';
+import type { ParagraphId, ResourceHandle } from './glyph-id.js';
+import { codecCapabilitySetSelectionId, selectCodecCapabilitySet } from './codec-capability-selection.js';
+
+const MAX_U32 = 0xffff_ffff;
+const claimedTargets = new WeakSet<object>();
+
+declare const planOriginBrand: unique symbol;
+/** Unforgeable identity of the plan that produced a plan candidate. */
+export interface PlanOrigin {
+  readonly [planOriginBrand]: true;
+}
+
+/** Engine-owned host transform identity used only while mapping a trusted publication. */
+type RenderPlanTransformId = number;
+
+class PlanOriginImpl implements PlanOrigin {
+  declare readonly [planOriginBrand]: true;
+}
+
+/** A table carried by every renderer-neutral plan publication. */
+export type RenderPlanTableName =
+  | 'resources'
+  | 'buffers'
+  | 'patches'
+  | 'primitives'
+  | 'draws'
+  | 'retirements'
+  | 'diagnostics';
+
+/** Bounds-checked scalar and byte access over one validated render plan. */
+export interface RenderPlanReader {
+  table(name: RenderPlanTableName): RenderPlanTable;
+  record(table: RenderPlanTable, index: number): number;
+  u8(offset: number): number;
+  u16(offset: number): number;
+  u32(offset: number): number;
+  f32(offset: number): number;
+  bytes(offset: number, byteLength: number): Uint8Array;
+}
+
+/** A synchronous view into engine-owned A/B memory. */
+export interface BorrowedRenderPlan extends RenderPlanReader {
+  readonly delivery: 'borrowed';
+}
+
+/** One renderer-neutral payload resolved from a plan resource reference. */
+export interface ResolvedPortablePayload {
+  readonly referenceId: ResourceHandle;
+  readonly resourceName: string;
+  readonly payload: PortableResource;
+}
+
+/** A counted claim on a portable payload and its singleton companions. */
+export interface PortablePayloadLease extends ResolvedPortablePayload {
+  readonly techniqueId: string;
+  /** Selected payload plus every singleton companion declared by the same compiled font. */
+  readonly resources: readonly ResolvedPortablePayload[];
+  readonly disposed: boolean;
+  dispose(): void;
+}
+
+/** A plan transform resolved to its handle-owned binding. */
+export interface ResolvedPlanTransform {
+  /** Physical transform-table record consumed by indexed renderer buffers. */
+  readonly transformIndex: RenderPlanTransformId;
+  /** Root draw identities that select the same host transform without entering the transform table. */
+  readonly instanceIds?: readonly ParagraphId[];
+  readonly binding: HandleTransformBinding;
+}
+
+/** A synchronous candidate whose borrowed plan must be consumed during `accept`. */
+export interface PlanCandidate {
+  readonly origin: PlanOrigin;
+  readonly plan: BorrowedRenderPlan;
+  readonly engineRevision: number;
+  readonly revision: number;
+  readonly publicationGeneration: number;
+  /** Whether this publication is a complete renderer checkpoint rather than an incremental update. */
+  readonly checkpoint: boolean;
+  readonly transforms: readonly ResolvedPlanTransform[];
+  acquirePayload(referenceId: ResourceHandle): PortablePayloadLease;
+  resolveMaterial(materialId: number): HandleMaterialBinding;
+  resolveResource(resourceId: ResourceHandle): HandleResourceBinding;
+}
+
+/** The renderer's transactional decision for one candidate. */
+export type PlanAcceptance = Readonly<{ accepted: true }> | Readonly<{ accepted: false; error: unknown }>;
+
+/** Renderer-to-plan control channel for requesting a complete checkpoint. */
+export interface PlanTargetControl {
+  requestCheckpoint(): void;
+}
+
+/** Synchronous zero-copy render-plan target; this is the normal same-realm path. */
+export interface PlanTarget {
+  readonly delivery: 'borrowed';
+  accept(candidate: PlanCandidate, signal: AbortSignal): PlanAcceptance;
+  dispose(): void;
+}
+
+/** One formatted-text span using handle-bound renderer and font values. */
+export interface RetainedTextSpan {
+  readonly start: number;
+  readonly end: number;
+  readonly font?: HandleFontStackBinding;
+  readonly material?: HandleMaterialBinding;
+  /** Text shaping and presentation overrides for this inline span. */
+  readonly style?: TextStyle;
+}
+
+/** Styled text accepted by a retained text instance. */
+export interface RetainedFormattedText {
+  readonly text: string;
+  readonly spans: readonly RetainedTextSpan[];
+}
+
+/** Plain or formatted input accepted by a retained text instance. */
+export type RetainedTextInput = string | RetainedFormattedText;
+
+/** A flow region whose transform is already bound to the handle. */
+export type RetainedTextRegionInput = Omit<
+  PlannerRegion,
+  'id' | 'geometryRevision' | 'transformIndex' | 'exclusionStart' | 'exclusionCount'
+> & {
+  readonly transform: HandleTransformBinding;
+};
+
+/** An exclusion authored relative to its containing flow region. */
+export type RetainedTextExclusionInput = Omit<PlannerExclusion, 'id' | 'regionId' | 'geometryRevision'>;
+
+/** One flow region and its exclusions. */
+export interface RetainedTextFlowRegionInput {
+  readonly region: RetainedTextRegionInput;
+  readonly exclusions?: readonly RetainedTextExclusionInput[];
+}
+
+/** Ordered regions through which one retained text instance flows. */
+export interface RetainedTextFlowInput {
+  readonly regions: readonly RetainedTextFlowRegionInput[];
+}
+
+/** Inline-object input using handle-bound material and resource values. */
+export type RetainedTextInlineObjectInput = Omit<
+  PlannerInlineObject,
+  'paragraphId' | 'id' | 'contentRevision' | 'materialId' | 'resourceId' | 'resourceGeneration'
+> & {
+  readonly material: HandleMaterialBinding;
+  readonly resource: HandleResourceBinding;
+};
+
+/** Fixed safety and capacity limits for one render planner. */
+export interface RenderPlannerLimits extends PlannerFrameLimits {}
+
+/** Initial desired state for one retained text instance. */
+export interface RetainedTextOptions {
+  readonly font: HandleFontStackBinding;
+  readonly text: RetainedTextInput;
+  readonly material?: HandleMaterialBinding;
+  readonly transform?: HandleTransformBinding;
+  readonly order?: number;
+  readonly rasterPixelRatio?: number;
+  /** Text shaping and presentation properties inherited by inline spans. */
+  readonly style?: TextStyle;
+  /** Paragraph flow properties such as wrapping, alignment, and line limits. */
+  readonly layout?: ParagraphLayout;
+  /** Bounds imposed on the measured and rendered paragraph. */
+  readonly constraints?: Constraints;
+  readonly flow?: RetainedTextFlowInput;
+  readonly inlineObjects?: readonly RetainedTextInlineObjectInput[];
+}
+
+/** Partial desired-state replacement for one retained text instance. */
+export type RetainedTextUpdate = Partial<Omit<RetainedTextOptions, 'font'>> & {
+  readonly font?: HandleFontStackBinding;
+};
+
+/** One planner-owned retained text instance. */
+export interface RetainedText {
+  readonly disposed: boolean;
+  update(update: RetainedTextUpdate): void;
+  /** Returns aggregate metrics; a cache miss may synchronously incur font and measure lookup work. */
+  measure(): ParagraphLayoutSummary;
+  /** Returns caller-owned columns; a cache miss may synchronously incur glyph lookup and positioning work. */
+  glyphs(): GlyphLayoutInspection;
+  /** Offers a complete checkpoint containing selected committed stable glyph ids to one renderer target. */
+  copyGlyphs(stableIds: ArrayLike<number>, target: PlanTarget): PlanAcceptance;
+  /** Offers a complete checkpoint containing this paragraph's committed decorations. */
+  copyDecorations(target: PlanTarget): PlanAcceptance;
+  dispose(): void;
+}
+
+/** Optional semantic views to cache while compiling the next publication. */
+export interface RenderPlannerPublishOptions {
+  readonly semanticViews?: 'none' | 'measurement' | 'layout-inspection' | 'all';
+  readonly compositing?: 'ordered' | 'independent';
+}
+
+/** One retained-text planner staged only through the engine-wide shape batch. */
+export interface RenderPlanner {
+  readonly disposed: boolean;
+  /** Creates one retained text instance in this planner. */
+  createText(options: RetainedTextOptions): RetainedText;
+  /** Disposes every retained text instance and releases this planner. */
+  dispose(): void;
+}
+
+/** Construction options for one retained-text planner and render target. */
+export interface RenderPlannerOptions {
+  readonly codec: CodecRegistration;
+  readonly capabilitySetIndex: number;
+  readonly target: (control: PlanTargetControl) => PlanTarget;
+  readonly limits: RenderPlannerLimits;
+  readonly requestCapacity: number;
+  readonly resultCapacity: number;
+  readonly textCapacity: number;
+}
+
+/** @internal A planner that can query authored text but cannot publish a render plan. */
+export interface MeasurementPlanner {
+  readonly disposed: boolean;
+  createText(options: RetainedTextOptions): RetainedText;
+  dispose(): void;
+}
+
+/** @internal Planner construction shared by retained roots and explicit single-Text queries. */
+export interface MeasurementPlannerOptions {
+  readonly codec: CodecRegistration;
+  readonly limits: RenderPlannerLimits;
+  readonly requestCapacity: number;
+  readonly resultCapacity: number;
+  readonly textCapacity: number;
+}
+
+/** Thrown when a render planner is used after disposal. */
+export class RenderPlannerDisposedError extends GlyphError<'engine-failed'> {
+  constructor() {
+    super('engine-failed', 'render planner has been disposed');
+    this.name = 'RenderPlannerDisposedError';
+  }
+}
+
+interface ResolvedSpan {
+  readonly start: number;
+  readonly end: number;
+  readonly font: ReturnType<GlyphHandleState['_retainFontStackBinding']> | undefined;
+  readonly material: HandleBindingLease<HandleMaterialBinding> | undefined;
+  readonly style: TextStyle | undefined;
+}
+
+interface ResolvedTextOptions {
+  readonly source: RetainedTextOptions;
+  readonly text: string;
+  readonly spans: readonly ResolvedSpan[];
+  readonly font: ReturnType<GlyphHandleState['_retainFontStackBinding']>;
+  readonly material: HandleBindingLease<HandleMaterialBinding> | undefined;
+  readonly transform: HandleBindingLease<HandleTransformBinding>;
+  readonly flowTransforms: readonly HandleBindingLease<HandleTransformBinding>[];
+  readonly inlineMaterials: readonly HandleBindingLease<HandleMaterialBinding>[];
+  readonly inlineResources: readonly HandleBindingLease<HandleResourceBinding>[];
+}
+
+interface RetainedTextState {
+  readonly paragraphId: ParagraphId;
+  readonly ordinal: number;
+  desired: ResolvedTextOptions;
+  metrics: RetainedTextMetrics;
+  publishedText: string;
+  publishedStyleCount: number;
+  geometryRevision: number;
+  published: boolean;
+  dirty: boolean;
+  removed: boolean;
+  disposed: boolean;
+  desiredReleased: boolean;
+  committed: ResolvedTextOptions | undefined;
+  measurement: ParagraphLayoutSummary | undefined;
+  inspection: GlyphLayoutInspection | undefined;
+}
+
+interface RetainedTextMetrics {
+  readonly order: number;
+  readonly styleCount: number;
+  readonly regionCount: number;
+  readonly exclusionCount: number;
+  readonly inlineObjectCount: number;
+}
+
+interface PendingPublication {
+  readonly publication: PlanPublication;
+  readonly checkpointGeneration: number;
+}
+
+interface StagedBatchPublication {
+  readonly checkpointGeneration: number;
+  readonly semanticViewMask: number;
+}
+
+/** @internal One retained synchronous planner staged for the engine-wide shape batch. */
+export interface StagedRenderPlanner {
+  readonly rootId: number;
+  readonly requestLength: number;
+  adopt(resultPointer: number, memoryBuffer: ArrayBuffer): void;
+  consume(): PlanAcceptance;
+  settle(): void;
+  discard(): void;
+}
+
+const textStates = new WeakMap<object, Readonly<{ planner: RenderPlannerImpl; state: RetainedTextState }>>();
+
+/** @internal Constructed only after GlyphHandleState validates handle ownership. */
+export function createRenderPlanner(handleState: GlyphHandleState, options: RenderPlannerOptions): RenderPlanner {
+  return new RenderPlannerImpl(handleState, options);
+}
+
+/** @internal Construct a query planner without a renderer acceptance target. */
+export function createMeasurementPlanner(
+  handleState: GlyphHandleState,
+  options: MeasurementPlannerOptions,
+): MeasurementPlanner {
+  return new RenderPlannerImpl(handleState, options, true);
+}
+
+/** @internal Schedule callbacks for semantic mutations on one package-created renderer planner. */
+export function observeRenderPlannerDirty(planner: RenderPlanner, listener: () => void): () => void {
+  if (!(planner instanceof RenderPlannerImpl)) throw new TypeError('render planner was not created by this package');
+  return planner._observeDirty(listener);
+}
+
+/** @internal Stage one synchronous root without crossing into Wasm. */
+export function stageRenderPlanner(
+  planner: RenderPlanner,
+  options?: RenderPlannerPublishOptions,
+  force = false,
+): StagedRenderPlanner | undefined {
+  if (!(planner instanceof RenderPlannerImpl)) throw new TypeError('render planner was not created by this package');
+  return planner._stageBatch(normalizePublishOptions(options), force);
+}
+
+class RenderPlannerImpl {
+  readonly #handleState: GlyphHandleState;
+  readonly #transport: PlanTransport;
+  readonly #codec: ReturnType<GlyphHandleState['_retainInstalledCodec']>;
+  readonly #capabilitySet: ReturnType<typeof selectCodecCapabilitySet> | undefined;
+  readonly #target: PlanTarget | undefined;
+  readonly #control: TargetControlState | undefined;
+  readonly #targetController = new AbortController();
+  readonly #origin: PlanOrigin = Object.freeze(new PlanOriginImpl());
+  readonly #limits: RenderPlannerLimits;
+  readonly #texts = new Set<RetainedTextState>();
+  readonly #removed = new Set<RetainedTextState>();
+  readonly #measured = new Map<RetainedTextState, ResolvedTextOptions>();
+  readonly #textsByOrder = new Map<number, RetainedTextState>();
+  #liveTextCount = 0;
+  #liveStyleCount = 0;
+  #liveRegionCount = 0;
+  #liveExclusionCount = 0;
+  #liveInlineObjectCount = 0;
+  #dirtyTextCount = 0;
+  #pendingStyleCount = 0;
+  #nextTextOrdinal = 1;
+  #engineRevision = 0;
+  #revision = 0;
+  #acknowledgedGeneration = 0;
+  #checkpointGeneration = 0;
+  #acceptedCheckpointGeneration = 0;
+  #structureRevision = 0;
+  #measuredStructureRevision = -1;
+  #textCapacity: number;
+  #disposed = false;
+  #stagedBatch: StagedBatchPublication | undefined;
+  #stagedRequestLength = 0;
+  #stagedPublication: PendingPublication | undefined;
+  #stagedAcceptance: PendingPublication | undefined;
+  #dirtyListener: (() => void) | undefined;
+
+  constructor(
+    handleState: GlyphHandleState,
+    options: RenderPlannerOptions | MeasurementPlannerOptions,
+    measurementOnly = false,
+  ) {
+    this.#handleState = handleState;
+    if (measurementOnly) assertMeasurementPlanOptions(options);
+    else assertRenderPlannerOptions(options);
+    this.#limits = snapshotLimits(options.limits);
+    this.#textCapacity = options.textCapacity;
+    const codec = handleState._retainInstalledCodec(options.codec);
+    if (measurementOnly) {
+      try {
+        const handle = handleState._allocatePlannerHandle();
+        this.#transport = handleState._createPlanTransport({
+          handle,
+          requestCapacity: options.requestCapacity,
+          resultCapacity: options.resultCapacity,
+          textCapacity: options.textCapacity,
+        });
+        this.#codec = codec;
+        this.#capabilitySet = undefined;
+        this.#target = undefined;
+        this.#control = undefined;
+        return;
+      } catch (error) {
+        codec.dispose();
+        throw error;
+      }
+    }
+    const renderOptions = options as RenderPlannerOptions;
+    let target: PlanTarget | undefined;
+    let claimed = false;
+    const control = new TargetControlState(() => {
+      this.#assertActive();
+      this.#checkpointGeneration = checkedNextCheckpointGeneration(this.#checkpointGeneration);
+      this.#dirtyListener?.();
+    });
+    try {
+      const capabilitySet = codec.descriptor.capabilitySets[renderOptions.capabilitySetIndex];
+      if (capabilitySet === undefined) throw new RangeError('Codec capability set index is out of range');
+      const selectedCapabilitySet = selectCodecCapabilitySet(codec.handle, codec.descriptor, capabilitySet);
+      target = renderOptions.target(control);
+      assertTarget(target);
+      if (claimedTargets.has(target)) throw new TypeError('plan target is already attached to another render planner');
+      claimedTargets.add(target);
+      claimed = true;
+      const handle = handleState._allocatePlannerHandle();
+      this.#transport = handleState._createPlanTransport({
+        handle,
+        requestCapacity: options.requestCapacity,
+        resultCapacity: options.resultCapacity,
+        textCapacity: options.textCapacity,
+      });
+      this.#target = target;
+      this.#control = control;
+      this.#codec = codec;
+      this.#capabilitySet = selectedCapabilitySet;
+    } catch (error) {
+      control.dispose();
+      codec.dispose();
+      if (claimed) {
+        try {
+          target!.dispose();
+        } catch (disposeError) {
+          throw combinedFailure(error, disposeError, 'render-planner construction and target disposal both failed');
+        }
+      }
+      throw error;
+    }
+  }
+
+  get disposed(): boolean {
+    return this.#disposed;
+  }
+
+  createText(options: RetainedTextOptions): RetainedText {
+    this.#assertMutable();
+    const ordinal = this.#nextTextOrdinal;
+    const nextOrdinal = checkedNextOrdinal(ordinal);
+    const desired = resolveTextOptions(this.#handleState, options);
+    const state: RetainedTextState = {
+      paragraphId: this.#handleState.id('paragraph', `${this.#handleState.integration}/text/${ordinal}`),
+      ordinal,
+      desired,
+      metrics: retainedTextMetrics(desired, ordinal),
+      publishedText: '',
+      publishedStyleCount: 0,
+      geometryRevision: 0,
+      published: false,
+      dirty: true,
+      removed: false,
+      disposed: false,
+      desiredReleased: false,
+      committed: undefined,
+      measurement: undefined,
+      inspection: undefined,
+    };
+    try {
+      this.#validateAggregateLimits(state);
+    } catch (error) {
+      releaseResolvedText(desired);
+      throw error;
+    }
+    const text = new RetainedTextImpl(this, state);
+    textStates.set(text, { planner: this, state });
+    this.#addLiveState(state);
+    this.#texts.add(state);
+    this.#structureRevision = checkedNextStructureRevision(this.#structureRevision);
+    this.#nextTextOrdinal = nextOrdinal;
+    this.#dirtyListener?.();
+    return text;
+  }
+
+  /** @internal */
+  _updateText(state: RetainedTextState, update: RetainedTextUpdate): void {
+    this.#assertMutable();
+    if (state.disposed) throw new Error('text engine text has been disposed');
+    if (!isNonArrayObject(update)) throw new TypeError('text engine text update must be an object');
+    const source: RetainedTextOptions = Object.freeze({ ...state.desired.source, ...update });
+    const desired = resolveTextOptions(this.#handleState, source);
+    const candidate = { ...state, desired, metrics: retainedTextMetrics(desired, state.ordinal), dirty: true };
+    try {
+      this.#validateAggregateLimits(candidate, state);
+    } catch (error) {
+      releaseResolvedText(desired);
+      throw error;
+    }
+    const previousOrder = state.metrics.order;
+    const nextOrder = candidate.metrics.order;
+    this.#replaceLiveState(state, candidate.metrics);
+    releaseResolvedText(state.desired);
+    state.desired = desired;
+    state.metrics = candidate.metrics;
+    state.dirty = true;
+    state.measurement = undefined;
+    state.inspection = undefined;
+    if (previousOrder !== nextOrder) {
+      this.#structureRevision = checkedNextStructureRevision(this.#structureRevision);
+    }
+    this.#dirtyListener?.();
+  }
+
+  /** @internal */
+  _layoutText(state: RetainedTextState): ParagraphLayoutSummary {
+    this.#assertTextQueryable(state);
+    const cached = state.measurement;
+    if (cached !== undefined) return cached;
+    return this.#queryText(state, false);
+  }
+
+  /** @internal */
+  _inspectText(state: RetainedTextState): GlyphLayoutInspection {
+    this.#assertTextQueryable(state);
+    const cached = state.inspection;
+    if (cached !== undefined) return copyGlyphLayoutInspection(cached);
+    return copyGlyphLayoutInspection(this.#queryText(state, true));
+  }
+
+  /** @internal */
+  _copyGlyphs(state: RetainedTextState, stableIds: ArrayLike<number>, target: PlanTarget): PlanAcceptance {
+    this.#assertCopyable(state, target);
+    const publication = this.#transport.copyGlyphs(
+      state.paragraphId,
+      stableIds,
+      this.#codec.handle,
+      this.#capabilitySetId(),
+      this.#limits.maxOutputBytes,
+    );
+    return this.#offerCopy(publication, target);
+  }
+
+  /** @internal */
+  _copyDecorations(state: RetainedTextState, target: PlanTarget): PlanAcceptance {
+    this.#assertCopyable(state, target);
+    const publication = this.#transport.copyDecorations(
+      state.paragraphId,
+      this.#codec.handle,
+      this.#capabilitySetId(),
+      this.#limits.maxOutputBytes,
+    );
+    return this.#offerCopy(publication, target);
+  }
+
+  /** @internal */
+  _disposeText(state: RetainedTextState): void {
+    if (state.disposed) return;
+    this.#assertMutable();
+    state.disposed = true;
+    this.#removeLiveState(state);
+    releaseResolvedText(state.desired);
+    state.desiredReleased = true;
+    this.#structureRevision = checkedNextStructureRevision(this.#structureRevision);
+    if (state.committed === undefined && !this.#measured.has(state)) {
+      this.#texts.delete(state);
+      return;
+    }
+    state.removed = true;
+    state.dirty = true;
+    this.#removed.add(state);
+    this.#dirtyListener?.();
+  }
+
+  /** @internal */
+  _observeDirty(listener: () => void): () => void {
+    this.#assertActive();
+    if (typeof listener !== 'function') throw new TypeError('render planner dirty listener must be a function');
+    if (this.#dirtyListener !== undefined) throw new Error('render planner already has a dirty listener');
+    this.#dirtyListener = listener;
+    if (this.#isDirty()) listener();
+    return () => {
+      if (this.#dirtyListener === listener) this.#dirtyListener = undefined;
+    };
+  }
+
+  /** @internal */
+  _stageBatch(options: NormalizedPublishOptions, force: boolean): StagedRenderPlanner | undefined {
+    this.#assertMutable();
+    if (this.#target === undefined) throw new Error('measurement-only planners cannot publish render plans');
+    if (this.#target.delivery !== 'borrowed') {
+      throw new TypeError('glyph.shape() requires a synchronous borrowed renderer target');
+    }
+    if (this.#stagedBatch !== undefined) throw new Error('render planner is already staged');
+    if (!force && !this.#isDirty()) return undefined;
+    this.#ensureTextCapacity();
+    const checkpointGeneration = this.#checkpointGeneration;
+    const frame = this.#compileFrame(options, checkpointGeneration);
+    this.#stagedRequestLength = this.#transport.stageUpdate(frame);
+    this.#stagedBatch = { checkpointGeneration, semanticViewMask: options.semanticViewMask };
+    return this;
+  }
+
+  get rootId(): number {
+    if (this.#stagedBatch === undefined) throw new Error('render planner is not staged');
+    return this.#transport.handle;
+  }
+
+  get requestLength(): number {
+    if (this.#stagedBatch === undefined) throw new Error('render planner is not staged');
+    return this.#stagedRequestLength;
+  }
+
+  adopt(resultPointer: number, memoryBuffer: ArrayBuffer): void {
+    const staged = this.#stagedBatch;
+    if (staged === undefined) throw new Error('render planner is not staged');
+    if (this.#stagedPublication !== undefined) throw new Error('render planner already adopted a staged publication');
+    this.#stagedBatch = undefined;
+    this.#stagedRequestLength = 0;
+    const publication = this.#transport.consumeStagedUpdate(resultPointer, memoryBuffer);
+    this.#engineRevision = publication.engineRevision;
+    this.#cacheSemanticViews(publication, staged.semanticViewMask);
+    this.#commitDesiredState();
+    this.#stagedPublication = { publication, checkpointGeneration: staged.checkpointGeneration };
+  }
+
+  consume(): PlanAcceptance {
+    const pending = this.#stagedPublication;
+    if (pending === undefined) throw new Error('render planner has no adopted staged publication to consume');
+    this.#stagedPublication = undefined;
+    const { publication } = pending;
+    const lease = new BorrowedPlanLease(publication, this.#transport);
+    const candidate = this.#candidate(lease);
+    let result: PlanAcceptance;
+    try {
+      const answer = (this.#target as PlanTarget).accept(candidate, this.#targetController.signal);
+      if (isPromiseLike(answer)) throw new TypeError('a borrowed plan target must answer synchronously');
+      result = assertAcceptance(answer);
+    } finally {
+      lease.expire();
+    }
+    if (result.accepted) this.#stagedAcceptance = pending;
+    return result;
+  }
+
+  settle(): void {
+    const pending = this.#stagedAcceptance;
+    if (pending === undefined) throw new Error('render planner has no accepted staged publication to settle');
+    this.#stagedAcceptance = undefined;
+    this.#accept(pending);
+  }
+
+  discard(): void {
+    this.#stagedPublication = undefined;
+    this.#stagedAcceptance = undefined;
+    if (this.#stagedBatch === undefined) return;
+    this.#stagedBatch = undefined;
+    this.#stagedRequestLength = 0;
+    this.#transport.discardStagedUpdate();
+  }
+
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#handleState._assertEngineMutationAllowed();
+    this.#disposed = true;
+    this.#dirtyListener = undefined;
+    this.discard();
+    this.#targetController.abort(new RenderPlannerDisposedError());
+    this.#control?.dispose();
+    let failure: unknown;
+    const attempt = (dispose: () => void): void => {
+      try {
+        dispose();
+      } catch (error) {
+        failure ??= error;
+      }
+    };
+    if (this.#target !== undefined) attempt(() => this.#target!.dispose());
+    attempt(() => this.#transport.dispose());
+    attempt(() => this.#clearMeasuredBindings());
+    for (const state of this.#texts) {
+      state.disposed = true;
+      if (!state.desiredReleased) attempt(() => releaseResolvedText(state.desired));
+      state.desiredReleased = true;
+      if (state.committed !== undefined) attempt(() => releaseResolvedText(state.committed!));
+      state.committed = undefined;
+    }
+    this.#texts.clear();
+    this.#removed.clear();
+    this.#textsByOrder.clear();
+    this.#liveTextCount = 0;
+    this.#liveStyleCount = 0;
+    this.#liveRegionCount = 0;
+    this.#liveExclusionCount = 0;
+    this.#liveInlineObjectCount = 0;
+    this.#dirtyTextCount = 0;
+    this.#pendingStyleCount = 0;
+    attempt(() => this.#codec.dispose());
+    this.#handleState._detachPlanner(this);
+    if (failure !== undefined) throw failure;
+  }
+
+  #cacheSemanticViews(publication: PlanPublication, semanticViewMask: number): void {
+    const masks = textShaperAbi.engine.semanticViewMasks;
+    if ((semanticViewMask & masks.layoutInspection) !== 0) {
+      const layouts = readPlannerLayouts(publication);
+      for (const state of this.#texts) {
+        const layout = layouts.get(state.paragraphId);
+        if (layout === undefined) continue;
+        state.measurement = layout;
+        state.inspection = layout;
+      }
+      return;
+    }
+    if ((semanticViewMask & masks.measurement) === 0) return;
+    const measurements = readPlannerMeasurements(publication);
+    for (const state of this.#texts) {
+      const measurement = measurements.get(state.paragraphId);
+      if (measurement !== undefined) state.measurement = measurement;
+    }
+  }
+
+  #queryText(state: RetainedTextState, inspection: false): ParagraphLayoutSummary;
+  #queryText(state: RetainedTextState, inspection: true): GlyphLayoutInspection;
+  #queryText(state: RetainedTextState, inspection: boolean): ParagraphLayoutSummary | GlyphLayoutInspection {
+    this.#assertTextQueryable(state);
+    this.#ensureTextCapacity();
+    const styles = compileStyles(this.#handleState, state);
+    const styleMutations: PlannerStyleMutation[] = [...styles];
+    for (let index = styles.length + 1; index <= state.publishedStyleCount; index += 1) {
+      styleMutations.push({
+        opcode: 'remove',
+        paragraphId: state.paragraphId,
+        styleId: engineStyleId(this.#handleState.id, state.paragraphId, index),
+      });
+    }
+    const geometry = compileGeometry(this.#handleState, state, 0, 0);
+    const textChanged = !state.published || state.publishedText !== state.desired.text;
+    const request = compilePlannerFrameUpdate({
+      rootId: this.#transport.handle,
+      codecHandle: this.#codec.handle,
+      ...(this.#capabilitySet === undefined ? {} : { capabilitySet: this.#capabilitySet }),
+      expectedEngineRevision: this.#engineRevision,
+      consumedRevision: this.#revision,
+      acknowledgedPublicationGeneration: this.#acknowledgedGeneration,
+      semanticViewMask: inspection
+        ? textShaperAbi.engine.semanticViewMasks.layoutInspection
+        : textShaperAbi.engine.semanticViewMasks.measurement,
+      limits: this.#limits,
+      paragraphMutations: this.#measurementParagraphMutations(),
+      textMutations: textChanged
+        ? [
+            {
+              paragraphId: state.paragraphId,
+              start: 0,
+              deleteCount: state.publishedText.length,
+              insert: state.desired.text,
+            },
+          ]
+        : [],
+      styleMutations,
+      constraints: [geometry.constraint],
+      regions: geometry.regions,
+      exclusions: geometry.exclusions,
+      inlineObjects: compileInlineObjects(this.#handleState, state),
+    });
+    const publication = this.#transport.measureParagraph(request, state.paragraphId);
+    if (inspection) {
+      const layout = readPlannerLayouts(publication).get(state.paragraphId);
+      if (layout === undefined) throw new Error('text engine returned no layout inspection for retained text');
+      this.#adoptMeasuredBindings(state);
+      state.measurement = layout;
+      state.inspection = layout;
+      return layout;
+    }
+    const measurement = readPlannerMeasurements(publication).get(state.paragraphId);
+    if (measurement === undefined) throw new Error('text engine returned no measurement for retained text');
+    this.#adoptMeasuredBindings(state);
+    state.measurement = measurement;
+    return measurement;
+  }
+
+  #compileFrame(options: NormalizedPublishOptions, checkpointGeneration: number): Uint8Array {
+    const paragraphMutations = [
+      ...[...this.#removed].map((state) => ({ opcode: 'remove' as const, paragraphId: state.paragraphId })),
+      ...[...this.#texts]
+        .filter((state) => !state.removed && state.dirty)
+        .map((state) => ({
+          opcode: 'upsert' as const,
+          paragraphId: state.paragraphId,
+          order: state.desired.source.order ?? state.ordinal - 1,
+        })),
+    ];
+    const textMutations = [...this.#texts].flatMap((state) => {
+      if (state.removed || !state.dirty) return [];
+      const mutation = minimalTextMutation(state.publishedText, state.desired.text);
+      return mutation === undefined ? [] : [{ paragraphId: state.paragraphId, ...mutation }];
+    });
+    const styleMutations: PlannerStyleMutation[] = [];
+    const constraints: PlannerConstraint[] = [];
+    const regions: PlannerRegion[] = [];
+    const exclusions: PlannerExclusion[] = [];
+    const inlineObjects: PlannerInlineObject[] = [];
+    for (const state of this.#texts) {
+      if (state.removed || !state.dirty) continue;
+      const styles = compileStyles(this.#handleState, state);
+      styleMutations.push(...styles);
+      for (let index = styles.length + 1; index <= state.publishedStyleCount; index += 1) {
+        styleMutations.push({
+          opcode: 'remove',
+          paragraphId: state.paragraphId,
+          styleId: engineStyleId(this.#handleState.id, state.paragraphId, index),
+        });
+      }
+      const geometry = compileGeometry(this.#handleState, state, regions.length, exclusions.length);
+      constraints.push(geometry.constraint);
+      regions.push(...geometry.regions);
+      exclusions.push(...geometry.exclusions);
+      inlineObjects.push(...compileInlineObjects(this.#handleState, state));
+    }
+    return compilePlannerFrameUpdate({
+      rootId: this.#transport.handle,
+      codecHandle: this.#codec.handle,
+      ...(this.#capabilitySet === undefined ? {} : { capabilitySet: this.#capabilitySet }),
+      expectedEngineRevision: this.#engineRevision,
+      consumedRevision: checkpointGeneration === this.#acceptedCheckpointGeneration ? this.#revision : 0,
+      acknowledgedPublicationGeneration: this.#acknowledgedGeneration,
+      semanticViewMask: options.semanticViewMask,
+      compositingIndependent: options.compositingIndependent,
+      limits: this.#limits,
+      paragraphMutations,
+      textMutations,
+      styleMutations,
+      constraints,
+      regions,
+      exclusions,
+      inlineObjects,
+    });
+  }
+
+  #validateAggregateLimits(candidate: RetainedTextState, replacing?: RetainedTextState): void {
+    const owner = this.#textsByOrder.get(candidate.metrics.order);
+    if (owner !== undefined && owner !== replacing) {
+      throw new RangeError(`retained text order ${candidate.metrics.order} is already in use`);
+    }
+    const previous = replacing?.metrics;
+    const liveTextCount = this.#liveTextCount + (replacing === undefined ? 1 : 0);
+    const liveStyleCount = this.#liveStyleCount - (previous?.styleCount ?? 0) + candidate.metrics.styleCount;
+    const regionCount = this.#liveRegionCount - (previous?.regionCount ?? 0) + candidate.metrics.regionCount;
+    const exclusionCount =
+      this.#liveExclusionCount - (previous?.exclusionCount ?? 0) + candidate.metrics.exclusionCount;
+    const inlineObjectCount =
+      this.#liveInlineObjectCount - (previous?.inlineObjectCount ?? 0) + candidate.metrics.inlineObjectCount;
+    const dirtyTextCount = this.#dirtyTextCount - Number(replacing?.dirty ?? false) + 1;
+    const pendingStyleCount =
+      this.#pendingStyleCount -
+      (replacing?.dirty ? pendingStyleMutationCount(replacing) : 0) +
+      pendingStyleMutationCount(candidate);
+    if (liveTextCount > this.#limits.maxParagraphs) {
+      throw new RangeError('retained texts exceed limits.maxParagraphs');
+    }
+    if (liveStyleCount > this.#limits.maxClusters) {
+      throw new RangeError('retained text styles exceed limits.maxClusters');
+    }
+    if (liveTextCount > this.#limits.maxRegions || regionCount > this.#limits.maxRegions) {
+      throw new RangeError('retained text regions exceed limits.maxRegions');
+    }
+    if (exclusionCount > this.#limits.maxExclusions) {
+      throw new RangeError('retained text exclusions exceed limits.maxExclusions');
+    }
+    if (inlineObjectCount > this.#limits.maxInlineObjects) {
+      throw new RangeError('retained inline objects exceed limits.maxInlineObjects');
+    }
+    const maxLines = candidate.desired.source.layout?.maxLines ?? Math.max(1, candidate.desired.text.length);
+    if (maxLines > this.#limits.maxLines) throw new RangeError('retained text maxLines exceeds limits.maxLines');
+    if (this.#removed.size + dirtyTextCount > this.#limits.maxParagraphs) {
+      throw new RangeError('pending paragraph mutations exceed limits.maxParagraphs');
+    }
+    if (dirtyTextCount > this.#limits.maxClusters) {
+      throw new RangeError('pending text mutations exceed limits.maxClusters');
+    }
+    if (pendingStyleCount > this.#limits.maxClusters) {
+      throw new RangeError('pending style mutations exceed limits.maxClusters');
+    }
+  }
+
+  #addLiveState(state: RetainedTextState): void {
+    this.#textsByOrder.set(state.metrics.order, state);
+    this.#liveTextCount += 1;
+    this.#liveStyleCount += state.metrics.styleCount;
+    this.#liveRegionCount += state.metrics.regionCount;
+    this.#liveExclusionCount += state.metrics.exclusionCount;
+    this.#liveInlineObjectCount += state.metrics.inlineObjectCount;
+    this.#dirtyTextCount += Number(state.dirty);
+    if (state.dirty) this.#pendingStyleCount += pendingStyleMutationCount(state);
+  }
+
+  #replaceLiveState(state: RetainedTextState, metrics: RetainedTextMetrics): void {
+    if (state.metrics.order !== metrics.order) {
+      this.#textsByOrder.delete(state.metrics.order);
+      this.#textsByOrder.set(metrics.order, state);
+    }
+    this.#liveStyleCount += metrics.styleCount - state.metrics.styleCount;
+    this.#liveRegionCount += metrics.regionCount - state.metrics.regionCount;
+    this.#liveExclusionCount += metrics.exclusionCount - state.metrics.exclusionCount;
+    this.#liveInlineObjectCount += metrics.inlineObjectCount - state.metrics.inlineObjectCount;
+    if (state.dirty) this.#pendingStyleCount -= pendingStyleMutationCount(state);
+    const candidate = { ...state, metrics, dirty: true };
+    this.#dirtyTextCount += Number(!state.dirty);
+    this.#pendingStyleCount += pendingStyleMutationCount(candidate);
+  }
+
+  #removeLiveState(state: RetainedTextState): void {
+    this.#textsByOrder.delete(state.metrics.order);
+    this.#liveTextCount -= 1;
+    this.#liveStyleCount -= state.metrics.styleCount;
+    this.#liveRegionCount -= state.metrics.regionCount;
+    this.#liveExclusionCount -= state.metrics.exclusionCount;
+    this.#liveInlineObjectCount -= state.metrics.inlineObjectCount;
+    this.#dirtyTextCount -= Number(state.dirty);
+    if (state.dirty) this.#pendingStyleCount -= pendingStyleMutationCount(state);
+  }
+
+  #commitDesiredState(): void {
+    this.#clearMeasuredBindings();
+    for (const state of this.#removed) {
+      this.#texts.delete(state);
+      if (!state.desiredReleased) releaseResolvedText(state.desired);
+      state.desiredReleased = true;
+      if (state.committed !== undefined) releaseResolvedText(state.committed);
+      state.committed = undefined;
+    }
+    this.#removed.clear();
+    for (const state of this.#texts) {
+      if (!state.dirty) continue;
+      if (state.committed !== state.desired) {
+        retainResolvedText(state.desired);
+        if (state.committed !== undefined) releaseResolvedText(state.committed);
+        state.committed = state.desired;
+      }
+      state.published = true;
+      state.publishedText = state.desired.text;
+      state.geometryRevision += 1;
+      this.#dirtyTextCount -= 1;
+      this.#pendingStyleCount -= pendingStyleMutationCount(state);
+      state.publishedStyleCount = compiledStyleCount(state);
+      state.dirty = false;
+    }
+  }
+
+  #candidate(lease: BorrowedPlanLease): PlanCandidate {
+    return Object.freeze({
+      origin: this.#origin,
+      plan: lease.reader,
+      engineRevision: lease.publication.engineRevision,
+      revision: lease.publication.revision,
+      publicationGeneration: lease.publication.publicationGeneration,
+      checkpoint: publicationIsCheckpoint(lease.publication),
+      transforms: Object.freeze(this.#resolvedTransforms()),
+      acquirePayload: (referenceId: ResourceHandle) => {
+        lease.assertActive();
+        return this.#portablePayload(referenceId);
+      },
+      resolveMaterial: (materialId: number) => {
+        lease.assertActive();
+        return this.#handleState._resolveOpaqueBinding('material', materialId);
+      },
+      resolveResource: (resourceId: ResourceHandle) => {
+        lease.assertActive();
+        return this.#handleState._resolveOpaqueBinding('resource', resourceId);
+      },
+    });
+  }
+
+  #offerCopy(publication: PlanPublication, target: PlanTarget): PlanAcceptance {
+    const lease = new BorrowedPlanLease(publication, this.#transport);
+    const leaveBorrow = this.#handleState._enterBorrowedPlan();
+    try {
+      const answer = target.accept(this.#candidate(lease), this.#targetController.signal);
+      if (isPromiseLike(answer)) throw new TypeError('a detached plan target must answer synchronously');
+      return assertAcceptance(answer);
+    } finally {
+      lease.expire();
+      leaveBorrow();
+    }
+  }
+
+  #assertCopyable(state: RetainedTextState, target: PlanTarget): void {
+    this.#assertTextQueryable(state);
+    if (!state.published || state.committed === undefined) {
+      throw new Error('retained text must have a committed render publication before it can be copied');
+    }
+    if (typeof target !== 'object' || target === null || target.delivery !== 'borrowed') {
+      throw new TypeError('detached plan copies require a synchronous borrowed plan target');
+    }
+  }
+
+  #capabilitySetId(): number {
+    return this.#capabilitySet === undefined
+      ? 1
+      : codecCapabilitySetSelectionId(this.#capabilitySet, this.#codec.handle);
+  }
+
+  #portablePayload(referenceId: ResourceHandle): PortablePayloadLease {
+    const lease = this.#handleState._acquirePortablePayload(referenceId);
+    let disposed = false;
+    return Object.freeze({
+      referenceId,
+      techniqueId: lease.techniqueId,
+      resourceName: lease.resourceName,
+      payload: lease.payload,
+      resources: Object.freeze(
+        lease.resources.map((resource) =>
+          Object.freeze({
+            referenceId: resource.referenceId as ResourceHandle,
+            resourceName: resource.resourceName,
+            payload: resource.payload,
+          }),
+        ),
+      ),
+      get disposed() {
+        return disposed;
+      },
+      dispose: () => {
+        if (disposed) return;
+        disposed = true;
+        lease.dispose();
+      },
+    });
+  }
+
+  #resolvedTransforms(): readonly ResolvedPlanTransform[] {
+    const transforms = new Map<
+      RenderPlanTransformId,
+      { readonly binding: HandleTransformBinding; readonly instanceIds: ParagraphId[] }
+    >();
+    const retain = (
+      transformIndex: RenderPlanTransformId,
+      binding: HandleTransformBinding,
+      instanceId?: ParagraphId,
+    ): void => {
+      let retained = transforms.get(transformIndex);
+      if (retained === undefined) {
+        retained = { binding, instanceIds: [] };
+        transforms.set(transformIndex, retained);
+      }
+      if (instanceId !== undefined) retained.instanceIds.push(instanceId);
+    };
+    for (const state of this.#texts) {
+      if (state.removed) continue;
+      const rootIndex = state.desired.transform.handle;
+      retain(
+        rootIndex,
+        this.#handleState._resolveOpaqueBinding('transform', state.desired.transform.handle),
+        state.paragraphId,
+      );
+      for (const transform of state.desired.flowTransforms) {
+        const transformIndex = transform.handle;
+        retain(transformIndex, this.#handleState._resolveOpaqueBinding('transform', transform.handle));
+      }
+    }
+    return [...transforms].map(([transformIndex, { binding, instanceIds }]) =>
+      Object.freeze({
+        transformIndex,
+        ...(instanceIds.length === 0 ? {} : { instanceIds: Object.freeze(instanceIds) }),
+        binding,
+      }),
+    );
+  }
+
+  #measurementParagraphMutations(): PlannerParagraphMutation[] {
+    return [
+      ...[...this.#removed]
+        .filter((state) => state.published)
+        .map((state) => ({ opcode: 'remove' as const, paragraphId: state.paragraphId })),
+      ...[...this.#texts]
+        .filter((state) => !state.removed)
+        .map((state) => ({
+          opcode: 'upsert' as const,
+          paragraphId: state.paragraphId,
+          order: state.desired.source.order ?? state.ordinal - 1,
+        })),
+    ];
+  }
+
+  #adoptMeasuredBindings(state: RetainedTextState): void {
+    if (this.#measuredStructureRevision !== this.#structureRevision) this.#clearMeasuredBindings();
+    const previous = this.#measured.get(state);
+    if (previous !== state.desired) {
+      retainResolvedText(state.desired);
+      this.#measured.set(state, state.desired);
+      if (previous !== undefined) releaseResolvedText(previous);
+    }
+    this.#measuredStructureRevision = this.#structureRevision;
+    for (const removed of [...this.#removed]) {
+      if (removed.committed !== undefined || this.#measured.has(removed)) continue;
+      this.#removed.delete(removed);
+      this.#texts.delete(removed);
+    }
+  }
+
+  #clearMeasuredBindings(): void {
+    let failure: unknown;
+    for (const bindings of this.#measured.values()) {
+      try {
+        releaseResolvedText(bindings);
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+    this.#measured.clear();
+    this.#measuredStructureRevision = -1;
+    if (failure !== undefined) throw failure;
+  }
+
+  #accept({ publication, checkpointGeneration }: PendingPublication): void {
+    this.#revision = publication.revision;
+    this.#acknowledgedGeneration = publication.publicationGeneration;
+    this.#acceptedCheckpointGeneration = checkpointGeneration;
+  }
+
+  #assertMutable(): void {
+    this.#assertActive();
+  }
+
+  #assertTextQueryable(state: RetainedTextState): void {
+    this.#assertMutable();
+    if (state.disposed) throw new Error('text engine text has been disposed');
+  }
+
+  #isDirty(): boolean {
+    return (
+      this.#dirtyTextCount !== 0 ||
+      this.#removed.size !== 0 ||
+      this.#checkpointGeneration !== this.#acceptedCheckpointGeneration
+    );
+  }
+
+  #ensureTextCapacity(): void {
+    let required = 1;
+    for (const state of this.#texts) {
+      if (!state.removed) required = Math.max(required, state.desired.text.length);
+    }
+    if (required <= this.#textCapacity) return;
+    this.#transport._reserveText(required);
+    this.#textCapacity = required;
+  }
+
+  #assertActive(): void {
+    if (this.#disposed) throw new RenderPlannerDisposedError();
+  }
+}
+
+class RetainedTextImpl implements RetainedText {
+  readonly #planner: RenderPlannerImpl;
+  readonly #state: RetainedTextState;
+
+  constructor(planner: RenderPlannerImpl, state: RetainedTextState) {
+    this.#planner = planner;
+    this.#state = state;
+  }
+
+  get disposed(): boolean {
+    return this.#state.disposed;
+  }
+
+  update(update: RetainedTextUpdate): void {
+    this.#planner._updateText(this.#state, update);
+  }
+
+  measure(): ParagraphLayoutSummary {
+    return this.#planner._layoutText(this.#state);
+  }
+
+  glyphs(): GlyphLayoutInspection {
+    return this.#planner._inspectText(this.#state);
+  }
+
+  copyGlyphs(stableIds: ArrayLike<number>, target: PlanTarget): PlanAcceptance {
+    return this.#planner._copyGlyphs(this.#state, stableIds, target);
+  }
+
+  copyDecorations(target: PlanTarget): PlanAcceptance {
+    return this.#planner._copyDecorations(this.#state, target);
+  }
+
+  dispose(): void {
+    this.#planner._disposeText(this.#state);
+  }
+}
+
+class BorrowedPlanLease {
+  readonly publication: PlanPublication;
+  readonly reader: BorrowedRenderPlan;
+  #active = true;
+
+  constructor(publication: PlanPublication, transport: PlanTransport) {
+    this.publication = publication;
+    const view = new RenderPlanView().bind(publication);
+    this.reader = new GuardedPlanReader('borrowed', view, () => this.assertActive());
+    this.#transport = transport;
+  }
+
+  readonly #transport: PlanTransport;
+
+  assertActive(): void {
+    if (!this.#active || this.#transport.isExpired(this.publication)) {
+      throw new Error('borrowed text render plan has expired');
+    }
+  }
+
+  expire(): void {
+    this.#active = false;
+  }
+}
+
+class GuardedPlanReader implements BorrowedRenderPlan {
+  readonly delivery = 'borrowed' as const;
+  readonly #view: RenderPlanView;
+  readonly #assertActive: () => void;
+
+  constructor(_delivery: 'borrowed', view: RenderPlanView, assertActive: () => void) {
+    this.#view = view;
+    this.#assertActive = assertActive;
+  }
+
+  table(name: RenderPlanTableName): RenderPlanTable {
+    this.#assertActive();
+    return this.#view.table(name);
+  }
+  record(table: RenderPlanTable, index: number): number {
+    this.#assertActive();
+    return this.#view.record(table, index);
+  }
+  u8(offset: number): number {
+    this.#assertActive();
+    return this.#view.u8(offset);
+  }
+  u16(offset: number): number {
+    this.#assertActive();
+    return this.#view.u16(offset);
+  }
+  u32(offset: number): number {
+    this.#assertActive();
+    return this.#view.u32(offset);
+  }
+  f32(offset: number): number {
+    this.#assertActive();
+    return this.#view.f32(offset);
+  }
+  bytes(offset: number, byteLength: number): Uint8Array {
+    this.#assertActive();
+    return this.#view.bytes(offset, byteLength);
+  }
+}
+
+interface NormalizedPublishOptions {
+  readonly semanticViewMask: number;
+  readonly compositingIndependent: boolean;
+}
+
+function normalizePublishOptions(value: RenderPlannerPublishOptions | undefined): NormalizedPublishOptions {
+  if (value !== undefined && !isNonArrayObject(value)) throw new TypeError('publish options must be an object');
+  const semanticViews = value?.semanticViews ?? 'none';
+  const masks = textShaperAbi.engine.semanticViewMasks;
+  const semanticViewMask =
+    semanticViews === 'none'
+      ? 0
+      : semanticViews === 'measurement'
+        ? masks.measurement
+        : semanticViews === 'layout-inspection'
+          ? masks.layoutInspection
+          : semanticViews === 'all'
+            ? masks.measurement | masks.layoutInspection
+            : -1;
+  if (semanticViewMask < 0) throw new TypeError('semanticViews is not supported');
+  const compositing = value?.compositing ?? 'ordered';
+  if (compositing !== 'ordered' && compositing !== 'independent') {
+    throw new TypeError('compositing must be "ordered" or "independent"');
+  }
+  return {
+    semanticViewMask,
+    compositingIndependent: compositing === 'independent',
+  };
+}
+
+function resolveTextOptions(handleState: GlyphHandleState, value: RetainedTextOptions): ResolvedTextOptions {
+  if (!isNonArrayObject(value)) throw new TypeError('text engine text options must be an object');
+  validateTextScalarOptions(value);
+  const formattedText = normalizeTextInput(value.text);
+  validateInlineObjects(value.inlineObjects, formattedText.text.length);
+  const style = value.style ?? {};
+  const layout = value.layout ?? {};
+  const constraints = value.constraints ?? {};
+  assertTextStyle(style, 'text style');
+  assertTextStyleFeatureRanges(style, 0, formattedText.text.length, 'text style');
+  assertParagraphLayout(layout, 'text layout');
+  assertConstraints(constraints, 'text constraints');
+  normalizedColumns(layout, constraints);
+  const font = handleState._retainFontStackBinding(value.font);
+  const leases: Array<{ dispose(): void }> = [font];
+  try {
+    assertTextEffectsSupported(style, font.formats, 'text engine text style');
+    const material =
+      value.material === undefined ? undefined : handleState._retainOpaqueBinding(value.material, 'material');
+    if (material !== undefined) leases.push(material);
+    const createdTransform = value.transform === undefined;
+    const transformBinding = value.transform ?? handleState.createTransformBinding();
+    const transform = handleState._retainOpaqueBinding(transformBinding, 'transform');
+    leases.push(transform);
+    if (createdTransform) transformBinding.dispose();
+    const spans = formattedText.spans.map((span) => {
+      if (span.style !== undefined) {
+        assertTextStyle(span.style, `text span style [${span.start}, ${span.end})`);
+        assertTextStyleFeatureRanges(span.style, span.start, span.end, `text span style [${span.start}, ${span.end})`);
+      }
+      const spanFont = span.font === undefined ? undefined : handleState._retainFontStackBinding(span.font);
+      if (spanFont !== undefined) leases.push(spanFont);
+      if (span.style !== undefined) {
+        assertTextEffectsSupported(
+          span.style,
+          spanFont?.formats ?? font.formats,
+          `text engine span [${span.start}, ${span.end}) style`,
+        );
+      }
+      const spanMaterial =
+        span.material === undefined ? undefined : handleState._retainOpaqueBinding(span.material, 'material');
+      if (spanMaterial !== undefined) leases.push(spanMaterial);
+      return Object.freeze({
+        start: span.start,
+        end: span.end,
+        font: spanFont,
+        material: spanMaterial,
+        style: span.style,
+      });
+    });
+    const flowTransforms: HandleBindingLease<HandleTransformBinding>[] = [];
+    for (const flowRegion of value.flow?.regions ?? []) {
+      const retained = handleState._retainOpaqueBinding(flowRegion.region.transform, 'transform');
+      leases.push(retained);
+      flowTransforms.push(retained);
+    }
+    const inlineMaterials: HandleBindingLease<HandleMaterialBinding>[] = [];
+    const inlineResources: HandleBindingLease<HandleResourceBinding>[] = [];
+    for (const object of value.inlineObjects ?? []) {
+      const retainedMaterial = handleState._retainOpaqueBinding(object.material, 'material');
+      leases.push(retainedMaterial);
+      inlineMaterials.push(retainedMaterial);
+      const retainedResource = handleState._retainOpaqueBinding(object.resource, 'resource');
+      leases.push(retainedResource);
+      inlineResources.push(retainedResource);
+    }
+    return ownResolvedText({
+      source: snapshotTextOptions(
+        value,
+        formattedText,
+        font,
+        material,
+        transform,
+        spans,
+        flowTransforms,
+        inlineMaterials,
+        inlineResources,
+      ),
+      text: formattedText.text,
+      spans: Object.freeze(spans),
+      font,
+      material,
+      transform,
+      flowTransforms: Object.freeze(flowTransforms),
+      inlineMaterials: Object.freeze(inlineMaterials),
+      inlineResources: Object.freeze(inlineResources),
+    });
+  } catch (error) {
+    for (const lease of leases.reverse()) lease.dispose();
+    throw error;
+  }
+}
+
+function validateInlineObjects(
+  objects: readonly RetainedTextInlineObjectInput[] | undefined,
+  textLength: number,
+): void {
+  let previousOffset = -1;
+  for (const [index, object] of (objects ?? []).entries()) {
+    if (!Number.isSafeInteger(object.textOffset)) {
+      throw new TypeError(`text inline object ${index} offset must be a safe integer`);
+    }
+    if (object.textOffset < 0 || object.textOffset > textLength) {
+      throw new RangeError(`text inline object ${index} offset is outside the text`);
+    }
+    if (object.textOffset <= previousOffset) {
+      throw new RangeError('text inline object offsets must be strictly increasing');
+    }
+    previousOffset = object.textOffset;
+  }
+}
+
+function normalizeTextInput(value: unknown): RetainedFormattedText {
+  if (typeof value === 'string') return Object.freeze({ text: value, spans: Object.freeze([]) });
+  if (!isNonArrayObject(value) || typeof value.text !== 'string' || !Array.isArray(value.spans)) {
+    throw new TypeError('text must be a string or formatted text value');
+  }
+  const text = value.text;
+  const spans = value.spans.map((span, index) => {
+    if (!isNonArrayObject(span)) throw new TypeError(`text span ${index} must be an object`);
+    if (!Number.isSafeInteger(span.start) || !Number.isSafeInteger(span.end)) {
+      throw new TypeError(`text span ${index} bounds must be safe integers`);
+    }
+    if (
+      (span.start as number) < 0 ||
+      (span.end as number) < (span.start as number) ||
+      (span.end as number) > text.length
+    ) {
+      throw new RangeError(`text span ${index} is outside the text`);
+    }
+    return Object.freeze({
+      start: span.start as number,
+      end: span.end as number,
+      ...(span.font === undefined ? {} : { font: span.font as HandleFontStackBinding }),
+      ...(span.material === undefined ? {} : { material: span.material as HandleMaterialBinding }),
+      ...(span.style === undefined
+        ? {}
+        : { style: snapshotAuthoredData(span.style as TextStyle, `text span ${index} style`) }),
+    });
+  });
+  return Object.freeze({ text, spans: Object.freeze(alignSpansToClusters(text, spans)) });
+}
+
+function snapshotTextOptions(
+  value: RetainedTextOptions,
+  input: RetainedFormattedText,
+  font: ReturnType<GlyphHandleState['_retainFontStackBinding']>,
+  material: HandleBindingLease<HandleMaterialBinding> | undefined,
+  transform: HandleBindingLease<HandleTransformBinding>,
+  spans: readonly ResolvedSpan[],
+  flowTransforms: readonly HandleBindingLease<HandleTransformBinding>[],
+  inlineMaterials: readonly HandleBindingLease<HandleMaterialBinding>[],
+  inlineResources: readonly HandleBindingLease<HandleResourceBinding>[],
+): RetainedTextOptions {
+  const {
+    font: _font,
+    text: _text,
+    material: _material,
+    transform: _transform,
+    flow: _flow,
+    inlineObjects: _inlineObjects,
+    ...rest
+  } = value;
+  const snapshot = snapshotAuthoredData(rest, 'text options');
+  const text = Object.freeze({
+    text: input.text,
+    spans: Object.freeze(
+      spans.map((span) =>
+        Object.freeze({
+          start: span.start,
+          end: span.end,
+          ...(span.font === undefined ? {} : { font: span.font.binding }),
+          ...(span.material === undefined ? {} : { material: span.material.binding }),
+          ...(span.style === undefined ? {} : { style: span.style }),
+        }),
+      ),
+    ),
+  });
+  return Object.freeze({
+    ...snapshot,
+    font: font.binding,
+    text,
+    ...(material === undefined ? {} : { material: material.binding }),
+    transform: transform.binding,
+    ...(value.flow === undefined
+      ? {}
+      : {
+          flow: Object.freeze({
+            regions: Object.freeze(
+              value.flow.regions.map((flowRegion, index) => {
+                const { transform: _regionTransform, ...region } = flowRegion.region;
+                return Object.freeze({
+                  region: Object.freeze({
+                    ...snapshotAuthoredData(region, `text flow region ${index}`),
+                    transform: flowTransforms[index]!.binding,
+                  }),
+                  ...(flowRegion.exclusions === undefined
+                    ? {}
+                    : {
+                        exclusions: Object.freeze(
+                          snapshotAuthoredData(flowRegion.exclusions, `text flow region ${index} exclusions`),
+                        ),
+                      }),
+                });
+              }),
+            ),
+          }),
+        }),
+    ...(value.inlineObjects === undefined
+      ? {}
+      : {
+          inlineObjects: Object.freeze(
+            value.inlineObjects.map((object, index) => {
+              const { material: _inlineMaterial, resource: _inlineResource, ...data } = object;
+              return Object.freeze({
+                ...snapshotAuthoredData(data, `text inline object ${index}`),
+                material: inlineMaterials[index]!.binding,
+                resource: inlineResources[index]!.binding,
+              });
+            }),
+          ),
+        }),
+  });
+}
+
+function validateTextScalarOptions(value: RetainedTextOptions): void {
+  if (value.order !== undefined) uint32(value.order, 'text order');
+  if (
+    value.rasterPixelRatio !== undefined &&
+    (!Number.isFinite(value.rasterPixelRatio) || value.rasterPixelRatio <= 0)
+  ) {
+    throw new RangeError('text rasterPixelRatio must be positive and finite');
+  }
+}
+
+function compileStyles(handleState: GlyphHandleState, state: RetainedTextState): readonly PlannerStyleMutation[] {
+  const desired = state.desired;
+  const source = desired.source;
+  const root: PlannerStyleMutation = {
+    opcode: 'upsert',
+    paragraphId: state.paragraphId,
+    styleId: engineStyleId(handleState.id, state.paragraphId, 1),
+    cascadeOrder: 0,
+    start: 0,
+    end: desired.text.length,
+    root: true,
+    value: engineStyleValue(source.style ?? {}, 0, desired.text.length, {
+      fontStackHandle: desired.font.handle,
+      fontSize: source.style?.fontSize ?? 16,
+      rasterPixelRatio: source.rasterPixelRatio ?? 1,
+      ...(desired.material === undefined ? {} : { materialId: desired.material.handle }),
+    }),
+  };
+  return [
+    root,
+    ...desired.spans
+      .filter((span) => span.start !== span.end)
+      .map((span, index) => ({
+        opcode: 'upsert' as const,
+        paragraphId: state.paragraphId,
+        styleId: engineStyleId(handleState.id, state.paragraphId, index + 2),
+        cascadeOrder: index + 1,
+        start: span.start,
+        end: span.end,
+        value: engineStyleValue(span.style ?? {}, span.start, span.end, {
+          ...(span.font === undefined ? {} : { fontStackHandle: span.font.handle }),
+          ...(span.material === undefined ? {} : { materialId: span.material.handle }),
+        }),
+      })),
+  ];
+}
+
+function compiledStyleCount(state: RetainedTextState): number {
+  return state.metrics.styleCount;
+}
+
+function retainedTextMetrics(desired: ResolvedTextOptions, ordinal: number): RetainedTextMetrics {
+  let styleCount = 1;
+  for (const span of desired.spans) styleCount += Number(span.start !== span.end);
+  const flow = desired.source.flow;
+  return {
+    order: desired.source.order ?? ordinal - 1,
+    styleCount,
+    regionCount: flow?.regions.length ?? desired.source.layout?.columns?.count ?? 1,
+    exclusionCount: flow?.regions.reduce((sum, region) => sum + (region.exclusions?.length ?? 0), 0) ?? 0,
+    inlineObjectCount: desired.source.inlineObjects?.length ?? 0,
+  };
+}
+
+function pendingStyleMutationCount(state: RetainedTextState): number {
+  return state.metrics.styleCount + Math.max(0, state.publishedStyleCount - state.metrics.styleCount);
+}
+
+function compileGeometry(
+  handleState: GlyphHandleState,
+  state: RetainedTextState,
+  regionStart: number,
+  exclusionStart: number,
+): Readonly<{
+  constraint: PlannerConstraint;
+  regions: readonly PlannerRegion[];
+  exclusions: readonly PlannerExclusion[];
+}> {
+  const revision = state.geometryRevision + 1;
+  const ordinary = compileEngineGeometry(
+    handleState.id,
+    state.paragraphId,
+    state.desired.transform.handle,
+    revision,
+    state.desired.source.layout,
+    state.desired.source.constraints,
+    regionStart,
+    state.desired.text.length,
+  );
+  const flow = state.desired.source.flow;
+  if (flow === undefined) return { ...ordinary, exclusions: [] };
+  const regions: PlannerRegion[] = [];
+  const exclusions: PlannerExclusion[] = [];
+  for (const [regionIndex, input] of flow.regions.entries()) {
+    const transform = state.desired.flowTransforms[regionIndex]!;
+    const firstExclusion = exclusionStart + exclusions.length;
+    const regionId = handleState.id('region', `paragraph/${state.paragraphId}/flow/${regionIndex}`);
+    regions.push({
+      ...input.region,
+      id: regionId,
+      geometryRevision: revision,
+      transformIndex: transform.handle,
+      exclusionStart: firstExclusion,
+      exclusionCount: input.exclusions?.length ?? 0,
+    });
+    for (const [index, exclusion] of (input.exclusions ?? []).entries()) {
+      exclusions.push({
+        ...exclusion,
+        id: handleState.id('exclusion', `paragraph/${state.paragraphId}/flow/${regionIndex}/exclusion/${index}`),
+        regionId,
+        geometryRevision: revision,
+      });
+    }
+  }
+  return {
+    constraint: { ...ordinary.constraint, regionStart, regionCount: regions.length },
+    regions,
+    exclusions,
+  };
+}
+
+function compileInlineObjects(handleState: GlyphHandleState, state: RetainedTextState): readonly PlannerInlineObject[] {
+  return (state.desired.source.inlineObjects ?? []).map((object, index) => ({
+    ...object,
+    paragraphId: state.paragraphId,
+    id: handleState.id('inline-object', `paragraph/${state.paragraphId}/inline/${index}`),
+    contentRevision: state.geometryRevision + 1,
+    materialId: state.desired.inlineMaterials[index]!.handle,
+    resourceId: state.desired.inlineResources[index]!.handle,
+    resourceGeneration: 1,
+  }));
+}
+
+const resolvedTextReferences = new WeakMap<ResolvedTextOptions, { references: number }>();
+
+function ownResolvedText(value: ResolvedTextOptions): ResolvedTextOptions {
+  resolvedTextReferences.set(value, { references: 1 });
+  return value;
+}
+
+function retainResolvedText(value: ResolvedTextOptions): void {
+  const retained = resolvedTextReferences.get(value)!;
+  retained.references += 1;
+}
+
+function releaseResolvedText(value: ResolvedTextOptions): void {
+  const retained = resolvedTextReferences.get(value)!;
+  retained.references -= 1;
+  if (retained.references !== 0) return;
+  resolvedTextReferences.delete(value);
+  const leases: Array<{ dispose(): void }> = [
+    value.font,
+    ...(value.material === undefined ? [] : [value.material]),
+    value.transform,
+    ...value.flowTransforms,
+    ...value.inlineMaterials,
+    ...value.inlineResources,
+    ...value.spans.flatMap((span) => [
+      ...(span.font === undefined ? [] : [span.font]),
+      ...(span.material === undefined ? [] : [span.material]),
+    ]),
+  ];
+  let failure: unknown;
+  for (const lease of leases.reverse()) {
+    try {
+      lease.dispose();
+    } catch (error) {
+      failure ??= error;
+    }
+  }
+  if (failure !== undefined) throw failure;
+}
+
+function assertRenderPlannerOptions(value: unknown): asserts value is RenderPlannerOptions {
+  if (!isNonArrayObject(value)) throw new TypeError('render planner options must be an object');
+  if (typeof value.target !== 'function') throw new TypeError('render planner target must be a factory');
+  assertRenderPlannerCapacities(value);
+}
+
+function assertMeasurementPlanOptions(value: unknown): asserts value is MeasurementPlannerOptions {
+  if (!isNonArrayObject(value)) throw new TypeError('measurement plan options must be an object');
+  assertRenderPlannerCapacities(value);
+}
+
+function assertRenderPlannerCapacities(value: Record<PropertyKey, unknown>): void {
+  positiveU32(value.requestCapacity, 'requestCapacity');
+  positiveU32(value.resultCapacity, 'resultCapacity');
+  positiveU32(value.textCapacity, 'textCapacity');
+  snapshotLimits(value.limits);
+}
+
+function snapshotLimits(value: unknown): RenderPlannerLimits {
+  if (!isNonArrayObject(value)) throw new TypeError('text engine limits must be an object');
+  const snapshot = Object.freeze({
+    maxParagraphs: value.maxParagraphs,
+    maxClusters: value.maxClusters,
+    maxLines: value.maxLines,
+    maxRegions: value.maxRegions,
+    maxExclusions: value.maxExclusions,
+    maxInlineObjects: value.maxInlineObjects,
+    maxSlotsPerBand: value.maxSlotsPerBand,
+    maxOutputBytes: value.maxOutputBytes,
+  }) as RenderPlannerLimits;
+  for (const [name, limit] of Object.entries(snapshot)) positiveU32(limit, name);
+  if (snapshot.maxOutputBytes < textShaperAbi.layouts.engineResult.size) {
+    throw new RangeError('maxOutputBytes cannot hold a text engine result header');
+  }
+  if (snapshot.maxOutputBytes > MAX_TEXT_ENGINE_OUTPUT_BYTES) {
+    throw new RangeError('maxOutputBytes exceeds the text engine limit');
+  }
+  return snapshot;
+}
+
+function assertTarget(value: unknown): asserts value is PlanTarget {
+  if (!isNonArrayObject(value)) throw new TypeError('plan target factory must return an object');
+  if (value.delivery !== 'borrowed') throw new TypeError('plan target delivery must be borrowed');
+  if (typeof value.accept !== 'function' || typeof value.dispose !== 'function') {
+    throw new TypeError('plan target must implement accept() and dispose()');
+  }
+}
+
+class TargetControlState implements PlanTargetControl {
+  readonly #request: () => void;
+  #active = true;
+
+  constructor(request: () => void) {
+    this.#request = request;
+  }
+
+  requestCheckpoint(): void {
+    if (!this.#active) throw new RenderPlannerDisposedError();
+    this.#request();
+  }
+
+  dispose(): void {
+    this.#active = false;
+  }
+}
+
+function assertAcceptance(value: unknown): PlanAcceptance {
+  if (!isNonArrayObject(value) || typeof value.accepted !== 'boolean') {
+    throw new TypeError('plan target returned an invalid acceptance');
+  }
+  if (value.accepted) return Object.freeze({ accepted: true });
+  if (!('error' in value)) throw new TypeError('rejected plan acceptance must carry an error');
+  return Object.freeze({ accepted: false, error: value.error });
+}
+
+function checkedNextOrdinal(value: number): number {
+  if (value >= MAX_U32) throw new RangeError('text handles are exhausted');
+  return value + 1;
+}
+
+function checkedNextCheckpointGeneration(value: number): number {
+  if (value >= MAX_U32) throw new RangeError('plan target checkpoint generation is exhausted');
+  return value + 1;
+}
+
+function publicationIsCheckpoint(publication: PlanPublication): boolean {
+  return (publication.flags & textShaperAbi.engine.resultFlags.checkpoint) !== 0;
+}
+
+function checkedNextStructureRevision(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0 || value >= Number.MAX_SAFE_INTEGER) {
+    throw new RangeError('retained text structure revision is exhausted');
+  }
+  return value + 1;
+}
+
+function positiveU32(value: unknown, label: string): asserts value is number {
+  if (!Number.isSafeInteger(value) || Number(value) <= 0 || Number(value) > MAX_U32) {
+    throw new RangeError(`${label} must be a positive u32`);
+  }
+}
+
+function uint32(value: unknown, label: string): asserts value is number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0 || Number(value) > MAX_U32) {
+    throw new RangeError(`${label} must be a u32`);
+  }
+}
+
+/** Snapshots plain authored values at publication; Font and resource ownership never enters this path. */
+function snapshotAuthoredData<Value>(value: Value, label: string): Value {
+  try {
+    return structuredClone(value);
+  } catch (cause) {
+    throw new TypeError(`${label} must contain cloneable data`, { cause });
+  }
+}
+
+function combinedFailure(primary: unknown, cleanup: unknown, message: string): AggregateError {
+  return new AggregateError([primary, cleanup], message, { cause: primary });
+}
+
+function isNonArrayObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return isNonArrayObject(value) && typeof value.then === 'function';
+}

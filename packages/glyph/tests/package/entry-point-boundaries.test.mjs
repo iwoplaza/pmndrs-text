@@ -1,16 +1,16 @@
 /**
  * Where a name lives, and why.
  *
- * The package publishes one vocabulary and several integrations. A name has exactly one home, so a
- * reader never has to guess which subpath to import it from:
+ * The package publishes one application vocabulary, renderer subpaths, and leaf integration helpers.
+ * A name has exactly one home, so a reader never has to guess which subpath to import it from:
  *
- *   `.`        what text IS -- fonts, authoring, layout and measurement types, raster techniques,
+ *   `.`        what text IS -- fonts, authoring, layout and measurement types, raster formats,
  *              paint. Every consumer speaks it, whether they render with Three.js or drive the
  *              engine themselves.
- *   `./core`   how to DRIVE the engine -- the policy contract, the render plan, the frame wire and
- *              its handoff. Additive to the root rather than parallel to it: an integrator imports
- *              both. It shares no name with the root, and that is enforced below.
- *   `./three`  the Three.js integration -- `Text`, `TextGroup`, `FontLoader`, materials.
+ *   `.`        also carries the types applications can encounter through GlyphConfig and handles.
+ *   `./config/*` carries renderer-neutral construction helpers for integration authors without
+ *              charging every application for the complete integration DSL.
+ *   `./three`  the Three.js integration -- `ThreeConfig`, `Text`, `TextGroup`, materials.
  *
  * An integration may re-export a root name ONLY when that name appears in one of its own
  * signatures, because a caller should be able to name what `layout()` returns without
@@ -40,16 +40,67 @@ function published(source) {
   return names;
 }
 
-test('the root vocabulary and the engine surface share no name', async () => {
+test('application types stay at root while integration construction lives on config leaves', async () => {
   const root = published(await declaration('index.d.ts'));
-  const core = published(await declaration('core.d.ts'));
-  const shared = [...root].filter((name) => core.has(name)).sort();
-  assert.deepEqual(
-    shared,
-    [],
-    `\`.\` and \`./core\` must stay disjoint: the root says what text is, core says how to drive the ` +
-      `engine, and an integrator imports both. Shared: ${shared.join(', ')}`,
+  const manifest = JSON.parse(await declaration('../package.json'));
+  assert.equal(manifest.exports['./core'], undefined, 'handle/planner internals must not have a public subpath');
+  assert.equal(manifest.exports['./loader'], null, 'the legacy low-level font loader must remain package-private');
+  assert.equal(
+    manifest.exports['./config/font-library'],
+    null,
+    'the internal FontLibrary must not become a second public font API',
   );
+  assert.ok(manifest.exports['./config/*'], 'renderer-neutral integration leaves must be public');
+
+  for (const name of ['GlyphConfig', 'Codec', 'TechniqueSchema', 'RasterFormat']) {
+    assert.equal(root.has(name), true, `applications must be able to name ${name} from the root`);
+  }
+  for (const retiredRootName of ['loadFont', 'createFontLibrary', 'FontLibrary', 'createParagraph', 'Paragraph']) {
+    assert.equal(root.has(retiredRootName), false, `root must not publish retired API ${retiredRootName}`);
+  }
+
+  const leaves = {
+    'config/glyph.d.ts': ['defineGlyphConfig', 'defineGlyphSchema', 'resourceLease'],
+    'config/codec.d.ts': ['compileCodec', 'createCodecProgram', 'id', 'normalizeCodecCapabilitySet'],
+    'config/codec-program.d.ts': ['codecProgram', 'f32', 'techniqueProgram', 'u32'],
+    'config/raster.d.ts': ['compileRasterFont', 'createRasterCodecProgram', 'isRasterCodec', 'registerRasterCodec'],
+    'config/raster-format.d.ts': ['defineRasterFormat', 'defineRasterResourceId'],
+    'config/resources.d.ts': ['assertPortableResource', 'definePortableVertexSemantic'],
+    'config/schema.d.ts': ['defineCodecBuffers', 'defineTechniqueSchema'],
+  };
+  for (const [path, names] of Object.entries(leaves)) {
+    const leaf = published(await declaration(path));
+    for (const name of names) {
+      assert.equal(leaf.has(name), true, `${path} must publish ${name}`);
+      assert.equal(root.has(name), false, `runtime integration helper ${name} must not leak through the root`);
+    }
+  }
+  for (const retired of ['compileRenderPolicy', 'createRasterPolicyProgram', 'definePolicyBuffers', 'policyProgram']) {
+    assert.equal(root.has(retired), false, `the public integration surface must not publish retired ${retired}`);
+  }
+
+  const codecLeaf = published(await declaration('config/codec.d.ts'));
+  for (const packageOwned of [
+    'GlyphIdScope',
+    'CodecIdScope',
+    'assertGlyphId',
+    'assertCodecIdFactory',
+    'selectCodecCapabilitySet',
+  ]) {
+    assert.equal(codecLeaf.has(packageOwned), false, `config/codec.d.ts must not publish ${packageOwned}`);
+  }
+
+  const privateLeafHelpers = {
+    'config/codec-program.d.ts': ['assertTechniqueCodecBody', 'normalizeCodecProgramSystemBuffers'],
+    'config/raster.d.ts': ['registerGlyphRasterCodec', 'resolveRasterCodec'],
+    'config/raster-format.d.ts': ['isRasterFormat', 'rasterFormatForKey', 'rasterFormatForReference'],
+  };
+  for (const [path, names] of Object.entries(privateLeafHelpers)) {
+    const leaf = published(await declaration(path));
+    for (const name of names) {
+      assert.equal(leaf.has(name), false, `${path} must not publish package-owned helper ${name}`);
+    }
+  }
 });
 
 test('integrations re-export root names only when their own signatures use them', async () => {
@@ -65,7 +116,6 @@ test('integrations re-export root names only when their own signatures use them'
             'three/glyphs.d.ts',
             'three/decorations.d.ts',
             'three/glyph-measurement.d.ts',
-            'three/font-loader.d.ts',
             'three/material.d.ts',
             'three/frame-error.d.ts',
           ].map(declaration),

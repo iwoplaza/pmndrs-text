@@ -7,6 +7,7 @@ import test from 'node:test';
 
 // `/react` reaches R3F's client-only WebGPU entry, which needs a browser global to import at all.
 import '../support/browser-globals.mjs';
+import { readJavaScriptModuleClosure } from '../support/javascript-module-closure.mjs';
 
 const packageDirectory = fileURLToPath(new URL('../..', import.meta.url));
 
@@ -62,11 +63,12 @@ test('the packed package exposes every ESM subpath and no CommonJS entry', async
   );
   const consumerEntry = pathToFileURL(join(temporaryDirectory, 'consumer', 'entry.mjs')).href;
   const moduleSubpaths = Object.entries(manifest.exports)
-    .filter(([, target]) => typeof target === 'object' && target !== null)
+    .filter(([subpath, target]) => typeof target === 'object' && target !== null && !subpath.includes('*'))
     .map(([subpath]) => (subpath === '.' ? '@pmndrs/glyph' : `@pmndrs/glyph${subpath.slice(1)}`));
 
   for (const target of Object.values(manifest.exports)) {
     if (typeof target !== 'object' || target === null) continue;
+    if (target.source.includes('*')) continue;
     assert.ok(packedFiles.includes(target.source.slice(2)), `${target.source} must ship with its source condition`);
   }
 
@@ -74,6 +76,24 @@ test('the packed package exposes every ESM subpath and no CommonJS entry', async
     const resolved = import.meta.resolve(specifier, consumerEntry);
     const imported = await import(resolved);
     assert.ok(Object.keys(imported).length > 0, `${specifier} must expose at least one ESM export`);
+  }
+
+  for (const specifier of [
+    '@pmndrs/glyph/tsl/packed-color',
+    '@pmndrs/glyph/typegpu/slug-shaders/slug-render',
+    '@pmndrs/glyph/typegpu/bitmap-reference',
+    '@pmndrs/glyph/three/material',
+    '@pmndrs/glyph/react/bitmap',
+    '@pmndrs/glyph/react/msdf',
+    '@pmndrs/glyph/react/slug',
+    '@pmndrs/glyph/raster/bitmap',
+    '@pmndrs/glyph/config/glyph',
+    '@pmndrs/glyph/config/raster-format',
+    '@pmndrs/glyph/config/schema',
+  ]) {
+    const resolved = import.meta.resolve(specifier, consumerEntry);
+    const imported = await import(resolved);
+    assert.ok(Object.keys(imported).length > 0, `${specifier} must expose its public leaf`);
   }
 
   for (const subpath of ['./text-shaper.wasm', './bitmap-baker.wasm', './mtsdf-baker.wasm', './slug-baker.wasm']) {
@@ -100,6 +120,24 @@ test('the packed package exposes every ESM subpath and no CommonJS entry', async
     '@pmndrs/glyph/bakers/bitmap/validate',
     '@pmndrs/glyph/bakers/msdf/validate',
     '@pmndrs/glyph/bakers/slug/validate',
+    '@pmndrs/glyph/internal/configured-handle',
+    '@pmndrs/glyph/generated/text-shaper-abi',
+    '@pmndrs/glyph/font-baker/validator',
+    '@pmndrs/glyph/loader',
+    '@pmndrs/glyph/config/font-library',
+    '@pmndrs/glyph/three/font-loader',
+    '@pmndrs/glyph/three/loader',
+    '@pmndrs/glyph/three/command-buffer-renderer',
+    '@pmndrs/glyph/three/internal/draw-realizer',
+    '@pmndrs/glyph/three/decorations',
+    '@pmndrs/glyph/three/frame-error',
+    '@pmndrs/glyph/three/glyph-measurement',
+    '@pmndrs/glyph/three/glyphs',
+    '@pmndrs/glyph/three/renderer-resources',
+    '@pmndrs/glyph/three/text',
+    '@pmndrs/glyph/three/engine-plan-target',
+    '@pmndrs/glyph/raster/internal/bitmap-decoder',
+    '@pmndrs/glyph/tsl/slug-shaders/tsl-compat',
   ]) {
     assert.throws(
       () => import.meta.resolve(removed, consumerEntry),
@@ -108,11 +146,13 @@ test('the packed package exposes every ESM subpath and no CommonJS entry', async
     );
   }
 
-  const runtimeHost = await readFile(join(installedDirectory, 'dist/runtime-bake.js'), 'utf8');
-  const serialWorkerHost = await readFile(join(installedDirectory, 'dist/internal/serial-worker-host.js'), 'utf8');
-  assert.match(runtimeHost, /workerUrl:\s*new URL\(["']\.\.\/dist\/runtime-bake-worker\.js["']/);
-  assert.match(serialWorkerHost, /new Worker\(this\.#protocol\.workerUrl/);
-  assert.match(serialWorkerHost, /type:\s*["']module["']/);
+  const runtimeGraph = await readJavaScriptModuleClosure([
+    join(installedDirectory, 'dist/runtime-bake.js'),
+    join(installedDirectory, 'dist/internal/serial-worker-host.js'),
+  ]);
+  assert.match(runtimeGraph.source, /workerUrl:\s*new URL\(["'`]\.\.\/dist\/runtime-bake-worker\.js["'`]/);
+  assert.match(runtimeGraph.source, /new Worker\(/);
+  assert.match(runtimeGraph.source, /type:\s*["'`]module["'`]/);
 
   const cli = join(installedDirectory, 'bin/glyph.js');
   assert.notEqual((await stat(cli)).mode & 0o111, 0, 'the packed CLI must be executable');

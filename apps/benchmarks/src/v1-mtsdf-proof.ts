@@ -1,11 +1,13 @@
-import type { Font } from '@pmndrs/glyph';
-import { msdf as mtsdf } from '@pmndrs/glyph/three/msdf';
-import { FontLoader, Text } from '@pmndrs/glyph/three';
+import { glyph, type FontFace } from '@pmndrs/glyph';
+import { msdf as mtsdf } from '@pmndrs/glyph/raster/msdf';
+import type { Text } from '@pmndrs/glyph/three';
 import * as THREE from 'three/webgpu';
 import interCompressedFontUrl from '../fixtures/rendering/inter-mtsdf.font.glb.gz?url';
 import showcaseManifest from '../fixtures/rendering/showcase-mtsdf-fixtures-v0.json' with { type: 'json' };
 import { proveDetachedRasterParity } from './v1-detached-proof';
+import { countV1DecorationRecords, countV1RasterPixels, V1_DECORATION_COLOR, v1GlyphDraw } from './v1-decoration-proof';
 import { fetchAuthenticatedGzipAsset } from './workloads/font-assets/authenticated-gzip';
+import { createBenchmarkThreeRoot, disposeBenchmarkThreeRoot } from './three-root';
 
 declare global {
   interface Window {
@@ -15,6 +17,8 @@ declare global {
 
 interface TargetV1MtsdfResult {
   readonly backend: 'webgpu' | 'webgl2';
+  readonly decorationPixels: number;
+  readonly decorationRecords: number;
   readonly drawCount: number;
   readonly glyphCount: number;
   readonly litPixels: number;
@@ -32,12 +36,11 @@ async function render(): Promise<TargetV1MtsdfResult> {
   if (canvas === null) throw new Error('target-v1 MTSDF proof canvas is missing');
   const forceWebGL = new URLSearchParams(location.search).get('backend') === 'webgl2';
   const renderer = new THREE.WebGPURenderer({ canvas, antialias: false, forceWebGL });
-  const loader = new FontLoader();
   const target = new THREE.RenderTarget(256, 128, { format: THREE.RGBAFormat, type: THREE.UnsignedByteType });
+  const root = createBenchmarkThreeRoot('v1-mtsdf');
   target.texture.colorSpace = THREE.NoColorSpace;
   let text: Text<typeof mtsdf> | undefined;
-  let font: Font<typeof mtsdf> | undefined;
-  let fontUrl: string | undefined;
+  let fontFace: FontFace<typeof mtsdf> | undefined;
   try {
     renderer.setSize(256, 128, false);
     renderer.setPixelRatio(1);
@@ -47,11 +50,8 @@ async function render(): Promise<TargetV1MtsdfResult> {
     const manifest = showcaseManifest.artifacts.find((artifact) => artifact.fontFixture === 'inter');
     if (manifest === undefined) throw new Error('MTSDF Inter fixture manifest is missing');
     const artifact = await fetchAuthenticatedGzipAsset(interCompressedFontUrl, manifest, 'MTSDF font fixture');
-    fontUrl = URL.createObjectURL(new Blob([artifact], { type: 'model/gltf-binary' }));
-    font = await loader.loadAsync({
-      input: { baked: fontUrl },
-      raster: { technique: mtsdf },
-    });
+    fontFace = glyph.fontFace(new Blob([artifact], { type: 'model/gltf-binary' }), { format: mtsdf });
+    await fontFace.load();
     const scene = new THREE.Scene();
     const camera = new THREE.OrthographicCamera(-128, 128, 64, -64, 0.1, 10);
     camera.position.z = 1;
@@ -60,13 +60,21 @@ async function render(): Promise<TargetV1MtsdfResult> {
     parent.rotation.z = 0.07;
     parent.scale.set(1.08, 0.92, 1);
     scene.add(parent);
-    text = new Text({ font, text: 'Target v1 MTSDF', style: { fontSize: 28, color: '#ffffff' } });
+    text = root.createText({
+      font: fontFace,
+      text: 'Target v1 MTSDF',
+      style: {
+        fontSize: 28,
+        color: '#ffffff',
+        decoration: { underline: true, lineThrough: true, color: V1_DECORATION_COLOR },
+      },
+    });
     text.position.set(-112, 24, 0);
     parent.add(text);
     renderer.setRenderTarget(target);
     renderer.setClearColor(0x000000, 1);
     await renderer.renderAsync(scene, camera);
-    const firstDraw = text.children.find((child): child is THREE.Mesh => child instanceof THREE.Mesh);
+    const firstDraw = v1GlyphDraw(rootDraws(scene));
     if (firstDraw === undefined) throw new Error('target-v1 MTSDF created no draw');
     const firstStorage = firstDraw.geometry.getAttribute('_pmndrsGlyph_geometry');
     const { detachedFirstFrameMatches, detachedSameFrameWriteMatches } = await proveDetachedRasterParity(
@@ -78,14 +86,14 @@ async function render(): Promise<TargetV1MtsdfResult> {
     );
     text.text = 'Target v1 MTSDE';
     await renderer.renderAsync(scene, camera);
-    const retainedDraw = text.children.find((child): child is THREE.Mesh => child instanceof THREE.Mesh);
+    const retainedDraw = v1GlyphDraw(rootDraws(scene));
     const pixels = await renderer.readRenderTargetPixelsAsync(target, 0, 0, 256, 128);
-    let litPixels = 0;
-    for (let offset = 0; offset < pixels.length; offset += 4)
-      if (pixels[offset]! > 8 || pixels[offset + 1]! > 8 || pixels[offset + 2]! > 8) litPixels += 1;
+    const { decorationPixels, litPixels } = countV1RasterPixels(pixels);
     return {
       backend: renderer.backend instanceof THREE.WebGLBackend ? 'webgl2' : 'webgpu',
-      drawCount: text.children.filter((child) => child instanceof THREE.Mesh).length,
+      decorationPixels,
+      decorationRecords: countV1DecorationRecords(rootDraws(scene)),
+      drawCount: rootDraws(scene).length,
       glyphCount: text.measure().glyphCount,
       litPixels,
       retainedDraw: retainedDraw === firstDraw,
@@ -97,10 +105,13 @@ async function render(): Promise<TargetV1MtsdfResult> {
   } finally {
     text?.removeFromParent();
     text?.dispose();
-    font?.dispose();
-    loader.dispose();
+    fontFace?.dispose();
+    disposeBenchmarkThreeRoot(root);
     target.dispose();
     renderer.dispose();
-    if (fontUrl !== undefined) URL.revokeObjectURL(fontUrl);
   }
+}
+
+function rootDraws(scene: THREE.Scene): THREE.Mesh[] {
+  return scene.getObjectByName('@pmndrs/glyph:v1-mtsdf')?.children.filter((child) => child instanceof THREE.Mesh) ?? [];
 }

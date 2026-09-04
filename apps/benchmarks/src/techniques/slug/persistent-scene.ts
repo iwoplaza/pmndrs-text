@@ -1,5 +1,5 @@
 import {
-  createFontLibrary,
+  glyph,
   type BakeProgressListener,
   type Constraints,
   type FontFeature,
@@ -8,8 +8,8 @@ import {
   type ParagraphLayoutSummary,
   type TextStyle,
 } from '@pmndrs/glyph';
-import type { slug } from '@pmndrs/glyph/three/slug';
-import { Text } from '@pmndrs/glyph/three';
+import type { slug } from '@pmndrs/glyph/raster/slug';
+import type { Text, ThreeRoot } from '@pmndrs/glyph/three';
 import * as THREE from 'three/webgpu';
 
 import type { BenchmarkFontFixture } from '../../benchmark/font-fixtures';
@@ -26,11 +26,7 @@ import {
   type LiveTextAnchor,
 } from '../../workloads/shared/text-style';
 import { createTextUpdateTelemetry, type TextUpdateTimingSummary } from '../../renderer/text-update-telemetry';
-import {
-  type PersistentRenderFrameContext,
-  type PersistentRenderScene,
-  type PersistentRenderViewport,
-} from '../../renderer/persistent-render-host';
+import { type PersistentRenderScene, type PersistentRenderViewport } from '../../renderer/persistent-render-host';
 import { createPersistentSceneActivation } from '../../renderer/persistent-scene-activation';
 import {
   createRetainedFontFixtureController,
@@ -39,16 +35,12 @@ import {
 } from '../../renderer/retained-font-fixture';
 import type { RendererBackend } from '../../renderer/webgpu-renderer';
 import {
-  captureGlyphOriginsForPresentation,
-  createFrameDrivenGlyphTransition,
-  snapGlyphOrigins,
-  transitionPresentation,
-  type FrameDrivenGlyphTransition,
   type GlyphOriginPresentation,
-  type GlyphOriginSnapshot,
+  retainedGlyphPresentation,
   type ShapedTextIdentity,
-} from '../shared/glyph-origin-transition';
+} from '../shared/glyph-origin-presentation';
 import { slugDataConfiguration, type SlugRasterConfiguration } from './metadata';
+import { createBenchmarkThreeRoot, disposeBenchmarkThreeRoot } from '../../three-root';
 
 export interface SlugTextLiveStats {
   readonly technique: 'slug';
@@ -120,7 +112,6 @@ export interface SlugTextLiveStats {
 }
 
 export interface SlugTextSceneUpdate extends LiveFontFixtureUpdate {
-  readonly animatePresentation: boolean;
   readonly anchor: LiveTextAnchor;
   readonly direction: 'ltr' | 'rtl';
   readonly features: readonly FontFeature[];
@@ -166,15 +157,6 @@ interface SlugTextState {
   readonly layout: ParagraphLayout;
   readonly style: TextStyle;
   readonly rasterPixelRatio: number;
-}
-
-/** Presentation-only motion the scene drives from its own frame clock, because its surface does not drive progress. */
-interface SlugPresentation {
-  readonly transition: FrameDrivenGlyphTransition;
-  readonly fromX: number;
-  readonly fromY: number;
-  readonly toX: number;
-  readonly toY: number;
 }
 
 export interface SlugTextPersistentScene extends PersistentRenderScene {
@@ -224,7 +206,6 @@ export function createSlugTextPersistentScene(options: SlugTextPersistentSceneOp
   let startupMs = 0;
   let firstDrawMs = 0;
   let firstDrawRecorded = false;
-  const library = createFontLibrary();
   let fontFixture: RetainedFontFixtureController<SlugPersistentFontFixture> | undefined;
   let activationSignal: AbortSignal | undefined;
   let canvasSurface: ReturnType<typeof createCanvasSurface> | undefined;
@@ -232,8 +213,8 @@ export function createSlugTextPersistentScene(options: SlugTextPersistentSceneOp
   let camera: THREE.OrthographicCamera | undefined;
   let loadedFont: Font<typeof slug> | undefined;
   let line: Text<typeof slug> | undefined;
+  let glyphRoot: ThreeRoot | undefined;
   let committedState: SlugTextState | undefined;
-  let presentation: SlugPresentation | undefined;
   let closing = false;
   let disposed = false;
   let updateRevision = 0;
@@ -258,65 +239,34 @@ export function createSlugTextPersistentScene(options: SlugTextPersistentSceneOp
     return { canvasSurface, camera, line, scene, state: committedState };
   };
 
+  const releaseActivationResources = (): void => {
+    updateRevision += 1;
+    line?.removeFromParent();
+    line?.dispose();
+    if (glyphRoot !== undefined) disposeBenchmarkThreeRoot(glyphRoot);
+    if (fontFixture === undefined) loadedFont?.dispose();
+    else fontFixture.dispose();
+    canvasSurface?.dispose();
+    line = undefined;
+    glyphRoot = undefined;
+    loadedFont = undefined;
+    committedState = undefined;
+    fontFixture = undefined;
+    activationSignal = undefined;
+    canvasSurface = undefined;
+    camera = undefined;
+    scene = undefined;
+  };
+
   /** Commits one validated generation; `Text.set()` leaves desired state unchanged when it rejects. */
   const commitState = (activeLine: Text<typeof slug>, next: SlugTextState): void => {
     applyState(activeLine, next);
     committedState = next;
   };
 
-  /**
-   * Presents one committed reflow. `before` is captured only when `glyphOriginPolicy` allows interpolation, so its
-   * absence is the decision to snap rather than a missing snapshot.
-   */
-  const presentReflow = (
-    activeLine: Text<typeof slug>,
-    before: GlyphOriginSnapshot | undefined,
-  ): GlyphOriginPresentation => {
-    const fromX = activeLine.position.x;
-    const fromY = activeLine.position.y;
-    presentation?.transition.dispose();
-    presentation = undefined;
+  const presentReflow = (activeLine: Text<typeof slug>): GlyphOriginPresentation => {
     positionLiveLine(activeLine, width, height, anchor, layoutWidthRatio);
-    if (before === undefined) return snapGlyphOrigins(activeLine);
-    const toX = activeLine.position.x;
-    const toY = activeLine.position.y;
-    const transition = createFrameDrivenGlyphTransition(activeLine, before);
-    activeLine.position.set(fromX, fromY, 0);
-    presentation = { transition, fromX, fromY, toX, toY };
-    return transitionPresentation(transition);
-  };
-
-  /** Captures the origins a reflow may interpolate from, or nothing when the change replaces or reorders glyphs. */
-  const originsToInterpolate = (
-    activeLine: Text<typeof slug>,
-    committed: SlugTextState,
-    next: ShapedTextIdentity,
-    animatePresentation = true,
-  ): GlyphOriginSnapshot | undefined => {
-    return captureGlyphOriginsForPresentation(activeLine, committed.identity, next, animatePresentation);
-  };
-
-  /**
-   * Advances the frame-driven presentation. A superseded transition is a normal outcome of a reflow landing mid-motion,
-   * so it retires quietly; anything else is a real failure the surface must see.
-   */
-  const advancePresentation = (activeLine: Text<typeof slug>, context: PersistentRenderFrameContext): void => {
-    const current = presentation;
-    if (current === undefined) return;
-    try {
-      const progress = current.transition.advance(context.timestamp);
-      activeLine.position.set(
-        current.fromX + (current.toX - current.fromX) * progress,
-        current.fromY + (current.toY - current.fromY) * progress,
-        0,
-      );
-      if (progress === 1) presentation = undefined;
-    } catch (error) {
-      current.transition.dispose();
-      presentation = undefined;
-      activeLine.position.set(current.toX, current.toY, 0);
-      if (!(error instanceof DOMException && error.name === 'AbortError')) onError(error);
-    }
+    return retainedGlyphPresentation(activeLine);
   };
 
   const resizeScene = (viewport: PersistentRenderViewport): void => {
@@ -338,8 +288,6 @@ export function createSlugTextPersistentScene(options: SlugTextPersistentSceneOp
     const updateStartedAt = performance.now();
     const revision = ++updateRevision;
     try {
-      // A viewport change leaves the shaped run intact, so its glyphs really do move continuously.
-      const before = originsToInterpolate(activeLine, state, state.identity);
       commitState(activeLine, {
         ...state,
         constraints: slugConstraints(nextContentWidth),
@@ -349,7 +297,7 @@ export function createSlugTextPersistentScene(options: SlugTextPersistentSceneOp
       if (closing || disposed || revision !== updateRevision) return;
       committedContentWidth = nextContentWidth;
       const resizeSceneStartedAt = performance.now();
-      presentReflow(activeLine, before);
+      presentReflow(activeLine);
       const finishedAt = performance.now();
       textUpdateTelemetry.record({
         scheduleMs: 0,
@@ -368,86 +316,88 @@ export function createSlugTextPersistentScene(options: SlugTextPersistentSceneOp
       if (disposed) throw new DOMException('The Slug scene is disposed', 'InvalidStateError');
       if (scene !== undefined) throw new DOMException('The Slug scene is already active', 'InvalidStateError');
       context.signal.throwIfAborted();
-      activationSignal = context.signal;
-      rendererInitMs = context.rendererInitMs;
-      width = positiveViewportSize(context.viewport.width, 'Slug scene width');
-      height = positiveViewportSize(context.viewport.height, 'Slug scene height');
-      committedContentWidth = benchmarkContentWidth(width, layoutWidthRatio);
-      scene = new THREE.Scene();
-      camera = new THREE.OrthographicCamera(0, width, 0, -height, 0.1, 1_000);
-      camera.position.z = 500;
-      camera.updateProjectionMatrix();
-      // CanvasSurface consumes only render-state methods; the host still withholds renderer lifecycle ownership.
-      canvasSurface = createCanvasSurface(context.renderer as THREE.WebGPURenderer, width, height, gridVisible);
-      const fontStarted = performance.now();
-      const loaded = await loadSlugFontAsset({
-        technique: 'slug',
-        fixture: initialFontFixture,
-        delivery,
-        library,
-        signal: context.signal,
-        ...(onBakeProgress === undefined ? {} : { onProgress: onBakeProgress }),
-      });
-      loadedFont = loaded.loaded;
-      const fontLoadMs = performance.now() - fontStarted;
-      context.signal.throwIfAborted();
-      const rasterConfiguration = slugDataConfiguration(loaded.data);
-      fontFixture = createRetainedFontFixtureController(
-        library,
-        {
+      try {
+        activationSignal = context.signal;
+        rendererInitMs = context.rendererInitMs;
+        width = positiveViewportSize(context.viewport.width, 'Slug scene width');
+        height = positiveViewportSize(context.viewport.height, 'Slug scene height');
+        committedContentWidth = benchmarkContentWidth(width, layoutWidthRatio);
+        scene = new THREE.Scene();
+        glyphRoot = createBenchmarkThreeRoot(`slug-text-scene-${backend}`);
+        camera = new THREE.OrthographicCamera(0, width, 0, -height, 0.1, 1_000);
+        camera.position.z = 500;
+        camera.updateProjectionMatrix();
+        // CanvasSurface consumes only render-state methods; the host still withholds renderer lifecycle ownership.
+        canvasSurface = createCanvasSurface(context.renderer as THREE.WebGPURenderer, width, height, gridVisible);
+        const fontStarted = performance.now();
+        const loaded = await loadSlugFontAsset({
+          technique: 'slug',
           fixture: initialFontFixture,
-          asset: { font: loaded.loaded, fontLoadMs, loaded, loadedFont, rasterConfiguration },
-        },
-        // Dispose the application Font lease; live renderer bindings retain their own counted lease.
-        { dispose: (asset) => asset.loadedFont.dispose() },
-      );
-      const textStarted = performance.now();
-      const identity: ShapedTextIdentity = { fontFixture: initialFontFixture, text, language, direction, features };
-      const state: SlugTextState = {
-        font: loadedFont,
-        identity,
-        constraints: slugConstraints(committedContentWidth),
-        layout: slugLayout(textAlign),
-        style: slugStyle(fontSize, identity),
-        rasterPixelRatio: context.viewport.dpr,
-      };
-      line = new Text({
-        font: state.font,
-        text: state.identity.text,
-        constraints: state.constraints,
-        layout: state.layout,
-        style: state.style,
-        rasterPixelRatio: state.rasterPixelRatio,
-      });
-      const activeLine = line;
-      const scheduledAt = performance.now();
-      // `Text` reconciles while it is parented, so attaching and forcing one world update is what commits the layout.
-      scene.add(activeLine);
-      activeLine.updateMatrixWorld(true);
-      if (activeLine.error !== undefined) throw activeLine.error;
-      committedState = state;
-      updateSlugDrawVisibility(activeLine);
-      const readyAt = performance.now();
-      context.signal.throwIfAborted();
-      textReadyMs = performance.now() - textStarted;
-      const sceneStartedAt = performance.now();
-      positionLiveLine(activeLine, width, height, anchor, layoutWidthRatio);
-      const sceneFinishedAt = performance.now();
-      textUpdateTelemetry.record({
-        scheduleMs: scheduledAt - textStarted,
-        readyMs: readyAt - scheduledAt,
-        sceneMs: sceneFinishedAt - sceneStartedAt,
-        totalMs: sceneFinishedAt - textStarted,
-      });
-      startupMs = performance.now() - startupStarted;
-      activationGate.resolve();
+          delivery,
+          signal: context.signal,
+          ...(onBakeProgress === undefined ? {} : { onProgress: onBakeProgress }),
+        });
+        loadedFont = loaded.loaded;
+        const fontLoadMs = performance.now() - fontStarted;
+        context.signal.throwIfAborted();
+        const rasterConfiguration = slugDataConfiguration(loaded.data);
+        fontFixture = createRetainedFontFixtureController(
+          {
+            fixture: initialFontFixture,
+            asset: { font: loaded.loaded, fontLoadMs, loaded, loadedFont, rasterConfiguration },
+          },
+          // Dispose the application Font lease; live renderer bindings retain their own counted lease.
+          { dispose: (asset) => asset.loadedFont.dispose() },
+        );
+        const textStarted = performance.now();
+        const identity: ShapedTextIdentity = { fontFixture: initialFontFixture, text, language, direction, features };
+        const state: SlugTextState = {
+          font: loadedFont,
+          identity,
+          constraints: slugConstraints(committedContentWidth),
+          layout: slugLayout(textAlign),
+          style: slugStyle(fontSize, identity),
+          rasterPixelRatio: context.viewport.dpr,
+        };
+        line = glyphRoot.createText({
+          font: state.font,
+          text: state.identity.text,
+          constraints: state.constraints,
+          layout: state.layout,
+          style: state.style,
+          rasterPixelRatio: state.rasterPixelRatio,
+        });
+        const activeLine = line;
+        const scheduledAt = performance.now();
+        // `Text` reconciles while it is parented, so attaching and forcing one world update is what commits the layout.
+        scene.add(activeLine);
+        activeLine.updateMatrixWorld(true);
+        if (activeLine.error !== undefined) throw activeLine.error;
+        committedState = state;
+        const readyAt = performance.now();
+        context.signal.throwIfAborted();
+        textReadyMs = performance.now() - textStarted;
+        const sceneStartedAt = performance.now();
+        positionLiveLine(activeLine, width, height, anchor, layoutWidthRatio);
+        const sceneFinishedAt = performance.now();
+        textUpdateTelemetry.record({
+          scheduleMs: scheduledAt - textStarted,
+          readyMs: readyAt - scheduledAt,
+          sceneMs: sceneFinishedAt - sceneStartedAt,
+          totalMs: sceneFinishedAt - textStarted,
+        });
+        startupMs = performance.now() - startupStarted;
+        activationGate.resolve();
+      } catch (error) {
+        releaseActivationResources();
+        activationGate.reject(error);
+        throw error;
+      }
     },
-    frame(context) {
+    frame() {
       if (closing || disposed) return;
       const active = activeResources();
       const startedAt = performance.now();
-      advancePresentation(active.line, context);
-      updateSlugDrawVisibility(active.line);
       active.canvasSurface.render(active.scene, active.camera);
       if (!firstDrawRecorded) {
         firstDrawMs = performance.now() - startedAt;
@@ -455,7 +405,7 @@ export function createSlugTextPersistentScene(options: SlugTextPersistentSceneOp
       }
     },
     telemetry(snapshot, viewport) {
-      if (closing || disposed || fontFixture === undefined || line === undefined) return;
+      if (closing || disposed || fontFixture === undefined || line === undefined || scene === undefined) return;
       const currentFontFixture = fontFixture.current.asset;
       const layout = committedLayout(line);
       const framebufferGpuBytes = viewport.drawingBufferWidth * viewport.drawingBufferHeight * 4;
@@ -468,7 +418,7 @@ export function createSlugTextPersistentScene(options: SlugTextPersistentSceneOp
         ...snapshot,
         glyphCount: renderedGlyphCount(line),
         missingGlyphCount: missingGlyphCount(layout),
-        drawCount: drawCount(line),
+        drawCount: drawCount(scene),
         layoutWidth: layout.width,
         layoutHeight: layout.height,
         lineCount: layout.lineCount,
@@ -526,13 +476,12 @@ export function createSlugTextPersistentScene(options: SlugTextPersistentSceneOp
       if (activeFontFixture === undefined || signal === undefined) {
         throw new DOMException('The Slug scene is not active', 'InvalidStateError');
       }
-      await activeFontFixture.load(fixture, async (requested, fixtureLibrary) => {
+      await activeFontFixture.load(fixture, async (requested) => {
         const fontStartedAt = performance.now();
         const loaded = await loadSlugFontAsset({
           technique: 'slug',
           fixture: requested,
           delivery,
-          library: fixtureLibrary,
           signal,
           ...(onBakeProgress === undefined ? {} : { onProgress: onBakeProgress }),
         });
@@ -570,9 +519,7 @@ export function createSlugTextPersistentScene(options: SlugTextPersistentSceneOp
         direction: next.direction,
         features: next.features,
       };
-      const before = originsToInterpolate(activeLine, active.state, identity, next.animatePresentation);
       activeFontFixture.commit(nextFixture, (fixture) => {
-        if (next.text.length === 0) activeLine.visible = false;
         commitState(activeLine, {
           font: fixture.loadedFont,
           identity,
@@ -581,7 +528,6 @@ export function createSlugTextPersistentScene(options: SlugTextPersistentSceneOp
           style: slugStyle(nextFontSize, identity),
           rasterPixelRatio: active.state.rasterPixelRatio,
         });
-        updateSlugDrawVisibility(activeLine);
         fontSize = nextFontSize;
         anchor = next.anchor;
         textAlign = next.textAlign;
@@ -589,7 +535,7 @@ export function createSlugTextPersistentScene(options: SlugTextPersistentSceneOp
         committedContentWidth = nextContentWidth;
       });
       const updateSceneStartedAt = performance.now();
-      const presented = presentReflow(activeLine, before);
+      const presented = presentReflow(activeLine);
       const finishedAt = performance.now();
       textUpdateTelemetry.record({
         scheduleMs: 0,
@@ -606,22 +552,7 @@ export function createSlugTextPersistentScene(options: SlugTextPersistentSceneOp
       if (line === undefined) {
         activationGate.reject(new DOMException('The Slug persistent scene was deactivated', 'AbortError'));
       }
-      updateRevision += 1;
-      presentation?.transition.dispose();
-      presentation = undefined;
-      line?.removeFromParent();
-      line?.dispose();
-      if (fontFixture === undefined) loadedFont?.dispose();
-      else fontFixture.dispose();
-      canvasSurface?.dispose();
-      line = undefined;
-      loadedFont = undefined;
-      committedState = undefined;
-      fontFixture = undefined;
-      activationSignal = undefined;
-      canvasSurface = undefined;
-      camera = undefined;
-      scene = undefined;
+      releaseActivationResources();
     },
   };
 }
@@ -635,6 +566,8 @@ function applyState(line: Text<typeof slug>, next: SlugTextState): void {
     style: next.style,
     rasterPixelRatio: next.rasterPixelRatio,
   });
+  line.visible = next.identity.text.length > 0;
+  glyph.shape();
   line.updateMatrixWorld(true);
   if (line.error !== undefined) throw line.error;
 }
@@ -693,30 +626,8 @@ function assertLayoutWidthRatio(value: number): void {
   }
 }
 
-function renderedGlyphCount(object: THREE.Object3D): number {
-  let count = 0;
-  object.traverse((child) => {
-    if (child instanceof THREE.Mesh && child.geometry instanceof THREE.InstancedBufferGeometry) {
-      count += child.geometry.instanceCount;
-    }
-  });
-  return count;
-}
-
-function updateSlugDrawVisibility(object: THREE.Object3D): void {
-  let glyphCount = 0;
-  object.traverse((child) => {
-    if (!(child instanceof THREE.Mesh)) return;
-    const availableVertexCount = child.geometry.index?.count ?? child.geometry.getAttribute('position')?.count ?? 0;
-    const vertexCount = Number.isFinite(child.geometry.drawRange.count)
-      ? Math.min(availableVertexCount, child.geometry.drawRange.count)
-      : availableVertexCount;
-    const instanceCount =
-      child.geometry instanceof THREE.InstancedBufferGeometry ? child.geometry.instanceCount : vertexCount > 0 ? 1 : 0;
-    child.visible = vertexCount > 0 && instanceCount > 0;
-    if (child.geometry instanceof THREE.InstancedBufferGeometry) glyphCount += child.geometry.instanceCount;
-  });
-  object.visible = glyphCount > 0;
+function renderedGlyphCount(text: Text<typeof slug>): number {
+  return text.measure().glyphCount;
 }
 
 function drawCount(object: THREE.Object3D): number {
