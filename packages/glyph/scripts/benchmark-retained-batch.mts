@@ -1,70 +1,103 @@
 /* @workflow {
   "name": "glyph:retained-batch-benchmark",
-  "summary": "Measures same-frame updates across many retained Text instances in one Three TextGroup.",
+  "summary": "Measures same-frame updates and draw batching across many retained Text instances in nested Three TextGroups.",
   "requirements": "Built package: pnpm --filter @pmndrs/glyph build. Accepts --texts, --reps, and --warmup.",
   "writes": "stdout only"
 } */
-import { Text, TextGroup } from '../dist/three.js';
+import * as THREE from 'three/webgpu';
 
 import { loadParagraphBenchmarkFixture } from './support/paragraph-benchmark-fixture.mts';
 
 const options = parseArguments(process.argv.slice(2));
 const fixture = await loadParagraphBenchmarkFixture();
-const reports: Array<Readonly<{ texts: number; medianMs: number; p95Ms: number; perTextUs: number }>> = [];
+const reports: Array<
+  Readonly<{ texts: number; draws: number; glyphs: number; medianMs: number; p95Ms: number; perTextUs: number }>
+> = [];
 
 try {
   for (const count of options.counts) reports.push(measureBatch(count));
 } finally {
-  fixture.loaded.dispose();
-  fixture.loader.dispose();
+  fixture.dispose();
 }
 
-console.log('\nretained texts     median        p95   per text');
+console.log('\nretained texts  draws  glyphs     median        p95   per text');
 for (const report of reports) {
   console.log(
-    `${String(report.texts).padStart(14)}${`${report.medianMs.toFixed(2)}ms`.padStart(11)}${`${report.p95Ms.toFixed(2)}ms`.padStart(11)}${`${report.perTextUs.toFixed(2)}us`.padStart(11)}`,
+    `${String(report.texts).padStart(14)}${String(report.draws).padStart(7)}${String(report.glyphs).padStart(8)}${`${report.medianMs.toFixed(2)}ms`.padStart(11)}${`${report.p95Ms.toFixed(2)}ms`.padStart(11)}${`${report.perTextUs.toFixed(2)}us`.padStart(11)}`,
   );
 }
 
 function measureBatch(count: number) {
-  const group = new TextGroup({ capacity: { size: count * 16, policy: 'grow' } });
-  const texts = Array.from(
-    { length: count },
-    (_, index) =>
-      new Text({
-        font: fixture.loaded,
-        text: `alpha ${index}`,
-        style: { fontSize: 16 },
-        layout: { wrap: 'word' },
-        constraints: { width: { mode: 'exact', size: 160 } },
-      }),
+  const root = fixture.root({ size: count * 16, policy: 'grow' });
+  const group = root.createTextGroup();
+  const nestedGroup = root.createTextGroup();
+  const texts = Array.from({ length: count }, (_, index) =>
+    root.createText({
+      font: fixture.loaded,
+      text: `alpha ${index}`,
+      style: { fontSize: 16 },
+      layout: { wrap: 'word' },
+      constraints: { width: { mode: 'exact', size: 160 } },
+    }),
   );
-  group.add(...texts);
-  group.updateMatrixWorld(true);
+  nestedGroup.position.set(8, 12, 0);
+  nestedGroup.add(...texts);
+  group.add(nestedGroup);
+  const scene = new THREE.Scene();
+  scene.add(group);
+  scene.updateMatrixWorld(true);
   if (group.error !== undefined) throw group.error;
+  if (nestedGroup.error !== undefined) throw nestedGroup.error;
+  if (group.textCount !== count || nestedGroup.textCount !== count) {
+    throw new Error('nested TextGroups did not retain every benchmark Text descendant');
+  }
+  const initialDraws = inspectDraws(scene);
+  if (initialDraws.draws !== 1) {
+    throw new Error(`one compatible TextGroup batch realized ${String(initialDraws.draws)} draws instead of 1`);
+  }
   const samples: number[] = [];
   try {
     for (let repetition = 0; repetition < options.warmup + options.repetitions; repetition += 1) {
       const prefix = repetition % 2 === 0 ? 'bravo' : 'alpha';
       const started = performance.now();
       for (const [index, text] of texts.entries()) text.text = `${prefix} ${index}`;
-      group.updateMatrixWorld(true);
+      scene.updateMatrixWorld(true);
       const duration = performance.now() - started;
       if (group.error !== undefined) throw group.error;
+      if (nestedGroup.error !== undefined) throw nestedGroup.error;
+      const currentDraws = inspectDraws(scene);
+      if (currentDraws.draws !== initialDraws.draws || currentDraws.glyphs !== initialDraws.glyphs) {
+        throw new Error('a retained TextGroup update changed the realized batch shape');
+      }
       if (repetition >= options.warmup) samples.push(duration);
     }
   } finally {
     group.dispose();
+    nestedGroup.dispose();
     for (const text of texts) text.dispose();
+    root.dispose();
   }
   samples.sort((left, right) => left - right);
   const medianMs = percentile(samples, 0.5);
   return {
     texts: count,
+    draws: initialDraws.draws,
+    glyphs: initialDraws.glyphs,
     medianMs,
     p95Ms: percentile(samples, 0.95),
     perTextUs: (medianMs * 1000) / count,
   };
+}
+
+function inspectDraws(renderObject: THREE.Object3D): Readonly<{ draws: number; glyphs: number }> {
+  let draws = 0;
+  let glyphs = 0;
+  renderObject.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    draws += 1;
+    if (object.geometry instanceof THREE.InstancedBufferGeometry) glyphs += object.geometry.instanceCount;
+  });
+  return { draws, glyphs };
 }
 
 function percentile(sorted: readonly number[], quantile: number): number {

@@ -43,7 +43,7 @@
   "ignorePatterns": ["**/.cache/**", "dist/**", "src/generated/**", "**/target/**", "tests/fixtures/**"],
   "overrides": [
     {
-      "files": ["src/three/**", "src/three.ts", "src/react.ts"],
+      "files": ["src/three/**"],
       "rules": {
         "eslint/no-restricted-imports": [
           "error",
@@ -53,7 +53,45 @@
               "three/src/*",
               "three/addons/*",
               "three/examples/*",
-              "**/internal/**",
+              "../internal/**",
+              "../../internal/**",
+              "**/generated/**",
+              "**/core/**"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/three.ts"],
+      "rules": {
+        "eslint/no-restricted-imports": [
+          "error",
+          {
+            "paths": ["three", "@react-three/fiber"],
+            "patterns": [
+              "three/src/*",
+              "three/addons/*",
+              "three/examples/*",
+              "**/generated/**",
+              "**/core/**",
+              "**/tsl/**"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/react.ts"],
+      "rules": {
+        "eslint/no-restricted-imports": [
+          "error",
+          {
+            "paths": ["three", "@react-three/fiber"],
+            "patterns": [
+              "three/src/*",
+              "three/addons/*",
+              "three/examples/*",
               "**/generated/**",
               "**/core/**",
               "**/tsl/**"

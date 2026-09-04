@@ -1,32 +1,23 @@
 export {};
 
-const techniques = [
+const catalogPath = '/src/workloads/catalog.ts';
+const workloadCatalog: typeof import('../src/workloads/catalog') = await import(/* @vite-ignore */ catalogPath);
+const { BENCHMARK_WORKLOADS } = workloadCatalog;
+type BenchmarkWorkloadId = keyof typeof BENCHMARK_WORKLOADS;
+
+const rasterFormats = [
   { id: 'bitmap', label: 'Bitmap' },
   { id: 'mtsdf', label: 'MSDF' },
   { id: 'slug', label: 'Slug' },
 ] as const;
-const workloads = [
-  { id: 'benchmark-ipsum', label: 'Benchmark ipsum' },
-  { id: 'advanced-shaping', label: 'Advanced shaping' },
-  { id: 'text-ladder', label: 'Text ladder' },
-  { id: 'zoom-text', label: 'Zoom text' },
-  { id: 'icon-grid', label: 'Icon grid' },
-  { id: 'off-axis-3d', label: 'Off-axis / 3D' },
-  { id: 'dynamic-layout', label: 'Dynamic layout' },
-  { id: 'paragraph-stress', label: 'Paragraph stress' },
-  { id: 'paint-effects', label: 'Paint & effects' },
-] as const;
-const comparisonWorkloads = new Set([
-  'text-ladder',
-  'zoom-text',
-  'icon-grid',
-  'off-axis-3d',
-  'dynamic-layout',
-  'paragraph-stress',
-  'paint-effects',
-]);
+const workloads = Object.values(BENCHMARK_WORKLOADS).map(({ id, label }) => ({ id, label }));
+const comparisonWorkloads = new Set<BenchmarkWorkloadId>(
+  Object.values(BENCHMARK_WORKLOADS)
+    .filter(({ surface }) => surface === 'comparison')
+    .map(({ id }) => id),
+);
 
-type Technique = (typeof techniques)[number]['id'];
+type RasterFormatName = (typeof rasterFormats)[number]['id'];
 
 function presentationState(): string {
   const viewport = document.querySelector<HTMLElement>('[data-testid$="live-viewport"]');
@@ -77,19 +68,19 @@ function waitFrames(count: number): Promise<void> {
   });
 }
 
-async function selectTechnique(id: Technique, label: string): Promise<void> {
+async function selectFormat(id: RasterFormatName, label: string): Promise<void> {
   if (new URLSearchParams(location.search).get('technique') === id) return;
   const button = visible(
     [...document.querySelectorAll<HTMLButtonElement>('button')].filter(
       (candidate) => candidate.textContent?.trim() === label,
     ),
   );
-  if (button === undefined) throw new Error(`Missing ${label} technique button`);
+  if (button === undefined) throw new Error(`Missing ${label} raster-format button`);
   button.click();
   await waitFor(() => (new URLSearchParams(location.search).get('technique') === id ? true : undefined));
 }
 
-async function selectWorkload(id: string, label: string): Promise<void> {
+async function selectWorkload(id: BenchmarkWorkloadId, label: string): Promise<void> {
   if (new URLSearchParams(location.search).get('workload') === id) return;
   const trigger = visible(document.querySelectorAll<HTMLButtonElement>('button[aria-label="Live workload"]'));
   if (trigger === undefined) throw new Error('Missing Presentation workload control');
@@ -134,10 +125,10 @@ async function completeAdvancedShaping(): Promise<void> {
   console.log('presentation-advanced-timeline-completed', slider.max);
 }
 
-async function readyViewport(technique: Technique, workload: string): Promise<HTMLElement> {
+async function readyViewport(format: RasterFormatName, workload: BenchmarkWorkloadId): Promise<HTMLElement> {
   const selector = comparisonWorkloads.has(workload)
-    ? `[data-testid="comparison-live-viewport"][data-technique="${technique}"][data-workload="${workload}"]`
-    : `[data-testid="${technique}-live-viewport"]`;
+    ? `[data-testid="comparison-live-viewport"][data-technique="${format}"][data-workload="${workload}"]`
+    : `[data-testid="${format}-live-viewport"]`;
   return waitFor(() => {
     const viewport = visible(document.querySelectorAll<HTMLElement>(selector));
     const framesPerSecond = Number(viewport?.getAttribute('data-frames-per-second'));
@@ -187,16 +178,16 @@ async function sampleRaf(
 }
 
 const results: Array<Record<string, number | string>> = [];
-for (const technique of techniques) {
-  await selectTechnique(technique.id, technique.label);
+for (const format of rasterFormats) {
+  await selectFormat(format.id, format.label);
   for (const workload of workloads) {
     await selectWorkload(workload.id, workload.label);
     if (workload.id === 'advanced-shaping') await completeAdvancedShaping();
-    const viewport = await readyViewport(technique.id, workload.id);
+    const viewport = await readyViewport(format.id, workload.id);
     await waitFrames(30);
     const raf = await sampleRaf(1_500);
     const record = {
-      technique: technique.id,
+      technique: format.id,
       workload: workload.id,
       rafFps: Number(raf.fps.toFixed(1)),
       p95FrameMs: Number(raf.p95FrameMs.toFixed(2)),

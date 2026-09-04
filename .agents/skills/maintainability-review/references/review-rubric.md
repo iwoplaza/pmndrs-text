@@ -1,6 +1,6 @@
 # Maintainability review rubric
 
-Use the canonical [engineering house style](../../../../docs/engineering/code-style.md) to judge code. This rubric defines the evidence a review must return; it intentionally does not copy the standard.
+Use the canonical [engineering house style](../../../../.agents/docs/engineering/code-style.md) to judge code. This rubric defines the evidence a review must return; it intentionally does not copy the standard.
 
 ## Finding contract
 
@@ -44,3 +44,5 @@ Before accepting a recommendation, ask:
 5. Does cleanup cover partial acquisition, cancellation, stale completion, and repeated release?
 6. Does the test use an independent invariant, or restate the implementation?
 7. Would a generated file be better reviewed through its generator and conformance evidence?
+8. Does an `Any*`, `unknown`, or erased registry type represent genuinely untrusted or heterogeneous data, or did it discard
+   an associated type relationship that a config, schema, technique, handle, or other runtime witness already proved?

@@ -239,6 +239,7 @@ test('bakes bounded coverage with deterministic progress and a validated selecti
     dispose() {},
   };
   const data = await msdf.decode(font, runtimeRaster);
+  assert.equal(data.resource, `pmndrs.msdf/${shapingHash}/${rasterKey}`);
   assert.equal(data.coverage[43 >> 3] & (1 << (43 & 7)), 1 << (43 & 7));
   assert.equal(data.coverage[45 >> 3] & (1 << (45 & 7)), 0);
   msdf.dispose(data);
@@ -248,7 +249,7 @@ test('keeps the packaged MSDF schema byte-identical to its canonical source', as
   assert.deepEqual(
     await readFile(
       new URL(
-        '../../../../docs/planning/extensions/PMNDRS_font_distance_field/schema/glTF.PMNDRS_font_distance_field.schema.json',
+        '../../../../.agents/docs/planning/extensions/PMNDRS_font_distance_field/schema/glTF.PMNDRS_font_distance_field.schema.json',
         import.meta.url,
       ),
     ),

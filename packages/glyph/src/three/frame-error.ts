@@ -3,8 +3,9 @@ import {
   glyphEngineStatusErrorDetails,
   type GlyphEngineFault,
   type GlyphEngineStatusCode,
-} from '../core.js';
-import type { AnyRasterTechnique } from '../raster-technique.js';
+} from '../engine-error.js';
+import { GlyphError } from '../glyph-error.js';
+import type { RasterFormatMetadata } from '../config/raster-format.js';
 import type { Text, TextSpan } from './text.js';
 
 /**
@@ -14,9 +15,9 @@ import type { Text, TextSpan } from './text.js';
  * meaningful to a consumer. They are resolved here into the objects the consumer actually wrote:
  * the `Text` and, when one span owns the cause, that span together with its index in `Text.spans`.
  */
-export type TextFrameSubject<Technique extends AnyRasterTechnique = AnyRasterTechnique> =
-  | Readonly<{ kind: 'span'; text: Text<Technique>; index: number; span: TextSpan<Technique> }>
-  | Readonly<{ kind: 'paragraph'; text: Text<Technique> }>
+export type TextFrameSubject<Format extends RasterFormatMetadata = RasterFormatMetadata> =
+  | Readonly<{ kind: 'span'; text: Text<Format>; index: number; span: TextSpan<Format> }>
+  | Readonly<{ kind: 'paragraph'; text: Text<Format> }>
   | Readonly<{ kind: 'unattributed' }>;
 
 /**
@@ -25,22 +26,22 @@ export type TextFrameSubject<Technique extends AnyRasterTechnique = AnyRasterTec
  * `engine` is the residual: a status the engine does not classify further, including every internal
  * invariant violation. Treat it as a defect report rather than something to correct in the input.
  */
-export type TextFrameRejection<Technique extends AnyRasterTechnique = AnyRasterTechnique> =
+export type TextFrameRejection<Format extends RasterFormatMetadata = RasterFormatMetadata> =
   /** A span's `[start, end)` is inverted, reaches past the text, or splits a UTF-16 surrogate pair. */
-  | Readonly<{ cause: 'span-range'; subject: TextFrameSubject<Technique> }>
+  | Readonly<{ cause: 'span-range'; subject: TextFrameSubject<Format> }>
   /** A style boundary falls inside an extended grapheme cluster. */
-  | Readonly<{ cause: 'cluster-boundary'; subject: TextFrameSubject<Technique> }>
+  | Readonly<{ cause: 'cluster-boundary'; subject: TextFrameSubject<Format> }>
   /** Two spans partially overlap; spans must be disjoint or fully nested. */
-  | Readonly<{ cause: 'span-overlap'; subject: TextFrameSubject<Technique> }>
+  | Readonly<{ cause: 'span-overlap'; subject: TextFrameSubject<Format> }>
   /** The paragraph's own root style is missing, duplicated, or does not cover the whole text. */
-  | Readonly<{ cause: 'paragraph-root'; subject: TextFrameSubject<Technique> }>
+  | Readonly<{ cause: 'paragraph-root'; subject: TextFrameSubject<Format> }>
   /** A style names a font stack the engine does not hold. */
-  | Readonly<{ cause: 'font-stack-missing'; subject: TextFrameSubject<Technique> }>
+  | Readonly<{ cause: 'font-stack-missing'; subject: TextFrameSubject<Format> }>
   /** A font in the laid-out text has no registered metrics. */
-  | Readonly<{ cause: 'font-metrics-missing'; subject: TextFrameSubject<Technique> }>
-  /** The frame did not fit the planner arenas even after the backend grew them. */
+  | Readonly<{ cause: 'font-metrics-missing'; subject: TextFrameSubject<Format> }>
+  /** The frame did not fit the planner arenas even after the handle grew them. */
   | Readonly<{ cause: 'capacity'; requiredRequestBytes: number; requiredResultBytes: number }>
-  /** Any status the engine does not classify as caller-actionable. */
+  /** A status the engine does not classify as caller-actionable. */
   | Readonly<{ cause: 'engine' }>;
 
 /**
@@ -49,12 +50,12 @@ export type TextFrameRejection<Technique extends AnyRasterTechnique = AnyRasterT
  * Branch on `rejection.cause`; `status` is the raw engine status the rejection was decoded from and
  * exists for reporting, not for classification.
  */
-export class TextFrameError extends Error {
+export class TextFrameError extends GlyphError<'frame-rejected'> {
   readonly rejection: TextFrameRejection;
   readonly status: number;
 
   constructor(rejection: TextFrameRejection, status: number, message: string, options?: ErrorOptions) {
-    super(message, options);
+    super('frame-rejected', message, options);
     this.name = 'TextFrameError';
     this.rejection = rejection;
     this.status = status;
@@ -83,7 +84,7 @@ const CAUSE_BY_CODE: ReadonlyMap<GlyphEngineStatusCode, TextFrameRejection['caus
 export function textFrameError(error: unknown, resolve: TextFrameSubjectResolver): unknown {
   if (!(error instanceof GlyphEngineStatusError)) return error;
   const details = glyphEngineStatusErrorDetails(error);
-  const cause = CAUSE_BY_CODE.get(error.code) ?? 'engine';
+  const cause = CAUSE_BY_CODE.get(error.statusCode) ?? 'engine';
   const rejection: TextFrameRejection =
     cause === 'capacity'
       ? {

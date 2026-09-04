@@ -12,8 +12,8 @@ import type { LiveTextAnchor } from './text-style';
  */
 export interface LiveTextScene {
   readonly anchor: LiveTextAnchor;
-  readonly animatePresentation: boolean;
   readonly direction: 'ltr' | 'rtl';
+  /** Optional exact oracle for `Text.measure().glyphCount`. */
   readonly expectedGlyphCount: number | undefined;
   readonly features: readonly FontFeature[];
   readonly fontFixture: BenchmarkFontFixture;

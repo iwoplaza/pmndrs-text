@@ -7,7 +7,15 @@ description: Audit and improve repository code milestone by milestone for correc
 
 Run a two-phase, evidence-led review. Preserve behavior and public boundaries unless correctness, measured performance, or a seriously misleading name provides strong contrary evidence.
 
-Read the canonical [engineering house style](../../../docs/engineering/code-style.md) and the [review rubric](references/review-rubric.md) before auditing or changing code. The engineering standard owns durable code rules; this skill owns the review procedure. Do not restate the standard in findings, plans, or package documentation.
+Read the canonical [engineering house style](../../../.agents/docs/engineering/code-style.md) and the [review rubric](references/review-rubric.md) before auditing or changing code. The engineering standard owns durable code rules; this skill owns the review procedure. Do not restate the standard in findings, plans, or package documentation.
+
+When a review includes complexity ceilings, metric-driven refactoring, or type-erasure/inference concerns, also read the
+[complexity and type-integrity guide](references/complexity-and-type-integrity.md). It defines the repository thresholds,
+measurement limits, anti-gaming rules, and current evidence-led refactor candidates.
+
+When a review adds, removes, consolidates, or evaluates tests, also read the
+[test portfolio guide](references/test-portfolio.md). It defines how to assign one authoritative test to each product
+invariant without deleting focused trust-boundary, failure, type-contract, or hot-path evidence.
 
 ## 1. Establish the baseline
 
@@ -33,6 +41,10 @@ Do not accept “more abstraction,” “more types,” “split the file,” or
 
 ## 3. Reconcile before editing
 
+Classify every validation finding with the engineering standard's value-authority matrix before accepting it. A module,
+Worker, language, or Wasm crossing is not itself a trust boundary. Confirm that a production caller can actually author
+the rejected value; a test-only import of an internal function does not make that state reachable.
+
 Classify each finding as:
 
 - **accept** — a correctness, safety, determinism, performance, or material clarity problem;
@@ -46,6 +58,10 @@ Prefer the smallest change that restores a clear invariant. Keep domain vocabula
 When the user requests implementation agents, assign accepted findings in non-overlapping slices and match agent capability to difficulty. Require no commits from subagents; the integrating agent owns review and commits.
 
 Apply the engineering standard to every accepted finding. Begin with a deterministic regression that distinguishes the failure from the intended invariant when behavior changes. Preserve public signatures unless the reconciled evidence justifies a change.
+
+For validation-to-test cleanup, use a narrow loop: remove one redundant package-owned runtime check, add or strengthen the
+producer-side unit/property/ABI/product proof, run that focused test, then continue. Do not replace the deleted guard with
+another check at a later internal layer. Reject negative tests that forge values no production path can supply.
 
 ## 5. Review every delegated diff
 

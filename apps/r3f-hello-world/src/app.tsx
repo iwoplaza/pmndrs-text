@@ -1,11 +1,11 @@
-import { type Font } from '@pmndrs/glyph';
+import type { Font } from '@pmndrs/glyph';
 import { Text, TextGroup } from '@pmndrs/glyph/react';
-import { useBitmapFont } from '@pmndrs/glyph/react/bitmap';
-import { useMSDF } from '@pmndrs/glyph/react/msdf';
+import { useBitmap } from '@pmndrs/glyph/react/bitmap';
+import { useMsdf } from '@pmndrs/glyph/react/msdf';
 import { useSlug } from '@pmndrs/glyph/react/slug';
-import { bitmap } from '@pmndrs/glyph/three/bitmap';
-import { msdf } from '@pmndrs/glyph/three/msdf';
-import { slug } from '@pmndrs/glyph/three/slug';
+import { bitmap } from '@pmndrs/glyph/raster/bitmap';
+import { msdf } from '@pmndrs/glyph/raster/msdf';
+import { slug } from '@pmndrs/glyph/raster/slug';
 import { useThree, type ThreeEvent } from '@react-three/fiber/webgpu';
 import { Activity, useState } from 'react';
 import { float, fwidth, smoothstep, uv, vec2 } from 'three/tsl';
@@ -13,63 +13,62 @@ import { float, fwidth, smoothstep, uv, vec2 } from 'three/tsl';
 import iconFontUrl from '../assets/font-awesome-world.font.glb?url';
 import latinFontUrl from '../assets/inter-latin.font.glb?url';
 
-type Technique = 'bitmap' | 'msdf' | 'slug';
+type RasterFormatName = 'bitmap' | 'msdf' | 'slug';
 
 const WORLD_ICON = '\uf0ac';
-const TECHNIQUES = ['bitmap', 'msdf', 'slug'] as const;
+const RASTER_FORMATS = ['bitmap', 'msdf', 'slug'] as const;
 const COLORS = { bitmap: '#f59e0b', msdf: '#fb7185', slug: '#ff4dc4' } as const;
 
-// Multiple techniques can be baked into a single glb, or alternatively you can bake each technique into its own glb.
-const latinFont = { baked: latinFontUrl } as const;
+// Multiple raster formats can be baked into one glb, or each format can be baked into its own glb.
+const latinFont = latinFontUrl;
 
 // This icon font only bakes a few glyphs from the full Font Awesome set. You can bake any subset of glyphs into a glb.
-const iconFont = { baked: iconFontUrl } as const;
+const iconFont = iconFontUrl;
 const bitmapOptions = { strikes: [32] } as const;
 
-// You can preload font assets to reduce loading waterfalls.
-// This is especially useful for fonts that are used in the initial scene.
-useBitmapFont.preload(latinFont, bitmapOptions);
-useMSDF.preload(latinFont);
+// Preload the initial scene's raster formats before React first requests them.
+useBitmap.preload(latinFont, bitmapOptions);
+useMsdf.preload(latinFont);
 useSlug.preload(latinFont);
-useBitmapFont.preload(iconFont, bitmapOptions);
-useMSDF.preload(iconFont);
+useBitmap.preload(iconFont, bitmapOptions);
+useMsdf.preload(iconFont);
 useSlug.preload(iconFont);
 
 export function App() {
   const viewport = useThree((state) => state.viewport);
-  const [activeTechnique, setActiveTechnique] = useState<Technique>('msdf');
+  const [activeFormat, setActiveFormat] = useState<RasterFormatName>('msdf');
 
-  const bitmapLatin = useBitmapFont(latinFont, bitmapOptions);
-  const msdfLatin = useMSDF(latinFont);
+  const bitmapLatin = useBitmap(latinFont, bitmapOptions);
+  const msdfLatin = useMsdf(latinFont);
   const slugLatin = useSlug(latinFont);
-  const bitmapIcons = useBitmapFont(iconFont, bitmapOptions);
-  const msdfIcons = useMSDF(iconFont);
+  const bitmapIcons = useBitmap(iconFont, bitmapOptions);
+  const msdfIcons = useMsdf(iconFont);
   const slugIcons = useSlug(iconFont);
 
   const fonts = [
-    { font: bitmapLatin, icon: bitmapIcons, technique: 'bitmap' },
-    { font: msdfLatin, icon: msdfIcons, technique: 'msdf' },
-    { font: slugLatin, icon: slugIcons, technique: 'slug' },
+    { font: bitmapLatin, icon: bitmapIcons, format: 'bitmap' },
+    { font: msdfLatin, icon: msdfIcons, format: 'msdf' },
+    { font: slugLatin, icon: slugIcons, format: 'slug' },
   ] as const;
 
   return (
     <>
-      <ButtonGroup active={activeTechnique} font={slugLatin} onSelect={setActiveTechnique} />
+      <ButtonGroup active={activeFormat} font={slugLatin} onSelect={setActiveFormat} />
       <group name="world-text">
-        {fonts.map(({ font, icon, technique }) => (
-          <Activity key={technique} mode={activeTechnique === technique ? 'visible' : 'hidden'}>
+        {fonts.map(({ font, icon, format }) => (
+          <Activity key={format} mode={activeFormat === format ? 'visible' : 'hidden'}>
             {/* A nested Text is an inline run: it inherits the paragraph's font and text style unless it
                 overrides them, and carries no transform of its own because it is not an object in the scene. */}
             <Text
               constraints={{ width: { mode: 'exact', size: viewport.width } }}
               font={font}
               layout={{ align: 'center', wrap: 'none' }}
-              name={`font-${technique}`}
+              name={`font-${format}`}
               position={[-viewport.width / 2, 32, 0]}
               style={{ color: '#f4f7ff', fontSize: 64, lineHeight: 1 }}
             >
               Hello world{' '}
-              <Text font={icon} style={{ color: COLORS[technique] }}>
+              <Text font={icon} style={{ color: COLORS[format] }}>
                 {WORLD_ICON}
               </Text>
             </Text>
@@ -81,9 +80,9 @@ export function App() {
 }
 
 interface ButtonGroupProps {
-  active: Technique;
+  active: RasterFormatName;
   font: Font<typeof bitmap | typeof msdf | typeof slug>;
-  onSelect: (technique: Technique) => void;
+  onSelect: (format: RasterFormatName) => void;
   gap?: number;
   padding?: number;
 }
@@ -96,15 +95,15 @@ function ButtonGroup({ active, font, onSelect, gap = 128, padding = 48 }: Button
   return (
     // TextGroup can be used to hint text instances to batch.
     // The planner will attempt to optimize rendering, but not all text can be batched into a single draw.
-    <TextGroup name="technique-controls" position={[0, top, 0]}>
-      {TECHNIQUES.map((technique, index) => (
+    <TextGroup name="format-controls" position={[0, top, 0]}>
+      {RASTER_FORMATS.map((format, index) => (
         <Button
-          active={active === technique}
+          active={active === format}
           font={font}
-          key={technique}
-          onClick={() => onSelect(technique)}
-          position={[(index - (TECHNIQUES.length - 1) / 2) * gap, 0, 0]}
-          technique={technique}
+          format={format}
+          key={format}
+          onClick={() => onSelect(format)}
+          position={[(index - (RASTER_FORMATS.length - 1) / 2) * gap, 0, 0]}
         />
       ))}
     </TextGroup>
@@ -116,17 +115,17 @@ interface ButtonProps {
   font: Font<typeof bitmap | typeof msdf | typeof slug>;
   onClick: () => void;
   position: [number, number, number];
-  technique: Technique;
+  format: RasterFormatName;
   height?: number;
   labelSize?: number;
   width?: number;
 }
 
 /** Mesh based button that includes a Text node */
-function Button({ active, font, onClick, position, technique, height = 44, labelSize = 16, width = 112 }: ButtonProps) {
+function Button({ active, font, format, onClick, position, height = 44, labelSize = 16, width = 112 }: ButtonProps) {
   const [hovered, setHovered] = useState(false);
 
-  const color = COLORS[technique];
+  const color = COLORS[format];
   const background = active ? '#1a3a56' : hovered ? '#172536' : '#101621';
 
   return (
@@ -167,7 +166,7 @@ function Button({ active, font, onClick, position, technique, height = 44, label
           lineHeight: height / labelSize,
         }}
       >
-        {technique.toUpperCase()}
+        {format.toUpperCase()}
       </Text>
     </group>
   );

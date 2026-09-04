@@ -1,5 +1,5 @@
 import type { ParagraphSpan } from './formatted-text.js';
-import type { AnyRasterTechnique } from './raster-technique.js';
+import type { RasterFormatMetadata } from './config/raster-format.js';
 import type { AxisConstraint, Constraints, ParagraphLayout, TextStyle } from './text-properties.js';
 import type {
   PlannerConstraint,
@@ -7,15 +7,14 @@ import type {
   PlannerFrameLimits,
   PlannerRegion,
   PlannerStyleValue,
-} from './core/frame-wire.js';
-import type { BackendIdFactory, ParagraphId, StyleId } from './core/render-policy.js';
+} from './internal/frame-wire.js';
+import type { HandleIdFactory, ParagraphId, StyleId } from './internal/glyph-id.js';
 
 /**
- * The single implementation of the paragraph-to-engine encodings shared by every host:
- * the Three.js batch binding and the framework-neutral `Paragraph` both compile
- * constraints, regions, styles, and limits through these functions, and both derive
- * incremental text edits through the mutation helpers, so one host cannot drift from
- * another in what the engine is asked to flow.
+ * The single implementation of the Text-to-engine encodings shared by every host.
+ * Every GlyphConfig integration compiles constraints, regions, styles, limits, and
+ * incremental text edits through these functions so hosts cannot drift in what they
+ * ask the engine to flow.
  */
 
 export function normalizedColumns(
@@ -47,7 +46,7 @@ export function normalizedColumns(
 }
 
 export function compileEngineGeometry(
-  id: BackendIdFactory,
+  id: HandleIdFactory,
   paragraphId: ParagraphId,
   transformIndex: number,
   geometryRevision: number,
@@ -118,7 +117,7 @@ export function compileEngineGeometry(
   };
 }
 
-export function engineStyleId(id: BackendIdFactory, paragraphId: ParagraphId, index: number): StyleId {
+export function engineStyleId(id: HandleIdFactory, paragraphId: ParagraphId, index: number): StyleId {
   if (!Number.isSafeInteger(index) || index < 1) throw new RangeError('style index must be a positive integer');
   return id.style(`paragraph/${paragraphId}/style/${index}`);
 }
@@ -198,15 +197,15 @@ export function engineStyleValue(
 /** @internal Reject effects at the public call that accepted a style. */
 export function assertTextEffectsSupported(
   style: TextStyle,
-  techniques: readonly AnyRasterTechnique[],
+  formats: readonly RasterFormatMetadata[],
   label: string,
 ): void {
-  for (const technique of techniques) {
-    if (style.outline !== undefined && !technique.textEffects.includes('outline')) {
-      throw new TypeError(`raster technique ${technique.id} does not support outline in ${label}`);
+  for (const format of formats) {
+    if (style.outline !== undefined && !format.textEffects.includes('outline')) {
+      throw new TypeError(`raster format ${format.id} does not support outline in ${label}`);
     }
-    if (style.shadow !== undefined && !technique.textEffects.includes('shadow')) {
-      throw new TypeError(`raster technique ${technique.id} does not support shadow in ${label}`);
+    if (style.shadow !== undefined && !format.textEffects.includes('shadow')) {
+      throw new TypeError(`raster format ${format.id} does not support shadow in ${label}`);
     }
   }
 }
@@ -237,7 +236,7 @@ function engineDecoration(decoration: NonNullable<TextStyle['decoration']>, styl
  * costing the paragraph. Style ids stay contiguous from the emitted order because the removal pass
  * that trims a shrunken style list counts on it.
  */
-export function styledSpans<Span extends ParagraphSpan<AnyRasterTechnique>>(
+export function styledSpans<Span extends ParagraphSpan<RasterFormatMetadata>>(
   spans: readonly Span[] | undefined,
 ): readonly Span[] {
   // Only a collapsed span is dropped. An INVERTED span is a caller arithmetic error whose owner

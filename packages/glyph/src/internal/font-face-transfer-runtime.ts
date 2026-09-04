@@ -1,0 +1,113 @@
+import type { Font, RegisteredFont } from '../font.js';
+import type { SerializedFontFace, SerializedFontFaceRaster } from '../font-face-transfer.js';
+import { FontRegistry } from '../loader.js';
+import { immutableFontResources } from '../loaded-font.js';
+import type { RasterFormatMetadata } from '../config/raster-format.js';
+import { freezeSerializedFontFace } from './font-face-transfer.js';
+import { getRegisteredFontData } from './registered-font.js';
+
+export interface SerializedFontFaceLoadOptions {
+  readonly maxArtifactBytes?: number;
+  readonly maxBufferViews?: number;
+  readonly maxRasters?: number;
+}
+
+/** Copy loaded variants into inert cross-realm data only when clone() explicitly asks for it. */
+export function snapshotSerializedFontFace(
+  font: RegisteredFont,
+  fonts: readonly Font<RasterFormatMetadata>[],
+): SerializedFontFace {
+  const registered = getRegisteredFontData(font);
+  const rasters: SerializedFontFaceRaster[] = [];
+  const seen = new Set<string>();
+  const resourceIdentities = new Set<string>();
+  for (const variant of fonts) {
+    const fontResources = immutableFontResources(variant);
+    const rasterKey = fontResources.raster.rasterKey;
+    if (seen.has(rasterKey)) continue;
+    seen.add(rasterKey);
+    const source = registered.rasterSources.get(rasterKey)!;
+    for (const identity of source.resourceIdentities) resourceIdentities.add(identity);
+    const resources = Object.freeze(
+      [...source.resourceIdentities].map((identity) => {
+        const resource = registered.resources.get(identity)!;
+        return Object.freeze({
+          artifactHash: resource.artifactHash,
+          byteLength: resource.byteLength,
+        });
+      }),
+    );
+    rasters.push(
+      Object.freeze({
+        rasterKey,
+        kind: source.reference.kind,
+        extension: source.reference.extension,
+        version: source.reference.version,
+        ...(source.artifactBytes === undefined
+          ? {}
+          : {
+              data: copyBuffer(source.artifactBytes),
+              artifactHash: source.artifactHash!,
+            }),
+        resources,
+      }),
+    );
+  }
+  return freezeSerializedFontFace({
+    kind: 'glyph-font-face',
+    version: 1,
+    data: copyBuffer(registered.artifactBytes),
+    artifactHash: registered.artifactHash,
+    rasters: Object.freeze(rasters),
+    resources: Object.freeze(
+      [...resourceIdentities].map((identity) => {
+        const resource = registered.resources.get(identity)!;
+        return Object.freeze({
+          artifactHash: resource.artifactHash,
+          byteLength: resource.byteLength,
+          data: copyBuffer(resource.bytes),
+        });
+      }),
+    ),
+  });
+}
+
+/** Reconstruct a transferred source only when a receiving FontFace is actually loaded. */
+export async function loadSerializedFontFaceSource(
+  serialized: SerializedFontFace,
+  options: SerializedFontFaceLoadOptions,
+  signal: AbortSignal | undefined,
+): Promise<RegisteredFont> {
+  const registry = new FontRegistry(options);
+  let font: RegisteredFont | undefined;
+  try {
+    font = await registry._registerAsset(new Uint8Array(serialized.data), {}, 'adopt');
+    signal?.throwIfAborted();
+    const registered = getRegisteredFontData(font);
+    for (const raster of serialized.rasters) {
+      if (raster.data !== undefined) {
+        await registry._attachRaster(font, new Uint8Array(raster.data), {}, 'adopt');
+      }
+      signal?.throwIfAborted();
+    }
+    signal?.throwIfAborted();
+    for (const resource of serialized.resources) {
+      registered.resources.set(
+        `${resource.artifactHash}:${resource.byteLength}`,
+        Object.freeze({
+          artifactHash: resource.artifactHash,
+          byteLength: resource.byteLength,
+          bytes: new Uint8Array(resource.data),
+        }),
+      );
+    }
+    return font;
+  } catch (error) {
+    font?.dispose();
+    throw error;
+  }
+}
+
+function copyBuffer(value: ArrayBufferView): ArrayBuffer {
+  return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice().buffer;
+}

@@ -1,5 +1,6 @@
-import { loadFont } from '@pmndrs/glyph';
 import { bitmap } from '@pmndrs/glyph/raster/bitmap';
+
+import { loadBenchmarkFont as loadFont } from '../../../workloads/font-assets/library';
 
 import canonicalFontUrl from '../../../../fixtures/fonts/inter-v4.1/Inter-Regular.ttf?url';
 import canonicalFontManifest from '../../../../fixtures/fonts/inter-v4.1/manifest.json' with { type: 'json' };
@@ -33,10 +34,7 @@ export function createFontLoaderWorkerConformanceTarget(): BenchmarkTarget {
       let font;
       try {
         const { bakeFontInWorker } = await import('@pmndrs/glyph/runtime-bake');
-        font = await loadFont(
-          { source: canonicalFontUrl, runtimeBake: bakeFontInWorker },
-          { technique: bitmap, options: { strikes: [16] } },
-        );
+        font = await loadFont({ source: canonicalFontUrl, runtimeBake: bakeFontInWorker }, bitmap({ strikes: [16] }));
       } catch (error) {
         const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : '';
         throw new Error(

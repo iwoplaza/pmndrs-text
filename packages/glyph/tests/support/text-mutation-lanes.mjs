@@ -19,11 +19,13 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { gunzipSync } from 'node:zlib';
 
-import { FontLoader, Text, TextGroup } from '@pmndrs/glyph/three';
+import { glyph, span, txt } from '@pmndrs/glyph';
+import { loadFont } from '../../dist/loader.js';
+import { ThreeConfig } from '@pmndrs/glyph/three';
 import * as THREE from 'three/webgpu';
 
-// The identity lane is named by the policy contract that packs it, not by a literal here.
-import { STABLE_GLYPH_BUFFER_ID, TRANSFORM_BUFFER_ID } from '../../dist/three/render-policy.js';
+// The identity lane is named by the codec contract that packs it, not by a literal here.
+import { STABLE_GLYPH_BUFFER_ID, TRANSFORM_BUFFER_ID } from '../../dist/three/codec.js';
 
 export const IDENTITY_LANE = `_pmndrsGlyph_${STABLE_GLYPH_BUFFER_ID}`;
 const TRANSFORM_INDEX_LANE = `_pmndrsGlyph_${TRANSFORM_BUFFER_ID}`;
@@ -33,6 +35,9 @@ export const fixtures = new URL('../../../../apps/benchmarks/fixtures/rendering/
 
 /** Node's default 30s per-test budget cannot cover baking a font plus a full edit sequence. */
 export const timeout = 5 * 60 * 1_000;
+let nextMountedHandle = 1;
+
+await glyph.init();
 
 /**
  * One immutable font per fixture, for the lifetime of a test file.
@@ -42,7 +47,6 @@ export const timeout = 5 * 60 * 1_000;
  */
 export function createFontCache(specs) {
   const loaded = new Map();
-  const loader = new FontLoader();
   return {
     async load(name) {
       const cached = loaded.get(name);
@@ -50,62 +54,83 @@ export function createFontCache(specs) {
       const spec = specs[name];
       if (spec === undefined) throw new Error(`no fixture named ${name}`);
       const bytes = await readFile(new URL(spec.file, fixtures));
-      const font = await loader.loadAsync({
-        input: {
+      const font = await loadFont(
+        {
           baked: { bytes: spec.file.endsWith('.gz') ? gunzipSync(bytes) : bytes, ownership: 'copy' },
         },
-        raster: spec.raster,
-      });
+        spec.raster,
+      );
       loaded.set(name, font);
       return font;
     },
     dispose() {
       for (const font of loaded.values()) font.dispose();
       loaded.clear();
-      loader.dispose();
     },
   };
 }
 
 /** Build a group holding one Text node per authored paragraph. */
 export function mount(font, paragraphs) {
+  const handle = glyph.handle(`three:test:mutation-lanes:${String(nextMountedHandle)}`, ThreeConfig);
+  nextMountedHandle += 1;
   const scene = new THREE.Scene();
-  const group = new TextGroup({ batching: 'group' });
+  const group = handle.createTextGroup();
   scene.add(group);
   const nodes = paragraphs.map(({ position, properties }) => {
-    const node = new Text({ font, ...properties });
+    const node = handle.createText({ font, ...structuralProperties(properties) });
     if (position !== undefined) node.position.set(...position);
     group.add(node);
     return node;
   });
   scene.updateMatrixWorld(true);
-  return { group, nodes, scene };
+  return { group, handle, nodes, scene };
 }
 
 export function unmount(mounted) {
   for (const node of mounted.nodes) node.dispose();
   mounted.group.dispose();
+  mounted.handle.dispose();
 }
 
 /** Re-author every node in a mounted scene and re-synchronize. */
 export function edit(mounted, font, paragraphs) {
   for (const [index, { properties }] of paragraphs.entries()) {
-    mounted.nodes[index].set({ font, ...properties });
+    mounted.nodes[index].set({ font, ...structuralProperties(properties) });
   }
   mounted.scene.updateMatrixWorld(true);
+}
+
+/** Translate test-corpus range records into structural public input before touching Text. */
+function structuralProperties(properties) {
+  const { spans, ...rest } = properties;
+  if (!Array.isArray(spans) || spans.length === 0) return rest;
+  const source = properties.text;
+  if (typeof source !== 'string') throw new TypeError('mutation-lane span fixtures require string text');
+  const values = [];
+  let cursor = 0;
+  for (const range of spans) {
+    if (range.start > cursor) values.push(source.slice(cursor, range.start));
+    values.push(span(range.style)`${source.slice(range.start, range.end)}`);
+    cursor = range.end;
+  }
+  if (cursor < source.length) values.push(source.slice(cursor));
+  const strings = Array.from({ length: values.length + 1 }, () => '');
+  strings.raw = strings;
+  return { ...rest, text: txt(strings, ...values) };
 }
 
 /**
  * Read every lane a scene exposes, engine-side and GPU-side.
  *
- * Every draw in a group shares one retained buffer per policy lane and addresses its own run
+ * Every draw in a group shares one retained buffer per codec lane and addresses its own run
  * through `pmndrsGlyphRunStart`, so a lane must be read from `start` rather than from the head of
  * the array. Only the run's own `instanceCount` records are read: capacity beyond it is allowed to
  * hold anything, and asserting it would fail on legal slack rather than on a defect.
  */
 export function lanes(mounted) {
   const draws = [];
-  mounted.group.traverse((object) => {
+  mounted.scene.traverse((object) => {
     if (object.userData.pmndrsGlyphRunStart === undefined) return;
     const geometry = object.geometry;
     if (geometry === undefined) return;

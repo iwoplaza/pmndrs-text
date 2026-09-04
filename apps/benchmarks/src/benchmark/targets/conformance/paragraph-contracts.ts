@@ -1,14 +1,14 @@
 import {
-  createParagraph,
   type Constraints,
   type Font,
-  type Paragraph,
   type ParagraphLayout,
   type GlyphLayoutInspection,
   type TextStyle,
 } from '@pmndrs/glyph';
-import { bitmap } from '@pmndrs/glyph/three/bitmap';
-import { FontLoader, Text, TextGroup } from '@pmndrs/glyph/three';
+import { bitmap } from '@pmndrs/glyph/raster/bitmap';
+import type { Text } from '@pmndrs/glyph/three';
+
+import { loadBenchmarkFont as loadFont } from '../../../workloads/font-assets/library';
 import * as THREE from 'three/webgpu';
 
 import amiriFontUrl from '../../../../fixtures/rendering/amiri-bitmap-16.font.glb?url';
@@ -21,6 +21,7 @@ import { exactValue } from '../../exact-value';
 import { paragraphCjkCoverageText } from '../../paragraph-contract-corpus';
 import { hashParagraphLayouts, paragraphLayoutBytes, paragraphLayoutContract } from '../../paragraph-layout-digest';
 import { createUikitLayoutFixture, YogaMeasureMode } from '../../uikit-layout-fixture';
+import { createBenchmarkThreeRoot, disposeBenchmarkThreeRoot } from '../../../three-root';
 
 type BitmapFont = Font<typeof bitmap>;
 
@@ -95,7 +96,6 @@ type State =
   | { readonly kind: 'empty' }
   | {
       readonly kind: 'ready';
-      readonly loader: FontLoader;
       readonly inter: BitmapFont;
       readonly amiri: BitmapFont;
       readonly cjk: BitmapFont;
@@ -115,18 +115,14 @@ export function createParagraphContractsConformanceTarget(): BenchmarkTarget {
     status: () => 'ready',
     load: async (_controls, context) => {
       if (state.kind === 'ready') return;
-      const loader = new FontLoader(new THREE.LoadingManager());
       const fonts: BitmapFont[] = [];
       try {
         const load = (url: string, coverage?: string) =>
-          loader.loadAsync({
-            input: { baked: url },
-            raster: {
-              technique: bitmap,
-              options: { strikes: [16], ...(coverage === undefined ? {} : { coverage: { text: coverage } }) },
-            },
-            ...(context?.signal === undefined ? {} : { signal: context.signal }),
-          });
+          loadFont(
+            { baked: url },
+            bitmap({ strikes: [16], ...(coverage === undefined ? {} : { coverage: { text: coverage } }) }),
+            context?.signal === undefined ? {} : { signal: context.signal },
+          );
         const loaded = await Promise.all([
           load(interFontUrl),
           load(amiriFontUrl),
@@ -137,10 +133,9 @@ export function createParagraphContractsConformanceTarget(): BenchmarkTarget {
         if (inter === undefined || amiri === undefined || cjk === undefined) {
           throw new Error('paragraph contract fonts did not load');
         }
-        state = { kind: 'ready', loader, inter, amiri, cjk };
+        state = { kind: 'ready', inter, amiri, cjk };
       } catch (error) {
         for (const font of fonts) font.dispose();
-        loader.dispose();
         throw error;
       }
     },
@@ -156,13 +151,15 @@ export function createParagraphContractsConformanceTarget(): BenchmarkTarget {
       ready.inter.dispose();
       ready.amiri.dispose();
       ready.cjk.dispose();
-      ready.loader.dispose();
     },
   };
 }
 
 async function runContracts(state: Extract<State, { readonly kind: 'ready' }>, signal: AbortSignal | undefined) {
-  const group = new TextGroup({ capacity: { size: 4_096, policy: 'grow' } });
+  const root = createBenchmarkThreeRoot('paragraph-contracts', { capacity: { size: 4_096, policy: 'grow' } });
+  const group = root.createTextGroup();
+  const scene = new THREE.Scene();
+  scene.add(group);
   const texts: Text<typeof bitmap>[] = [];
   const expected: Array<{ readonly id: string; readonly golden: LayoutGolden; readonly full: boolean }> = [];
   const add = (
@@ -174,7 +171,7 @@ async function runContracts(state: Extract<State, { readonly kind: 'ready' }>, s
     golden: LayoutGolden,
     full: boolean,
   ) => {
-    const value = new Text({
+    const value = root.createText({
       font,
       text,
       style,
@@ -208,10 +205,10 @@ async function runContracts(state: Extract<State, { readonly kind: 'ready' }>, s
     }
   }
 
-  let uikitParagraph: Paragraph<typeof bitmap> | undefined;
+  let uikitText: Text<typeof bitmap> | undefined;
   try {
     signal?.throwIfAborted();
-    group.updateMatrixWorld(true);
+    scene.updateMatrixWorld(true);
     if (group.error !== undefined) throw group.error;
     const layouts = texts.map((text, index) => {
       const layout = text.glyphs();
@@ -222,16 +219,15 @@ async function runContracts(state: Extract<State, { readonly kind: 'ready' }>, s
       return layout;
     });
 
-    // The uikit seam is exercised through the real framework-neutral Paragraph: no scene
-    // graph, no adapter. Identical retained goldens prove the Paragraph route agrees with
-    // the Text route the contract was generated through.
-    uikitParagraph = await createParagraph({
+    // Yoga exercises the same explicit one-Text query path available to every Three Text.
+    // The Text remains detached: no scene traversal, draw publication, or renderer resource exists.
+    uikitText = root.createText({
       font: state.inter,
       text: bidiContract.uikit.input.text,
       style: bidiContract.uikit.input.style,
       layout: layoutOnly(bidiContract.uikit.policy),
     });
-    const uikit = createUikitLayoutFixture(uikitParagraph, layoutOnly(bidiContract.uikit.policy));
+    const uikit = createUikitLayoutFixture(uikitText);
     const custom = uikit.customLayouting();
     assertObject(
       'uikit.customLayouting',
@@ -283,9 +279,10 @@ async function runContracts(state: Extract<State, { readonly kind: 'ready' }>, s
       },
     };
   } finally {
-    uikitParagraph?.dispose();
+    uikitText?.dispose();
     for (const text of texts) text.dispose();
     group.dispose();
+    disposeBenchmarkThreeRoot(root);
   }
 }
 

@@ -1,10 +1,7 @@
-import {
-  assertPortableResource,
-  type PortableGeometryPayload,
-  type TechniqueGeometryDeclaration,
-} from '@pmndrs/glyph/core';
+import type { PortableGeometryPayload, TechniqueGeometryDeclaration } from '@pmndrs/glyph';
+import { assertPortableResource } from '@pmndrs/glyph/config/resources';
 
-/** The technique's small indexed GLB-like unit quad. */
+/** The raster format's small indexed GLB-like unit quad. */
 const bytes = new Uint8Array(92);
 bytes.set(new Uint8Array(new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]).buffer), 0);
 bytes.set(new Uint8Array(new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]).buffer), 48);

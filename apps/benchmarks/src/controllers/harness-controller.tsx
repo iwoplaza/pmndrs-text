@@ -54,7 +54,7 @@ import {
   type HarnessLayout,
   type HarnessLocation,
   type HarnessMode,
-  type RasterTechnique,
+  type RasterFormatName,
 } from '../benchmark/url-state';
 import type { ConformanceView } from '../components/render-controls';
 import { RuntimeControls } from '../components/runtime-controls';
@@ -64,6 +64,7 @@ import { isBenchmarkWorkloadId, type BenchmarkWorkloadId } from '../workloads/ca
 import { liveSceneAssetResource, loadBenchmarkFontAssets } from '../surfaces/benchmark/scene-preload';
 import { PersistentHarnessLayout } from '../surfaces/harness/persistent-layout';
 import { Scene, SceneSuspenseFallback } from '../surfaces/harness/scene';
+import { SceneErrorBoundary } from '../surfaces/harness/scene-error-boundary';
 import { useLocation } from 'wouter';
 
 type RunExclusiveJob = <T>(job: PersistentRenderJob<T>, signal?: AbortSignal) => Promise<Awaited<T>>;
@@ -78,7 +79,7 @@ const PRESENTATION_FONT_FIXTURES = [
 ] as const satisfies readonly BenchmarkFontFixture[];
 
 async function preloadPresentationAssets(
-  technique: RasterTechnique,
+  technique: RasterFormatName,
   delivery: FontDelivery,
   selectedFont: BenchmarkFontFixture,
   signal: AbortSignal,
@@ -169,7 +170,7 @@ function useHarnessController(routeLayout: HarnessLayout): ReactNode {
 
   const workload = workloadById(location.mode, location.workload);
   const fontFixture = location.fontFixture;
-  const workloadTechnique = workload.techniques[location.technique];
+  const workloadFormat = workload.formats[location.technique];
   const showcaseFrame = advancedShapingFrame(showcaseState);
   const activeFontFixture: BenchmarkFontFixture =
     location.workload === 'advanced-shaping'
@@ -177,7 +178,7 @@ function useHarnessController(routeLayout: HarnessLayout): ReactNode {
       : location.workload === 'zoom-text'
         ? 'inter'
         : fontFixture;
-  const available = workloadTechnique.kind === 'ready';
+  const available = workloadFormat.kind === 'ready';
   const backendAvailable = location.backend !== 'webgpu' || environment.webgpu;
   const presentationMode = location.layout === 'presentation' && location.mode === 'benchmark';
 
@@ -336,10 +337,10 @@ function useHarnessController(routeLayout: HarnessLayout): ReactNode {
     });
   }
 
-  function selectTechnique(technique: RasterTechnique): void {
+  function selectFormat(technique: RasterFormatName): void {
     const currentWorkload = workloadById(location.mode, location.workload);
     const selectedWorkload =
-      currentWorkload.techniques[technique].kind === 'ready'
+      currentWorkload.formats[technique].kind === 'ready'
         ? currentWorkload.id
         : location.mode === 'benchmark'
           ? 'benchmark-ipsum'
@@ -661,42 +662,51 @@ function useHarnessController(routeLayout: HarnessLayout): ReactNode {
     />
   );
 
-  const liveTechniqueComparison = location.mode === 'conformance' && location.workload === 'mtsdf-slug-compare';
-  const actionEligible = available && backendAvailable && !isPending && !liveTechniqueComparison;
+  const liveFormatComparison = location.mode === 'conformance' && location.workload === 'mtsdf-slug-compare';
+  const actionEligible = available && backendAvailable && !isPending && !liveFormatComparison;
 
-  const scene = (
-    <Suspense fallback={<SceneSuspenseFallback technique={location.technique} />}>
-      <Scene
-        activeFontFixture={activeFontFixture}
-        fontFixture={fontFixture}
-        dpr={dpr}
-        conformanceView={conformanceView}
-        comparisonText={comparisonText}
-        error={error}
-        event={event}
-        liveCapture={liveCapture}
-        location={location}
-        demoMode={presentationPlaying}
-        presentation={presentationMode ? 'presentation' : 'main'}
-        presentationPreset={presentationPreset}
-        activityWorkloads={activityWorkloads}
-        summary={summary}
-        showcaseFrame={showcaseFrame}
-        onConformancePan={(deltaXPercent, deltaYPercent) =>
-          setConformanceView((view) => ({
-            ...view,
-            panXPercent: view.panXPercent + deltaXPercent,
-            panYPercent: view.panYPercent + deltaYPercent,
-          }))
-        }
-        onConformanceZoom={(zoom) => setConformanceView((view) => ({ ...view, zoom }))}
-        onLiveStats={publishLiveStats}
-      />
-    </Suspense>
-  );
   const reportRendererError = (caught: unknown): void => {
     setError(caught instanceof Error ? caught.message : String(caught));
   };
+  const sceneIdentity = [
+    location.backend,
+    location.delivery,
+    location.technique,
+    activeFontFixture,
+    location.workload,
+  ].join(':');
+  const scene = (
+    <SceneErrorBoundary identity={sceneIdentity} technique={location.technique} onError={reportRendererError}>
+      <Suspense fallback={<SceneSuspenseFallback technique={location.technique} />}>
+        <Scene
+          activeFontFixture={activeFontFixture}
+          fontFixture={fontFixture}
+          dpr={dpr}
+          conformanceView={conformanceView}
+          comparisonText={comparisonText}
+          error={error}
+          event={event}
+          liveCapture={liveCapture}
+          location={location}
+          demoMode={presentationPlaying}
+          presentation={presentationMode ? 'presentation' : 'main'}
+          presentationPreset={presentationPreset}
+          activityWorkloads={activityWorkloads}
+          summary={summary}
+          showcaseFrame={showcaseFrame}
+          onConformancePan={(deltaXPercent, deltaYPercent) =>
+            setConformanceView((view) => ({
+              ...view,
+              panXPercent: view.panXPercent + deltaXPercent,
+              panYPercent: view.panYPercent + deltaYPercent,
+            }))
+          }
+          onConformanceZoom={(zoom) => setConformanceView((view) => ({ ...view, zoom }))}
+          onLiveStats={publishLiveStats}
+        />
+      </Suspense>
+    </SceneErrorBoundary>
+  );
 
   return (
     <PersistentHarnessLayout
@@ -709,7 +719,7 @@ function useHarnessController(routeLayout: HarnessLayout): ReactNode {
       fontNoticesOpen={fontNoticesOpen}
       isPending={isPending}
       liveCapture={liveCapture}
-      liveTechniqueComparison={liveTechniqueComparison}
+      liveFormatComparison={liveFormatComparison}
       location={location}
       phone={phone}
       presentationPlaying={presentationPlaying}
@@ -725,7 +735,7 @@ function useHarnessController(routeLayout: HarnessLayout): ReactNode {
       onLocation={setLocation}
       onMode={selectMode}
       onRendererError={reportRendererError}
-      onTechnique={selectTechnique}
+      onFormat={selectFormat}
       onWorkloadPanelOpen={setWorkloadPanelOpen}
     />
   );

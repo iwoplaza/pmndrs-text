@@ -2,7 +2,6 @@ export type {
   BakeProgress,
   BakeProgressListener,
   BakeProgressPhase,
-  AnyRasterBakerModule,
   BakeArtifact,
   RasterBakeArtifact,
   RasterBakeDescriptorOf,
@@ -18,22 +17,183 @@ export type {
   FontPayloadReport,
   SerializedBakeError,
 } from './bake.js';
-export { defineRasterBaker, rasterBake } from './bake.js';
-
+export { glyph, type Glyph } from './glyph.js';
+export { GlyphError, type GlyphErrorCode } from './glyph-error.js';
+export {
+  GlyphEngineStatusError,
+  glyphEngineStatusErrorDetails,
+  type GlyphEngineFault,
+  type GlyphEngineStatusCode,
+  type GlyphEngineStatusDetails,
+} from './engine-error.js';
 export type {
-  AnyFontToken,
-  BakedFontSource,
-  Font,
-  FontBytesInput,
-  FontInput,
-  FontInputOf,
-  FontMetrics,
-  RasterDecodeFont,
-  FontRasterTechniqueOf,
-  FontSourceOverride,
-  FontToken,
-} from './font.js';
-export { defineFont } from './font.js';
+  GlyphBindingSet,
+  BorrowedCommandSequence,
+  BatchIdentity,
+  BufferPatch,
+  BufferUpdate,
+  ClipIdentity,
+  CommandBufferView,
+  Codec,
+  DisplayList,
+  DisplayListBatch,
+  DisplayListChanges,
+  DisplayListChild,
+  DisplayListInstanceSpan,
+  DisplayListPhase,
+  DisplayListRootInstance,
+  DisplayListTransform,
+  EncodeContext,
+  GlyphBatchBindingInput,
+  GlyphBufferDeclaration,
+  GlyphBufferBindingInput,
+  GlyphCommandCapacity,
+  GlyphConfig,
+  GlyphConfigBindings,
+  GlyphConfigFor,
+  GlyphConfigHandle,
+  GlyphCommandLimits,
+  GlyphCopy,
+  GlyphCopyDestination,
+  GlyphCopyRequest,
+  GlyphDrawBindingInput,
+  GlyphFontConfig,
+  GlyphFormattedText,
+  GlyphHandle,
+  GlyphHandleFonts,
+  GlyphInstanceKind,
+  GlyphInstanceSpanBindingInput,
+  GlyphNamedRoot,
+  PreparedRendererCommit,
+  GlyphRenderer,
+  GlyphRoot,
+  GlyphRootCreateOptions,
+  GlyphRootInstanceBindingInput,
+  GlyphRootRecipe,
+  GlyphRootRecipeContext,
+  GlyphRootServices,
+  GlyphShapeOptions,
+  GlyphSchema,
+  GlyphTextSpan,
+  GlyphTextController,
+  GlyphTextState,
+  InstanceIdentity,
+  InstanceSpanIdentity,
+  ResourceLease,
+  ResourceUpdate,
+  RendererContext,
+  ResolveContext,
+  Retirement,
+  SelectedGlyphConfig,
+  SemanticIdentity,
+  TransformUpdate,
+} from './config/glyph.js';
+export type {
+  CodecAllocationMode,
+  CodecBuffer,
+  CodecBufferId,
+  CodecCapability,
+  CodecCapabilitySet,
+  CodecDescriptor,
+  CodecInput,
+  CodecInputScope,
+  CodecOperation,
+  CodecProgram,
+  CodecScalarType,
+  CodecTransformMode,
+  CodecProgramId,
+  CodecIdFactory,
+  CodecResourceId,
+  CodecTechniqueId,
+} from './config/codec.js';
+export type {
+  CodecBufferDeclaration,
+  CodecBufferDeclarations,
+  CodecScalarKind,
+  TechniqueBindingDeclaration,
+  TechniqueBufferResourceDeclaration,
+  TechniqueCustomGeometryKind,
+  TechniqueGeometryCoordinates,
+  TechniqueGeometryDeclaration,
+  TechniqueGeometryKind,
+  TechniqueGeometryResourceDeclaration,
+  TechniqueRenderDeclaration,
+  TechniqueResourceDeclaration,
+  TechniqueResourceDeclarations,
+  TechniqueResourceGroupDeclaration,
+  TechniqueResourceGroupMembers,
+  TechniqueSchema,
+  TechniqueSchemaDeclaration,
+  TechniqueSuppliedGeometryKind,
+  TechniqueTextureArrayResourceDeclaration,
+  TechniqueTextureResourceDeclaration,
+} from './config/schema.js';
+export type {
+  CompiledCodecProgramBody,
+  CodecColorChannels,
+  CodecF32Expressions,
+  CodecF32Value,
+  CodecProgramBuilder,
+  CodecProgramOptions,
+  CodecProgramSemantics,
+  CodecProgramSystemBuffers,
+  CodecU32Expressions,
+  CodecU32Value,
+  TechniqueCodecProgramBuilder,
+  TechniqueCodecStores,
+} from './config/codec-program.js';
+export type {
+  PortableAccessor,
+  PortableBufferPayload,
+  PortableBufferView,
+  PortableComponentType,
+  PortableCustomVertexSemantic,
+  PortableDrawRange,
+  PortableGeometryIndices,
+  PortableGeometryPayload,
+  PortableLeafResource,
+  PortableResource,
+  PortableResourceGroupPayload,
+  PortableResourceKind,
+  PortableTextureArrayPayload,
+  PortableTextureFormat,
+  PortableTexturePayload,
+  PortableTopology,
+  PortableVertexAttribute,
+  PortableVertexInput,
+  PortableVertexSemantic,
+} from './config/resources.js';
+export type {
+  CompiledRasterFont,
+  CompiledRasterFontResource,
+  CompiledRasterFontView,
+  RasterFontBinding,
+  RasterCodec,
+  RasterCodecFontCompiler,
+  RasterCodecFont,
+  RasterCodecBodyFactory,
+  RasterCodecProgramOptions,
+  RasterCodecSystem,
+} from './config/raster.js';
+export type {
+  FontFace,
+  FontFaceConfig,
+  FontFaceDeclaredFormat,
+  FontFaceFormat,
+  FontFaceFormatDeclaration,
+  FontFaceSelection,
+  FontFaceSource,
+  FontFaceRasterOf,
+} from './font-face.js';
+export type {
+  FontFaceTransfer,
+  SerializedFontFace,
+  SerializedFontFaceRaster,
+  SerializedFontFaceResource,
+  SerializedFontFaceResourceIdentity,
+} from './font-face-transfer.js';
+
+export type { Font, FontMetrics, RasterDecodeFont } from './font.js';
 
 export type { FontSlot, LocalGlyphId, RasterKey, Sha256Hex } from './identity.js';
 
@@ -48,26 +208,12 @@ export type {
   ParagraphLayoutSummary,
   ParagraphLineMetrics,
   ParagraphMeasurement,
-  ParagraphMetrics,
 } from './layout.js';
-
-export type { ParagraphOptions, ParagraphUpdate } from './paragraph.js';
-export { createParagraph, Paragraph } from './paragraph.js';
 
 export type { GlyphCaret, GlyphKey } from './glyph-placement.js';
 
-export type {
-  FontLoadDiagnostic,
-  FontLoadOptions,
-  FontLibrary,
-  FontLibraryOptions,
-  FontRasterInputs,
-  Fonts,
-  LoadFontInput,
-  RuntimeFontBake,
-  RuntimeFontBakeRequest,
-} from './loader.js';
-export { createFontLibrary, FontLoadError, loadFont } from './loader.js';
+// Font operations can throw this application-visible error; loader construction remains package-private.
+export { GlyphFontError } from './loader.js';
 
 export type { FontSelection, FontStack } from './loaded-font.js';
 export { createFontStack } from './loaded-font.js';
@@ -116,20 +262,19 @@ export type {
 } from './raster.js';
 
 export type {
-  AnyRasterTechnique,
   RasterDataOf,
   RasterResourceId,
-  RasterTechnique,
-  RasterTechniqueDescriptorOf,
-  RasterTechniqueId,
+  RasterFormat,
+  RasterFormatDescriptorOf,
+  RasterFormatId,
   RasterOptionsOf,
-  RasterTechniqueOptionsOf,
-  RasterTechniqueInput,
-  RasterTechniqueRequest,
-  RasterTechniqueTypesOf,
+  RasterFormatInput,
+  RasterFormatMetadata,
+  RasterFormatRequest,
+  RasterFormatRequestMetadata,
+  RasterFormatTypesOf,
   RasterTextEffect,
-} from './raster-technique.js';
-export { defineRasterResourceId, defineRasterTechnique } from './raster-technique.js';
+} from './config/raster-format.js';
 
 export type { RasterCoverage, RasterUnicodeRange } from './raster-coverage.js';
 

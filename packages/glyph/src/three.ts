@@ -1,28 +1,50 @@
-export type { FormattedText, TextInput } from './formatted-text.js';
 export type { FontSelection } from './loaded-font.js';
 export type { GlyphBufferCapacity, PropertyList } from './text-properties.js';
 export { Constraints, ParagraphLayout, TextStyle } from './text-properties.js';
-export { FontLoader } from './three/font-loader.js';
 export { defineTextMaterial } from './three/material.js';
-export type { ThreeTextGenericMaterialContext, ThreeTextMaterial, ThreeTextMaterialContext } from './three/material.js';
-export { registerThreeRasterPlanProgram, threePolicyAbi } from './three/plan-program-registry.js';
+export { span } from './three/span.js';
 export type {
-  ThreePlanProgramBuffer,
-  ThreePlanProgramMaterialContext,
-  ThreeRasterPlanBufferCapability,
-  ThreeRasterPlanProgram,
-  ThreeRasterPlanVariant,
-} from './three/plan-program-registry.js';
-export type { ThreeFontLoaderOptions, ThreeFontLoadRequest } from './three/font-loader.js';
+  ThreeRootContext,
+  ThreeTextMaterial,
+  ThreeTextMaterialContext,
+  ThreeTextMaterialContextMap,
+} from './three/material.js';
+export { registerThreeRasterProgram, threeCodecAbi } from './three/raster-program.js';
+export type {
+  ThreeRasterProgramBuffer,
+  ThreeRasterMaterialContext,
+  ThreeRasterBufferCapability,
+  ThreeRasterProgram,
+  ThreeRasterVariant,
+} from './three/raster-program.js';
 export { TextFrameError } from './three/frame-error.js';
 export type { TextFrameRejection, TextFrameSubject } from './three/frame-error.js';
 export { Text, TextGroup } from './three/text.js';
+export type { ThreeRoot } from './three/text.js';
+export {
+  ThreeConfig,
+  ThreeFontFormats,
+  defineThreeConfig,
+  type ThreeBatchBinding,
+  type ThreeBindings,
+  type ThreeBufferBinding,
+  type ThreeCodec,
+  type ThreeConfigOptions,
+  type ThreeGlyphConfig,
+  type ThreeHandle,
+  type ThreeInstanceBinding,
+  type ThreeInstanceSpanBinding,
+  type ThreeMaterialBinding,
+  type ThreePortableResource,
+  type ThreeProgramBinding,
+  type ThreeResolvedMaterialBinding,
+  type ThreeResolvedResourceBinding,
+} from './three/handle.js';
 export type {
   StandaloneTextProperties,
   TextCommitState,
   TextGroupOptions,
   TextProperties,
-  TextSpan,
   TextUpdate,
 } from './three/text.js';
 export { Glyphs, localToWorldMatrix, worldToLocalMatrix } from './three/glyphs.js';

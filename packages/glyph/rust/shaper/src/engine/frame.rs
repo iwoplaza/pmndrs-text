@@ -73,7 +73,7 @@ pub(crate) const BASELINE_ALPHABETIC: u8 = 1;
 pub(crate) const BASELINE_TEXT_TOP: u8 = 2;
 pub(crate) const BASELINE_MIDDLE: u8 = 3;
 pub(crate) const BASELINE_TEXT_BOTTOM: u8 = 4;
-pub(crate) const DEFAULT_PLANNER_TEXT_CAPACITY: u32 = 1024;
+pub(crate) const DEFAULT_ROOT_TEXT_CAPACITY: u32 = 1024;
 pub(crate) const SEMANTIC_F32_INLINE_START: u8 = 0;
 pub(crate) const SEMANTIC_F32_BLOCK_START: u8 = 1;
 pub(crate) const SEMANTIC_F32_INLINE_EXTENT: u8 = 2;
@@ -103,11 +103,11 @@ pub(crate) const PARAGRAPH_MUTATION_REMOVE: u8 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct UpdateRequest<'a> {
-    pub planner_id: u32,
+    pub root_id: u32,
     pub expected_engine_revision: u32,
-    pub consumed_plan_revision: u32,
+    pub consumed_revision: u32,
     pub acknowledged_publication_generation: u32,
-    pub policy_handle: u32,
+    pub codec_handle: u32,
     pub capability_set: u32,
     pub semantic_view_mask: u32,
     pub compositing_independent: bool,
@@ -144,26 +144,26 @@ impl UpdateLimits {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct PlannerRevision {
+pub(crate) struct RootRevision {
     pub engine: u32,
-    pub plan: u32,
+    pub root: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PreparedUpdate {
-    pub(super) planner_id: u32,
-    pub(super) previous: PlannerRevision,
-    pub(super) next: PlannerRevision,
+    pub(super) root_id: u32,
+    pub(super) previous: RootRevision,
+    pub(super) next: RootRevision,
     pub(super) required_base_revision: u32,
     pub(super) checkpoint: bool,
-    pub(super) policy_handle: u32,
+    pub(super) codec_handle: u32,
     pub(super) capability_set: u32,
-    pub(super) policy_fingerprint: u64,
+    pub(super) codec_fingerprint: u64,
 }
 
 impl PreparedUpdate {
-    pub(crate) fn planner_id(self) -> u32 {
-        self.planner_id
+    pub(crate) fn root_id(self) -> u32 {
+        self.root_id
     }
 }
 
@@ -173,14 +173,14 @@ impl PreparedUpdate {
 /// the retained plan's speculative transaction; it cannot be committed through this witness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct MeasuredParagraph {
-    pub(super) planner_id: u32,
-    pub(super) revision: PlannerRevision,
+    pub(super) root_id: u32,
+    pub(super) revision: RootRevision,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CommittedUpdate {
-    pub planner_id: u32,
-    pub revision: PlannerRevision,
+    pub root_id: u32,
+    pub revision: RootRevision,
     pub required_base_revision: u32,
     pub checkpoint: bool,
 }

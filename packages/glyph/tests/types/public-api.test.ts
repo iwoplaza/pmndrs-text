@@ -1,15 +1,4 @@
 import {
-  createFontLibrary,
-  defineFont,
-  defineRasterBaker,
-  defineRasterTechnique,
-  loadFont,
-  rasterBake,
-  type AnyRasterTechnique,
-  type FontInputOf,
-  type Font,
-  type FontBytesInput,
-  type FontRasterTechniqueOf,
   type RasterBakeDescriptorOf,
   type RasterBakeRequest,
   type RasterCoverage,
@@ -18,10 +7,13 @@ import {
   type RasterDecodeFont,
   type RasterKindOf,
   type RasterOptionsOf,
+  type RasterFormatMetadata,
   type RasterResourceSource,
   type RasterSource,
   type Sha256Hex,
 } from '../../src/index.js';
+import { defineRasterBaker, rasterBake } from '../../src/bake.js';
+import { defineRasterFormat } from '../../src/config/raster-format.js';
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2 ? true : false;
@@ -45,7 +37,7 @@ interface MsdfResource {
   readonly texture: unknown;
 }
 
-const msdf = defineRasterTechnique({
+const msdf = defineRasterFormat({
   id: 'test.msdf',
   kind: 'msdf',
   extension: 'PMNDRS_font_distance_field',
@@ -63,7 +55,7 @@ const msdf = defineRasterTechnique({
 type _MsdfKind = Expect<Equal<RasterKindOf<typeof msdf>, 'msdf'>>;
 type _MsdfResource = Expect<Equal<RasterDataOf<typeof msdf>, MsdfResource>>;
 
-const configurable = defineRasterTechnique({
+const configurable = defineRasterFormat({
   id: 'studio.configurable-raster',
   kind: 'studio.configurable-raster',
   extension: 'STUDIO_font_configurable',
@@ -79,8 +71,8 @@ const configurable = defineRasterTechnique({
 });
 type _ConfigurableOptions = Expect<Equal<RasterOptionsOf<typeof configurable>, { readonly quality: 'low' | 'high' }>>;
 
-const acceptsExternal: AnyRasterTechnique = configurable;
-void acceptsExternal;
+const metadata: RasterFormatMetadata = configurable;
+void metadata;
 
 declare const decodeFont: RasterDecodeFont;
 declare const slugArtifact: RasterDecodeArtifact<'slug'>;
@@ -94,64 +86,6 @@ slugArtifact.dispose();
 
 // @ts-expect-error An MSDF decoder cannot consume a Slug artifact.
 msdf.decode(decodeFont, slugArtifact);
-
-const titleFont = defineFont('/fonts/Inter-Regular.ttf', msdf);
-type _TitleInput = Expect<Equal<FontInputOf<typeof titleFont>, '/fonts/Inter-Regular.ttf'>>;
-type _TitleRaster = Expect<Equal<FontRasterTechniqueOf<typeof titleFont>, typeof msdf>>;
-const loadedTitle: Promise<Font<typeof msdf>> = loadFont(titleFont);
-void loadedTitle;
-
-const library = createFontLibrary({ maximumEntries: 8 });
-const cachedTitle: Promise<Font<typeof msdf>> = library.loadFont(titleFont);
-void cachedTitle;
-library.clear(titleFont);
-library.dispose();
-
-declare const fontBytes: Uint8Array<ArrayBuffer>;
-const copiedBytes: FontBytesInput = { bytes: fontBytes };
-const transferredBytes: FontBytesInput = { bytes: fontBytes, ownership: 'transfer' };
-void copiedBytes;
-void transferredBytes;
-// @ts-expect-error Byte input is explicit; a bare typed array is not a font location.
-loadFont({ baked: fontBytes }, msdf);
-
-const configuredFont = defineFont('/fonts/Inter-Regular.ttf', {
-  technique: configurable,
-  options: { quality: 'high' },
-});
-void configuredFont;
-
-// @ts-expect-error A configurable raster technique requires its options.
-defineFont('/fonts/Inter-Regular.ttf', configurable);
-// @ts-expect-error A configured raster request cannot omit its options.
-defineFont('/fonts/Inter-Regular.ttf', { technique: configurable });
-// @ts-expect-error Raster package option literals remain package-owned.
-defineFont('/fonts/Inter-Regular.ttf', { technique: configurable, options: { quality: 'ultra' } });
-
-const relocatedFont = defineFont(
-  {
-    source: '/fonts/Inter-Regular.ttf',
-    baked: 'https://cdn.example.com/generated/Inter.font.glb',
-  },
-  msdf,
-);
-type _RelocatedInput = Expect<
-  Equal<
-    FontInputOf<typeof relocatedFont>,
-    {
-      readonly source: '/fonts/Inter-Regular.ttf';
-      readonly baked: 'https://cdn.example.com/generated/Inter.font.glb';
-    }
-  >
->;
-
-void defineFont({ baked: '/fonts/Inter.font.glb' }, msdf);
-declare const sourceUrl: URL;
-void defineFont(sourceUrl, msdf);
-// @ts-expect-error A font input requires either source or baked bytes.
-defineFont({}, msdf);
-// @ts-expect-error An optional forbidden source cannot be supplied as undefined.
-defineFont({ baked: '/fonts/Inter.font.glb', source: undefined }, msdf);
 
 const msdfBaker = defineRasterBaker({
   kind: 'msdf',

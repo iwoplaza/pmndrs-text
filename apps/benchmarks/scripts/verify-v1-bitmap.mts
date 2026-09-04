@@ -13,6 +13,8 @@ import { launchProjectChromium } from './support/project-chromium.mts';
 
 interface RasterProofResult {
   readonly backend: 'webgpu' | 'webgl2';
+  readonly decorationPixels: number;
+  readonly decorationRecords: number;
   readonly drawCount: number;
   readonly glyphCount: number;
   readonly litPixels: number;
@@ -65,6 +67,11 @@ try {
     });
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(`http://127.0.0.1:5177/v1-bitmap.html?backend=${expected}`, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(
+      () =>
+        (window as typeof window & { targetV1BitmapReady?: Promise<RasterProofResult> }).targetV1BitmapReady !==
+        undefined,
+    );
     const result = await page.evaluate(
       () => (window as typeof window & { targetV1BitmapReady: Promise<RasterProofResult> }).targetV1BitmapReady,
     );
@@ -72,6 +79,8 @@ try {
     if (result.backend !== expected) throw new Error(`expected ${expected}, received ${result.backend}`);
     if (
       result.drawCount < 3 ||
+      result.decorationPixels < 1 ||
+      result.decorationRecords !== 2 ||
       result.glyphCount !== 16 ||
       result.litPixels < 32 ||
       !result.retainedDraw ||
@@ -95,13 +104,20 @@ try {
     await page.goto(`http://127.0.0.1:5177/v1-mtsdf.html?backend=${expected}`, {
       waitUntil: 'domcontentloaded',
     });
+    await page.waitForFunction(
+      () =>
+        (window as typeof window & { targetV1MtsdfReady?: Promise<RasterProofResult> }).targetV1MtsdfReady !==
+        undefined,
+    );
     const result = await page.evaluate(
       () => (window as typeof window & { targetV1MtsdfReady: Promise<RasterProofResult> }).targetV1MtsdfReady,
     );
     if (errors.length !== 0) throw new Error(`${expected} MTSDF browser errors: ${errors.join(' | ')}`);
     if (result.backend !== expected) throw new Error(`expected ${expected}, received ${result.backend}`);
     if (
-      result.drawCount < 1 ||
+      result.drawCount < 3 ||
+      result.decorationPixels < 1 ||
+      result.decorationRecords !== 2 ||
       result.glyphCount !== 15 ||
       result.litPixels < 32 ||
       !result.retainedDraw ||
@@ -124,13 +140,19 @@ try {
     await page.goto(`http://127.0.0.1:5177/v1-slug.html?backend=${expected}`, {
       waitUntil: 'domcontentloaded',
     });
+    await page.waitForFunction(
+      () =>
+        (window as typeof window & { targetV1SlugReady?: Promise<RasterProofResult> }).targetV1SlugReady !== undefined,
+    );
     const result = await page.evaluate(
       () => (window as typeof window & { targetV1SlugReady: Promise<RasterProofResult> }).targetV1SlugReady,
     );
     if (errors.length !== 0) throw new Error(`${expected} Slug browser errors: ${errors.join(' | ')}`);
     if (result.backend !== expected) throw new Error(`expected ${expected}, received ${result.backend}`);
     if (
-      result.drawCount < 1 ||
+      result.drawCount < 3 ||
+      result.decorationPixels < 1 ||
+      result.decorationRecords !== 2 ||
       result.glyphCount !== 14 ||
       result.litPixels < 32 ||
       !result.retainedDraw ||
@@ -151,6 +173,11 @@ try {
     });
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(`http://127.0.0.1:5177/v1-compose.html?backend=${expected}`, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(
+      () =>
+        (window as typeof window & { targetV1ComposeReady?: Promise<ComposeProofResult> }).targetV1ComposeReady !==
+        undefined,
+    );
     const result = await page.evaluate(
       () => (window as typeof window & { targetV1ComposeReady: Promise<ComposeProofResult> }).targetV1ComposeReady,
     );

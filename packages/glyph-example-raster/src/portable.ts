@@ -1,30 +1,25 @@
-import {
-  defineTechniqueSchema,
-  f32,
-  techniqueProgram,
-  type PolicyBufferId,
-  type RasterPlanProgram,
-  type TechniqueSchema,
-  id,
-} from '@pmndrs/glyph/core';
+import { type CodecBufferId, type RasterCodec, type TechniqueSchema } from '@pmndrs/glyph';
+import { f32, techniqueProgram } from '@pmndrs/glyph/config/codec-program';
+import { id } from '@pmndrs/glyph/config/codec';
+import { defineTechniqueSchema } from '@pmndrs/glyph/config/schema';
 
 import { glyphExampleIndexedQuadGeometry, glyphExampleSuppliedGeometryDeclaration } from './geometry-fixture.js';
 import { glyphExample } from './raster.js';
 
-const GLYPH_EXAMPLE_ORIGIN_BUFFER_ID: PolicyBufferId = id.buffer('glyph-example-raster/origin');
-const GLYPH_EXAMPLE_SIZE_BUFFER_ID: PolicyBufferId = id.buffer('glyph-example-raster/size');
-const GLYPH_EXAMPLE_COLOR_BUFFER_ID: PolicyBufferId = id.buffer('glyph-example-raster/color');
+const GLYPH_EXAMPLE_ORIGIN_BUFFER_ID: CodecBufferId = id.buffer('glyph-example-raster/origin');
+const GLYPH_EXAMPLE_SIZE_BUFFER_ID: CodecBufferId = id.buffer('glyph-example-raster/size');
+const GLYPH_EXAMPLE_COLOR_BUFFER_ID: CodecBufferId = id.buffer('glyph-example-raster/color');
 
 export const glyphExampleSchema: TechniqueSchema<
   {
-    readonly origin: { readonly id: PolicyBufferId; readonly scalar: 'f32'; readonly lanes: readonly ['left', 'top'] };
+    readonly origin: { readonly id: CodecBufferId; readonly scalar: 'f32'; readonly lanes: readonly ['left', 'top'] };
     readonly size: {
-      readonly id: PolicyBufferId;
+      readonly id: CodecBufferId;
       readonly scalar: 'f32';
       readonly lanes: readonly ['widthX', 'heightY'];
     };
     readonly color: {
-      readonly id: PolicyBufferId;
+      readonly id: CodecBufferId;
       readonly scalar: 'f32';
       readonly lanes: readonly ['red', 'green', 'blue', 'alpha'];
     };
@@ -65,11 +60,11 @@ export const glyphExampleSchema: TechniqueSchema<
 
 const GLYPH_EXAMPLE_PROGRAM_VARIANT = 0;
 
-export const glyphExamplePlanProgramDefinition: RasterPlanProgram<typeof glyphExample, typeof glyphExampleSchema> = {
-  technique: glyphExample,
+export const glyphExampleCodecDefinition: RasterCodec<typeof glyphExample, typeof glyphExampleSchema> = {
+  raster: glyphExample,
   schema: glyphExampleSchema,
   programVariant: GLYPH_EXAMPLE_PROGRAM_VARIANT,
-  policyBody(system, _capabilities) {
+  codecBody(system, _capabilities) {
     const p = techniqueProgram(glyphExampleSchema, { system });
     const { inlineOrigin, blockOrigin, fontSize, color } = p.semantics;
     const { inset, red, green, blue, alpha } = p.binding;

@@ -7,7 +7,7 @@
  * record slot holding its pre-edit occupant therefore passes every engine-side check while
  * rendering the wrong glyph, which is exactly the defect this file exists to catch.
  *
- * This file owns the Latin corpus and the three raster techniques. The differential oracle it
+ * This file owns the Latin corpus and the three raster formats. The differential oracle it
  * asserts lives in `../support/text-mutation-lanes.mjs`, shared with the script-topology and span
  * files so the invariant cannot drift between them.
  *
@@ -15,17 +15,17 @@
  * wall-clock input and no `Math.random`.
  *
  * NOT COVERED: the stable-indirect allocation policy. `ThreeTextEngineCoordinator` registers the
- * Three policy with `threeRenderPolicyBytes`'s default `'ordered'` allocation mode and
+ * Three Codec with `threeCodecBytes`'s default `'ordered'` allocation mode and
  * `ThreeTextEngineCoordinatorOptions` exposes only `transformMode`, so no first-party path
  * reachable from `Text`/`TextGroup` selects `'stable'`. Covering it needs either a coordinator
- * option or a host-level test that drives `GlyphBackend` directly, as
+ * option or a host-level test that drives internal handle state directly, as
  * `three-engine-coordinator.test.mjs` does.
  */
 import test, { after } from 'node:test';
 
-import { bitmap } from '@pmndrs/glyph/three/bitmap';
-import { msdf } from '@pmndrs/glyph/three/msdf';
-import { slug } from '@pmndrs/glyph/three/slug';
+import { bitmap } from '@pmndrs/glyph/raster/bitmap';
+import { msdf } from '@pmndrs/glyph/raster/msdf';
+import { slug } from '@pmndrs/glyph/raster/slug';
 
 import {
   assertMatchesFreshBuild,
@@ -51,9 +51,9 @@ const style = { fontSize: 6, lineHeight: 1 };
 const paint = { color: '#ffffff' };
 
 const TECHNIQUES = {
-  bitmap: { file: 'inter-bitmap-16.font.glb', raster: { technique: bitmap, options: { strikes: [16] } } },
-  msdf: { file: 'inter-mtsdf.font.glb.gz', raster: { technique: msdf } },
-  slug: { file: 'inter-slug.font.glb.gz', raster: { technique: slug } },
+  bitmap: { file: 'inter-bitmap-16.font.glb', raster: bitmap({ strikes: [16] }) },
+  msdf: { file: 'inter-mtsdf.font.glb.gz', raster: msdf },
+  slug: { file: 'inter-slug.font.glb.gz', raster: slug },
 };
 
 const fonts = createFontCache(TECHNIQUES);
@@ -114,7 +114,7 @@ const EDIT_CLASSES = [
  * by accident. Distinct positions, sizes, and colours make each of those lanes carry a value that
  * identifies its own slot.
  *
- * `rasterPixelRatio` is not itself a packed lane -- no first-party program in `render-policy.ts`
+ * `rasterPixelRatio` is not itself a packed lane -- no first-party codec program
  * reads it -- but it is one of the two resource-selection inputs, so varying it per node drives
  * the gather's selection-change branch, the one that widens a narrow change mask to every input.
  * It cannot select a DIFFERENT resource here: these fixtures bake one strike and one page each,

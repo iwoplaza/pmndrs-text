@@ -1,5 +1,5 @@
 import {
-  createFontLibrary,
+  glyph,
   type Constraints,
   type FontFeature,
   type Font,
@@ -7,8 +7,8 @@ import {
   type ParagraphLayoutSummary,
   type TextStyle,
 } from '@pmndrs/glyph';
-import type { msdf as mtsdf } from '@pmndrs/glyph/three/msdf';
-import { Text } from '@pmndrs/glyph/three';
+import type { msdf as mtsdf } from '@pmndrs/glyph/raster/msdf';
+import type { Text, ThreeRoot } from '@pmndrs/glyph/three';
 import * as THREE from 'three/webgpu';
 
 import type { BenchmarkFontFixture } from '../../benchmark/font-fixtures';
@@ -31,24 +31,19 @@ import {
 } from '../../workloads/shared/text-style';
 import { type RendererBackend } from '../../renderer/webgpu-renderer';
 import {
-  type PersistentRenderFrameContext,
   type PersistentRenderScene,
   type PersistentRenderSceneRenderer,
   type PersistentRenderViewport,
 } from '../../renderer/persistent-render-host';
 import { createPersistentSceneActivation } from '../../renderer/persistent-scene-activation';
-import { loadMtsdfFontAsset, MTSDF_FIXTURE_ARTIFACT_BYTE_LIMIT } from '../../workloads/font-assets/mtsdf';
+import { loadMtsdfFontAsset } from '../../workloads/font-assets/mtsdf';
 import {
-  captureGlyphOriginsForPresentation,
-  createFrameDrivenGlyphTransition,
-  snapGlyphOrigins,
-  transitionPresentation,
-  type FrameDrivenGlyphTransition,
   type GlyphOriginPresentation,
-  type GlyphOriginSnapshot,
+  retainedGlyphPresentation,
   type ShapedTextIdentity,
-} from '../shared/glyph-origin-transition';
+} from '../shared/glyph-origin-presentation';
 import { mtsdfDataConfiguration, type MtsdfRasterConfiguration } from './metadata';
+import { createBenchmarkThreeRoot, disposeBenchmarkThreeRoot } from '../../three-root';
 
 export interface MtsdfTextLiveStats {
   readonly technique: 'mtsdf';
@@ -115,7 +110,6 @@ export interface MtsdfTextLiveStats {
 }
 
 export interface MtsdfTextSceneUpdate extends LiveFontFixtureUpdate {
-  readonly animatePresentation: boolean;
   readonly anchor: LiveTextAnchor;
   readonly direction: 'ltr' | 'rtl';
   readonly features: readonly FontFeature[];
@@ -174,15 +168,6 @@ interface MtsdfTextState {
   readonly rasterPixelRatio: number;
 }
 
-/** Presentation-only motion the scene drives from its own frame clock, because its surface does not drive progress. */
-interface MtsdfPresentation {
-  readonly transition: FrameDrivenGlyphTransition;
-  readonly fromX: number;
-  readonly fromY: number;
-  readonly toX: number;
-  readonly toY: number;
-}
-
 interface MtsdfPersistentActivation {
   readonly camera: THREE.OrthographicCamera;
   readonly canvasSurface: CanvasSurface;
@@ -191,7 +176,7 @@ interface MtsdfPersistentActivation {
   readonly fontFixture: RetainedFontFixtureController<MtsdfPersistentFontFixture>;
   readonly gpuTimingSupported: boolean;
   readonly line: Text<typeof mtsdf>;
-  presentation: MtsdfPresentation | undefined;
+  readonly root: ThreeRoot;
   readonly rendererInitMs: number;
   readonly scene: THREE.Scene;
   readonly signal: AbortSignal;
@@ -235,35 +220,9 @@ export function createMtsdfTextPersistentScene(options: MtsdfTextPersistentScene
     resources.state = next;
   };
 
-  /**
-   * Presents one committed reflow. `before` is captured only when `glyphOriginPolicy` allows interpolation, so its
-   * absence is the decision to snap rather than a missing snapshot.
-   */
-  const presentReflow = (
-    resources: MtsdfPersistentActivation,
-    before: GlyphOriginSnapshot | undefined,
-  ): GlyphOriginPresentation => {
-    const fromX = resources.line.position.x;
-    const fromY = resources.line.position.y;
-    resources.presentation?.transition.dispose();
-    resources.presentation = undefined;
+  const presentReflow = (resources: MtsdfPersistentActivation): GlyphOriginPresentation => {
     positionLiveLine(resources.line, resources.viewport.width, resources.viewport.height, anchor, layoutWidthRatio);
-    if (before === undefined) return snapGlyphOrigins(resources.line);
-    const toX = resources.line.position.x;
-    const toY = resources.line.position.y;
-    const transition = createFrameDrivenGlyphTransition(resources.line, before);
-    resources.line.position.set(fromX, fromY, 0);
-    resources.presentation = { transition, fromX, fromY, toX, toY };
-    return transitionPresentation(transition);
-  };
-
-  /** Captures the origins a reflow may interpolate from, or nothing when the change replaces or reorders glyphs. */
-  const originsToInterpolate = (
-    resources: MtsdfPersistentActivation,
-    next: ShapedTextIdentity,
-    animatePresentation = true,
-  ): GlyphOriginSnapshot | undefined => {
-    return captureGlyphOriginsForPresentation(resources.line, resources.state.identity, next, animatePresentation);
+    return retainedGlyphPresentation(resources.line);
   };
 
   const applyViewport = (viewport: PersistentRenderViewport): void => {
@@ -281,8 +240,6 @@ export function createMtsdfTextPersistentScene(options: MtsdfTextPersistentScene
     const updateStartedAt = performance.now();
     const revision = ++updateRevision;
     try {
-      // A viewport change leaves the shaped run intact, so its glyphs really do move continuously.
-      const before = originsToInterpolate(resources, resources.state.identity);
       commitState(resources, {
         ...resources.state,
         constraints: mtsdfConstraints(nextContentWidth),
@@ -292,7 +249,7 @@ export function createMtsdfTextPersistentScene(options: MtsdfTextPersistentScene
       if (disposed || activation !== resources || revision !== updateRevision) return;
       resources.committedContentWidth = nextContentWidth;
       const sceneStartedAt = performance.now();
-      presentReflow(resources, before);
+      presentReflow(resources);
       const finishedAt = performance.now();
       textUpdateTelemetry.record({
         scheduleMs: 0,
@@ -320,17 +277,16 @@ export function createMtsdfTextPersistentScene(options: MtsdfTextPersistentScene
         context.viewport.height,
         gridVisible,
       );
-      const library = createFontLibrary({ maxArtifactBytes: MTSDF_FIXTURE_ARTIFACT_BYTE_LIMIT });
       let loadedFont: Font<typeof mtsdf> | undefined;
       let fontFixtureController: RetainedFontFixtureController<MtsdfPersistentFontFixture> | undefined;
       let line: Text<typeof mtsdf> | undefined;
+      const glyphRoot = createBenchmarkThreeRoot(options.id ?? 'mtsdf-text');
       try {
         const fontStartedAt = performance.now();
         const loaded = await loadMtsdfFontAsset({
           technique: 'mtsdf',
           fixture: options.fontFixture ?? 'inter',
           delivery: options.delivery ?? 'baked',
-          library,
           signal: context.signal,
           ...(options.onBakeProgress === undefined ? {} : { onProgress: options.onBakeProgress }),
         });
@@ -339,7 +295,6 @@ export function createMtsdfTextPersistentScene(options: MtsdfTextPersistentScene
         context.signal.throwIfAborted();
         const rasterConfiguration = mtsdfDataConfiguration(loaded.data);
         fontFixtureController = createRetainedFontFixtureController(
-          library,
           {
             fixture: options.fontFixture ?? 'inter',
             asset: { font: loaded.loaded, fontLoadMs, loaded, loadedFont, rasterConfiguration },
@@ -363,7 +318,7 @@ export function createMtsdfTextPersistentScene(options: MtsdfTextPersistentScene
           style: mtsdfStyle(fontSize, identity),
           rasterPixelRatio: context.viewport.dpr,
         };
-        line = new Text({
+        line = glyphRoot.createText({
           font: state.font,
           text: state.identity.text,
           constraints: state.constraints,
@@ -378,7 +333,6 @@ export function createMtsdfTextPersistentScene(options: MtsdfTextPersistentScene
         scene.add(activeLine);
         activeLine.updateMatrixWorld(true);
         if (activeLine.error !== undefined) throw activeLine.error;
-        updateMtsdfDrawVisibility(activeLine);
         const readyAt = performance.now();
         context.signal.throwIfAborted();
         const textReadyMs = performance.now() - textStartedAt;
@@ -402,7 +356,7 @@ export function createMtsdfTextPersistentScene(options: MtsdfTextPersistentScene
           fontFixture: fontFixtureController,
           gpuTimingSupported: persistentGpuTimingSupported(options.backend, context.renderer),
           line: activeLine,
-          presentation: undefined,
+          root: glyphRoot,
           rendererInitMs: context.rendererInitMs,
           scene,
           signal: context.signal,
@@ -414,6 +368,7 @@ export function createMtsdfTextPersistentScene(options: MtsdfTextPersistentScene
       } catch (error) {
         line?.removeFromParent();
         line?.dispose();
+        disposeBenchmarkThreeRoot(glyphRoot);
         if (fontFixtureController === undefined) loadedFont?.dispose();
         else fontFixtureController.dispose();
         canvasSurface.dispose();
@@ -422,11 +377,9 @@ export function createMtsdfTextPersistentScene(options: MtsdfTextPersistentScene
       }
       activationGate.resolve(activation);
     },
-    frame(context) {
+    frame() {
       const resources = active();
       const startedAt = performance.now();
-      advancePresentation(resources, context, options.onError);
-      updateMtsdfDrawVisibility(resources.line);
       resources.canvasSurface.render(resources.scene, resources.camera);
       if (resources.firstDrawMs === 0) resources.firstDrawMs = performance.now() - startedAt;
     },
@@ -448,7 +401,7 @@ export function createMtsdfTextPersistentScene(options: MtsdfTextPersistentScene
         ...snapshot,
         glyphCount: renderedGlyphCount(resources.line),
         missingGlyphCount: missingGlyphCount(layout),
-        drawCount: drawCount(resources.line),
+        drawCount: drawCount(resources.scene),
         layoutWidth: layout.width,
         layoutHeight: layout.height,
         lineCount: layout.lineCount,
@@ -491,13 +444,12 @@ export function createMtsdfTextPersistentScene(options: MtsdfTextPersistentScene
     },
     async loadFontFixture(fixture) {
       const resources = await activationGate.wait();
-      await resources.fontFixture.load(fixture, async (requested, library) => {
+      await resources.fontFixture.load(fixture, async (requested) => {
         const fontStartedAt = performance.now();
         const loaded = await loadMtsdfFontAsset({
           technique: 'mtsdf',
           fixture: requested,
           delivery: options.delivery ?? 'baked',
-          library,
           signal: resources.signal,
           ...(options.onBakeProgress === undefined ? {} : { onProgress: options.onBakeProgress }),
         });
@@ -531,9 +483,7 @@ export function createMtsdfTextPersistentScene(options: MtsdfTextPersistentScene
         direction: next.direction,
         features: next.features,
       };
-      const before = originsToInterpolate(resources, identity, next.animatePresentation);
       resources.fontFixture.commit(nextFixture, (fontFixture) => {
-        if (next.text.length === 0) resources.line.visible = false;
         commitState(resources, {
           font: fontFixture.loadedFont,
           identity,
@@ -542,7 +492,6 @@ export function createMtsdfTextPersistentScene(options: MtsdfTextPersistentScene
           style: mtsdfStyle(nextFontSize, identity),
           rasterPixelRatio: resources.viewport.dpr,
         });
-        updateMtsdfDrawVisibility(resources.line);
         fontSize = nextFontSize;
         anchor = next.anchor;
         textAlign = next.textAlign;
@@ -550,7 +499,7 @@ export function createMtsdfTextPersistentScene(options: MtsdfTextPersistentScene
         resources.committedContentWidth = nextContentWidth;
       });
       const sceneStartedAt = performance.now();
-      const presented = presentReflow(resources, before);
+      const presented = presentReflow(resources);
       const finishedAt = performance.now();
       textUpdateTelemetry.record({
         scheduleMs: 0,
@@ -570,9 +519,9 @@ export function createMtsdfTextPersistentScene(options: MtsdfTextPersistentScene
       const resources = activation;
       activation = undefined;
       if (resources === undefined) return;
-      resources.presentation?.transition.dispose();
       resources.line.removeFromParent();
       resources.line.dispose();
+      disposeBenchmarkThreeRoot(resources.root);
       resources.fontFixture.dispose();
       resources.canvasSurface.dispose();
     },
@@ -588,35 +537,10 @@ function applyState(line: Text<typeof mtsdf>, next: MtsdfTextState): void {
     style: next.style,
     rasterPixelRatio: next.rasterPixelRatio,
   });
+  line.visible = next.identity.text.length > 0;
+  glyph.shape();
   line.updateMatrixWorld(true);
   if (line.error !== undefined) throw line.error;
-}
-
-/**
- * Advances the frame-driven presentation. A superseded transition is a normal outcome of a reflow landing mid-motion,
- * so it retires quietly; anything else is a real failure the surface must see.
- */
-function advancePresentation(
-  resources: MtsdfPersistentActivation,
-  context: PersistentRenderFrameContext,
-  onError: (error: unknown) => void,
-): void {
-  const presentation = resources.presentation;
-  if (presentation === undefined) return;
-  try {
-    const progress = presentation.transition.advance(context.timestamp);
-    resources.line.position.set(
-      presentation.fromX + (presentation.toX - presentation.fromX) * progress,
-      presentation.fromY + (presentation.toY - presentation.fromY) * progress,
-      0,
-    );
-    if (progress === 1) resources.presentation = undefined;
-  } catch (error) {
-    presentation.transition.dispose();
-    resources.presentation = undefined;
-    resources.line.position.set(presentation.toX, presentation.toY, 0);
-    if (!(error instanceof DOMException && error.name === 'AbortError')) onError(error);
-  }
 }
 
 function mtsdfConstraints(width: number): Constraints {
@@ -690,30 +614,8 @@ function assertLayoutWidthRatio(value: number): void {
   }
 }
 
-function renderedGlyphCount(object: THREE.Object3D): number {
-  let count = 0;
-  object.traverse((child) => {
-    if (child instanceof THREE.Mesh && child.geometry instanceof THREE.InstancedBufferGeometry) {
-      count += child.geometry.instanceCount;
-    }
-  });
-  return count;
-}
-
-function updateMtsdfDrawVisibility(object: THREE.Object3D): void {
-  let glyphCount = 0;
-  object.traverse((child) => {
-    if (!(child instanceof THREE.Mesh)) return;
-    const availableVertexCount = child.geometry.index?.count ?? child.geometry.getAttribute('position')?.count ?? 0;
-    const vertexCount = Number.isFinite(child.geometry.drawRange.count)
-      ? Math.min(availableVertexCount, child.geometry.drawRange.count)
-      : availableVertexCount;
-    const instanceCount =
-      child.geometry instanceof THREE.InstancedBufferGeometry ? child.geometry.instanceCount : vertexCount > 0 ? 1 : 0;
-    child.visible = vertexCount > 0 && instanceCount > 0;
-    if (child.geometry instanceof THREE.InstancedBufferGeometry) glyphCount += child.geometry.instanceCount;
-  });
-  object.visible = glyphCount > 0;
+function renderedGlyphCount(text: Text<typeof mtsdf>): number {
+  return text.measure().glyphCount;
 }
 
 function drawCount(object: THREE.Object3D): number {

@@ -1,20 +1,20 @@
 export const packageSizeBudgets = {
   'browser-core': {
-    // Root Paragraph now ships its real private measurement engine instead of a detached constructor sketch.
-    // Final planner vocabulary and typed font requests add raw names while compressed sizes remain below budget.
-    // Planner-assisted detached copies add the synchronous copy boundary to the root graph.
-    rawBytes: 456_000,
-    minifiedBytes: 295_000,
-    gzipBytes: 82_400,
-    brotliBytes: 63_500,
+    // The public root owns Glyph, FontFace, text authoring/measurement values, and their shared loading graph. The unbundled distribution
+    // measures the consumer closure once: 362,479 raw / 354,093 minified / 88,281 gzip / 73,217 Brotli.
+    rawBytes: 368_000,
+    minifiedBytes: 360_000,
+    gzipBytes: 90_000,
+    brotliBytes: 75_000,
   },
-  // Backends, planners, semantic plan readers, portable resources, and call-time validation.
-  // Includes branded ID provenance and the zero-copy compiled-font view used by renderer integrations.
-  'core-subpath-js': {
-    rawBytes: 437_000,
-    minifiedBytes: 286_000,
-    gzipBytes: 71_500,
-    brotliBytes: 60_000,
+  // GlyphConfig, Codec, schema, raster-format helpers, and the zero-copy command-buffer contract.
+  'glyph-config-js': {
+    // Wildcard config leaves now isolate this renderer-neutral graph at 42,451 raw / 42,188 minified /
+    // 11,023 gzip / 9,742 Brotli. Keep that reduction protected rather than retaining the bundled-era ceiling.
+    rawBytes: 44_000,
+    minifiedBytes: 44_000,
+    gzipBytes: 11_500,
+    brotliBytes: 10_200,
   },
   'tsl-subpath-js': {
     rawBytes: 27_000,
@@ -31,9 +31,11 @@ export const packageSizeBudgets = {
     brotliBytes: 4_400,
   },
   'font-validator-js': {
+    // The current tsdown graph is 734,377 raw / 584,675 minified / 138,073 gzip / 113,039 Brotli. Keep a small
+    // cross-host compression margin without pretending the validator belongs to the ordinary runtime closure.
     rawBytes: 741_000,
     minifiedBytes: 585_000,
-    gzipBytes: 138_000,
+    gzipBytes: 139_000,
     brotliBytes: 113_500,
   },
   'runtime-baker-host-js': {
@@ -81,16 +83,14 @@ export const packageSizeBudgets = {
     gzipBytes: 468_000,
     brotliBytes: 368_000,
   },
-  // Three realization, engine-owned backend/plan mapping, first-frame measurement and bounds,
-  // exact-generation resource transactions, final planner names, bounded candidate leases,
-  // and detached Glyphs/Decorations objects with independent materials and full matrices. The
-  // final detached cleanup and live draw-order closure measure 742,195 raw bytes; the raw ceiling
-  // is rounded to the next 1 KB while compressed ceilings remain unchanged.
+  // Three realization plus the root graph measures 520,663 raw / 509,451 minified / 127,281 gzip / 104,932 Brotli
+  // after tsdown shared-chunk bundling and the single-graph font-loader consolidation. The old raw ceiling described
+  // unbundled tsc output and no longer measured the published graph; these ceilings track the actual consumer graph.
   'three-runtime-js': {
-    rawBytes: 743_000,
-    minifiedBytes: 478_000,
-    gzipBytes: 121_000,
-    brotliBytes: 100_000,
+    rawBytes: 525_000,
+    minifiedBytes: 512_000,
+    gzipBytes: 128_000,
+    brotliBytes: 106_000,
   },
   'font-inter-bitmap-16-32': {
     rawBytes: 3_200_000,
@@ -135,24 +135,25 @@ export const packageSizeBudgets = {
     brotliBytes: 510_000,
   },
   // Shared Three technique graphs use one reviewed cross-host ceiling.
-  // Shader subpaths remain outside these runtime graphs.
+  // Shader subpaths and Three itself remain external. Each entry measures the public Glyph root, Three adapter, and
+  // exactly one raster format; the largest is 469,999 raw / 459,094 minified / 114,394 gzip / 94,747 Brotli.
   'bitmap-runtime-js': {
-    rawBytes: 430_000,
-    minifiedBytes: 274_000,
-    gzipBytes: 72_500,
-    brotliBytes: 62_000,
+    rawBytes: 477_000,
+    minifiedBytes: 466_000,
+    gzipBytes: 116_000,
+    brotliBytes: 97_000,
   },
   'mtsdf-runtime-js': {
-    rawBytes: 430_000,
-    minifiedBytes: 274_000,
-    gzipBytes: 72_500,
-    brotliBytes: 62_000,
+    rawBytes: 477_000,
+    minifiedBytes: 466_000,
+    gzipBytes: 116_000,
+    brotliBytes: 97_000,
   },
   'slug-runtime-js': {
-    rawBytes: 430_000,
-    minifiedBytes: 274_000,
-    gzipBytes: 72_500,
-    brotliBytes: 62_000,
+    rawBytes: 477_000,
+    minifiedBytes: 466_000,
+    gzipBytes: 116_000,
+    brotliBytes: 97_000,
   },
   'bitmap-baker-wasm': {
     rawBytes: 626_000,
@@ -213,13 +214,5 @@ export const packageSizeBudgets = {
     minifiedBytes: 1_086_000,
     gzipBytes: 391_000,
     brotliBytes: 305_000,
-  },
-  // Raw and minified rose for the allocation-free grapheme script resolution; the growth is comment-dominated, at
-  // +3,010 raw against +298 Brotli, because the parallel-array form needs its reasoning recorded next to it.
-  'unicode-analysis-js': {
-    rawBytes: 171_000,
-    minifiedBytes: 143_000,
-    gzipBytes: 42_500,
-    brotliBytes: 31_500,
   },
 } as const;

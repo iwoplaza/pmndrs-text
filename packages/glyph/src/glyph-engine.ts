@@ -7,56 +7,61 @@ import {
   immutableFontVariantIdentity,
   type ImmutableFontResourceLease,
 } from './loaded-font.js';
-import type { AnyRasterTechnique, RasterDataOf } from './raster-technique.js';
+import type { RasterDataOf, RasterFormatMetadata } from './config/raster-format.js';
 import type { RasterKindOf, RegisteredRaster } from './raster.js';
-import { createRuntimeShaper, type RuntimeShaper } from './shaper.js';
-import { GlyphBackend, type GlyphBackendOptions } from './core/backend.js';
+import { createRuntimeShaper, runtimeShaperEngineExports, type RuntimeShaper } from './shaper.js';
+import { GlyphEngineStatusError } from './engine-error.js';
+import { GlyphHandleState, type GlyphHandleStateOptions } from './internal/handle-state.js';
 import type { FontHandle } from './identity.js';
+import type { PlanAcceptance, StagedRenderPlanner } from './internal/render-planner.js';
+import { textShaperAbi } from './generated/text-shaper-abi.js';
 
 /** Options for constructing one independent Wasm shaping engine. */
 export interface GlyphEngineOptions {
   readonly wasm?: BufferSource | WebAssembly.Module;
 }
 
-/** Owns one Wasm shaping domain and every backend created from it. */
+/** Owns one Wasm shaping domain and every configured handle attached to it. */
 export interface GlyphEngine {
   readonly disposed: boolean;
+  /** Disposes every owned handle state and releases this engine's Wasm shaping domain. */
+  dispose(): void;
+}
 
-  /** Creates a renderer integration backend owned by this engine. */
-  createBackend(options: GlyphBackendOptions): GlyphBackend;
+/** @internal One renderer-neutral root participating in the next engine-wide shape transaction. */
+export interface GlyphShapeParticipant {
+  stage(): StagedRenderPlanner | undefined;
+  accepted(): void;
+  rejected(error: unknown): void;
+}
 
-  /** Disposes every owned backend and releases this engine's Wasm shaping domain. */
+/** @internal Stable invalidation and teardown channel for one registered shape participant. */
+export interface GlyphShapeRegistration {
+  invalidate(): void;
   dispose(): void;
 }
 
 interface EngineFontRegistration {
   readonly font: RegisteredFont;
-  readonly variants: Map<object, EngineFontVariantRegistration>;
+  readonly resources: Set<{ dispose(): void }>;
   leases: number;
   disposed: boolean;
 }
 
-interface EngineFontVariantRegistration<Technique extends AnyRasterTechnique = AnyRasterTechnique> {
-  readonly identity: object;
-  readonly technique: Technique;
-  readonly resources: ImmutableFontResourceLease<Technique>;
-  leases: number;
-}
-
 /** @internal An independent claim on one engine-local shaping registration. */
-export interface EngineFontBindingLease<Technique extends AnyRasterTechnique = AnyRasterTechnique> {
+export interface EngineFontBindingLease<Format extends RasterFormatMetadata> {
   readonly disposed: boolean;
-  readonly technique: Technique;
+  readonly raster: Format;
   readonly handle: FontHandle;
   readonly identity: object;
   dispose(): void;
 }
 
 /** @internal The retained portable resources associated with one engine binding lease. */
-export interface EngineFontBindingResources<Technique extends AnyRasterTechnique = AnyRasterTechnique> {
+export interface EngineFontBindingResources<Format extends RasterFormatMetadata> {
   readonly font: RegisteredFont;
-  readonly raster: RegisteredRaster<RasterKindOf<Technique>>;
-  readonly data: RasterDataOf<Technique>;
+  readonly raster: RegisteredRaster<RasterKindOf<Format>>;
+  readonly data: RasterDataOf<Format>;
 }
 
 interface EngineFontRegistryLike {
@@ -122,17 +127,40 @@ export function observeGlyphEngineDispose(glyphEngine: GlyphEngine, dispose: () 
   return glyphEngine._observeDispose(dispose);
 }
 
-/** @internal Acquire one counted engine-local Wasm shaping registration. */
-export function acquireEngineFontBinding<Technique extends AnyRasterTechnique>(
+/** @internal Creates the engine-local state owned by one configured Glyph handle. */
+export function createGlyphHandleState(glyphEngine: GlyphEngine, options: GlyphHandleStateOptions): GlyphHandleState {
+  if (!(glyphEngine instanceof GlyphEngineImpl)) throw new TypeError('glyph engine was not created by this package');
+  return glyphEngine._createHandleState(options);
+}
+
+/** @internal Registers one anonymous or named root with the engine-wide shape coordinator. */
+export function registerGlyphShapeParticipant(
   glyphEngine: GlyphEngine,
-  font: Font<Technique>,
-): EngineFontBindingLease<Technique> {
+  participant: GlyphShapeParticipant,
+): GlyphShapeRegistration {
+  if (!(glyphEngine instanceof GlyphEngineImpl)) throw new TypeError('glyph engine was not created by this package');
+  return glyphEngine._registerShapeParticipant(participant);
+}
+
+/** @internal Flushes every dirty root registered with one Glyph engine. */
+export function shapeGlyphEngine(glyphEngine: GlyphEngine): void {
+  if (!(glyphEngine instanceof GlyphEngineImpl)) throw new TypeError('glyph engine was not created by this package');
+  glyphEngine._shape();
+}
+
+/** @internal Acquire one counted engine-local Wasm shaping registration. */
+export function acquireEngineFontBinding<Format extends RasterFormatMetadata>(
+  glyphEngine: GlyphEngine,
+  font: Font<Format>,
+): EngineFontBindingLease<Format> {
   if (!(glyphEngine instanceof GlyphEngineImpl)) throw new TypeError('glyph engine was not created by this package');
   return glyphEngine._acquireFont(font);
 }
 
 /** @internal Read the hidden shaping handle while the binding lease is live. */
-export function engineFontBindingHandle(binding: EngineFontBindingLease<AnyRasterTechnique>): FontHandle {
+export function engineFontBindingHandle<Format extends RasterFormatMetadata>(
+  binding: EngineFontBindingLease<Format>,
+): FontHandle {
   if (!(binding instanceof EngineFontBindingLeaseImpl)) {
     throw new TypeError('engine font binding was not created by this package');
   }
@@ -140,9 +168,9 @@ export function engineFontBindingHandle(binding: EngineFontBindingLease<AnyRaste
 }
 
 /** @internal Read retained portable resources while the engine binding lease is live. */
-export function engineFontBindingResources<Technique extends AnyRasterTechnique>(
-  binding: EngineFontBindingLease<Technique>,
-): EngineFontBindingResources<Technique> {
+export function engineFontBindingResources<Format extends RasterFormatMetadata>(
+  binding: EngineFontBindingLease<Format>,
+): EngineFontBindingResources<Format> {
   if (!(binding instanceof EngineFontBindingLeaseImpl)) {
     throw new TypeError('engine font binding was not created by this package');
   }
@@ -153,13 +181,20 @@ class GlyphEngineImpl implements GlyphEngine {
   readonly #fontRegistry: EngineFontRegistry;
   readonly #shaper: RuntimeShaper;
   readonly #disposeObservers = new Set<() => void>();
-  readonly #backends = new Set<GlyphBackend>();
+  readonly #handleStates = new Set<GlyphHandleState>();
   readonly #fontRegistrations = new WeakMap<RegisteredFont, EngineFontRegistration>();
   readonly #liveFontRegistrations = new Set<EngineFontRegistration>();
+  readonly #shapeRegistrations = new Set<GlyphShapeRegistrationImpl>();
+  readonly #dirtyShapeRegistrations = new Set<GlyphShapeRegistrationImpl>();
+  readonly #shapeRegistrationScratch: GlyphShapeRegistrationImpl[] = [];
+  readonly #stagedPlannerScratch: StagedRenderPlanner[] = [];
+  readonly #stagedRegistrationIndexScratch: number[] = [];
+  readonly #shapeOutcomeScratch: ShapeOutcome[] = [];
   #disposed = false;
   #disposing = false;
   #borrowedPlanActive = false;
-  #nextBackendOrdinal = 1;
+  #shapeActive = false;
+  #nextHandleOrdinal = 1;
 
   constructor(fontRegistry: EngineFontRegistry, shaper: RuntimeShaper) {
     this.#fontRegistry = fontRegistry;
@@ -170,25 +205,25 @@ class GlyphEngineImpl implements GlyphEngine {
     return this.#disposed;
   }
 
-  /** Creates a renderer integration backend owned by this engine. */
-  createBackend(options: GlyphBackendOptions): GlyphBackend {
+  /** @internal */
+  _createHandleState(options: GlyphHandleStateOptions): GlyphHandleState {
     this.#assertActive();
-    const ordinal = this.#nextBackendOrdinal;
+    const ordinal = this.#nextHandleOrdinal;
     const nextOrdinal = ordinal + 1;
-    if (!Number.isSafeInteger(nextOrdinal)) throw new RangeError('glyph backend identities are exhausted');
-    let backend!: GlyphBackend;
-    backend = new GlyphBackend(
+    if (!Number.isSafeInteger(nextOrdinal)) throw new RangeError('glyph handle identities are exhausted');
+    let state!: GlyphHandleState;
+    state = new GlyphHandleState(
       this.#shaper,
       options,
-      () => this.#backends.delete(backend),
+      () => this.#handleStates.delete(state),
       (font) => this._acquireFont(font),
-      () => this.#assertBackendAvailable(),
+      () => this.#assertHandleStateAvailable(),
       () => this.#enterBorrowedPlan(),
-      `${options.integration}/backend/${ordinal}`,
+      `${options.integration}/handle/${ordinal}`,
     );
-    this.#backends.add(backend);
-    this.#nextBackendOrdinal = nextOrdinal;
-    return backend;
+    this.#handleStates.add(state);
+    this.#nextHandleOrdinal = nextOrdinal;
+    return state;
   }
 
   /**
@@ -214,14 +249,17 @@ class GlyphEngineImpl implements GlyphEngine {
       }
     }
     this.#disposeObservers.clear();
-    for (const backend of [...this.#backends]) {
+    for (const registration of [...this.#shapeRegistrations]) registration.dispose();
+    this.#shapeRegistrations.clear();
+    this.#dirtyShapeRegistrations.clear();
+    for (const state of [...this.#handleStates]) {
       try {
-        backend.dispose();
+        state.dispose();
       } catch (error) {
-        report('disposing a glyph backend', error);
+        report('disposing Glyph handle state', error);
       }
     }
-    this.#backends.clear();
+    this.#handleStates.clear();
     for (const registration of [...this.#liveFontRegistrations]) {
       try {
         this.#disposeFontRegistration(registration);
@@ -240,23 +278,16 @@ class GlyphEngineImpl implements GlyphEngine {
   }
 
   /** @internal */
-  _acquireFont<Technique extends AnyRasterTechnique>(font: Font<Technique>): EngineFontBindingLease<Technique> {
+  _acquireFont<Format extends RasterFormatMetadata>(font: Font<Format>): EngineFontBindingLease<Format> {
     this.#assertActive();
     const registered = immutableFontResources(font).font;
     const variantIdentity = immutableFontVariantIdentity(font);
     let registration = this.#fontRegistrations.get(registered);
-    let variant = registration?.variants.get(variantIdentity) as EngineFontVariantRegistration<Technique> | undefined;
+    const resources = acquireImmutableFontResources(font);
     if (registration === undefined || registration.disposed) {
-      const resources = acquireImmutableFontResources(font);
-      const createdVariant: EngineFontVariantRegistration<Technique> = {
-        identity: variantIdentity,
-        technique: font.technique,
-        resources,
-        leases: 0,
-      };
       const created: EngineFontRegistration = {
         font: registered,
-        variants: new Map([[variantIdentity, createdVariant]]),
+        resources: new Set(),
         leases: 0,
         disposed: false,
       };
@@ -274,37 +305,229 @@ class GlyphEngineImpl implements GlyphEngine {
         throw error;
       }
       registration = created;
-      variant = createdVariant;
       this.#fontRegistrations.set(registered, created);
       this.#liveFontRegistrations.add(created);
-    } else if (variant === undefined) {
-      variant = {
-        identity: variantIdentity,
-        technique: font.technique,
-        resources: acquireImmutableFontResources(font),
-        leases: 0,
-      };
-      registration.variants.set(variantIdentity, variant);
     }
     registration.leases += 1;
-    variant.leases += 1;
-    return new EngineFontBindingLeaseImpl(this, registration, variant);
+    registration.resources.add(resources);
+    return new EngineFontBindingLeaseImpl(this, registration, variantIdentity, font.raster, resources);
   }
 
-  _releaseFont(registration: EngineFontRegistration, variant: EngineFontVariantRegistration): void {
+  _releaseFont<Format extends RasterFormatMetadata>(
+    registration: EngineFontRegistration,
+    resources: ImmutableFontResourceLease<Format>,
+  ): void {
+    registration.resources.delete(resources);
+    resources.dispose();
     if (registration.disposed) return;
     if (registration.leases <= 0) throw new Error('engine font binding lease underflow');
-    if (variant.leases <= 0) throw new Error('engine font variant lease underflow');
     registration.leases -= 1;
-    variant.leases -= 1;
-    if (registration.leases === 0) {
-      this.#disposeFontRegistration(registration);
-      return;
+    if (registration.leases === 0) this.#disposeFontRegistration(registration);
+  }
+
+  /** @internal */
+  _registerShapeParticipant(participant: GlyphShapeParticipant): GlyphShapeRegistration {
+    this.#assertActive();
+    if (typeof participant !== 'object' || participant === null) {
+      throw new TypeError('Glyph shape participant must be an object');
     }
-    if (variant.leases === 0) {
-      registration.variants.delete(variant.identity);
-      variant.resources.dispose();
+    if (
+      typeof participant.stage !== 'function' ||
+      typeof participant.accepted !== 'function' ||
+      typeof participant.rejected !== 'function'
+    ) {
+      throw new TypeError('Glyph shape participant must implement stage(), accepted(), and rejected()');
     }
+    const registration = new GlyphShapeRegistrationImpl(this, participant);
+    this.#shapeRegistrations.add(registration);
+    return registration;
+  }
+
+  /** @internal */
+  _invalidateShapeParticipant(registration: GlyphShapeRegistrationImpl): void {
+    this.#assertActive();
+    if (!this.#shapeRegistrations.has(registration)) {
+      throw new Error('Glyph shape participant is not registered with this engine');
+    }
+    this.#dirtyShapeRegistrations.add(registration);
+  }
+
+  /** @internal */
+  _disposeShapeParticipant(registration: GlyphShapeRegistrationImpl): void {
+    this.#dirtyShapeRegistrations.delete(registration);
+    this.#shapeRegistrations.delete(registration);
+  }
+
+  /** @internal */
+  _shape(): void {
+    this.#assertActive();
+    if (this.#shapeActive) throw new Error('glyph.shape() cannot be reentered');
+    if (this.#dirtyShapeRegistrations.size === 0) return;
+    this.#shapeActive = true;
+    const registrations = this.#shapeRegistrationScratch;
+    const staged = this.#stagedPlannerScratch;
+    const stagedRegistrationIndices = this.#stagedRegistrationIndexScratch;
+    const outcomes = this.#shapeOutcomeScratch;
+    registrations.length = 0;
+    staged.length = 0;
+    stagedRegistrationIndices.length = 0;
+    outcomes.length = 0;
+    let failure: unknown;
+    try {
+      for (const registration of this.#dirtyShapeRegistrations) registrations.push(registration);
+      this.#dirtyShapeRegistrations.clear();
+      this.#stageShapeParticipants(registrations, staged, stagedRegistrationIndices, outcomes);
+      if (staged.length !== 0) {
+        try {
+          this.#updateShapeBatch(staged, stagedRegistrationIndices, outcomes);
+        } catch (error) {
+          const batchError = asError(error);
+          for (let index = 0; index < outcomes.length; index += 1) {
+            if (outcomes[index] === undefined) outcomes[index] = batchError;
+          }
+        }
+      }
+      this.#settleShapeParticipants(registrations, outcomes);
+    } catch (error) {
+      failure = error;
+    } finally {
+      for (const planner of staged) {
+        try {
+          planner.discard();
+        } catch (error) {
+          failure ??= error;
+        }
+      }
+      registrations.length = 0;
+      staged.length = 0;
+      stagedRegistrationIndices.length = 0;
+      outcomes.length = 0;
+      this.#shapeActive = false;
+    }
+    if (failure !== undefined) throw failure;
+  }
+
+  #stageShapeParticipants(
+    registrations: GlyphShapeRegistrationImpl[],
+    staged: StagedRenderPlanner[],
+    stagedRegistrationIndices: number[],
+    outcomes: ShapeOutcome[],
+  ): void {
+    for (let index = 0; index < registrations.length; index += 1) {
+      const registration = registrations[index]!;
+      if (registration.disposed) continue;
+      try {
+        const planner = registration.stage();
+        this.#dirtyShapeRegistrations.delete(registration);
+        if (planner !== undefined) {
+          staged.push(planner);
+          stagedRegistrationIndices.push(index);
+          outcomes[index] = undefined;
+        } else {
+          outcomes[index] = SKIPPED;
+        }
+      } catch (error) {
+        this.#dirtyShapeRegistrations.delete(registration);
+        outcomes[index] = asError(error);
+      }
+    }
+  }
+
+  #updateShapeBatch(
+    staged: StagedRenderPlanner[],
+    stagedRegistrationIndices: number[],
+    outcomes: ShapeOutcome[],
+  ): void {
+    const exports = runtimeShaperEngineExports(this.#shaper);
+    const count = staged.length;
+    if (count > exports.updateBatchCapacity()) {
+      requireEngineStatus(exports.reserveUpdateBatch(count), 'reserve Glyph shape batch');
+    }
+    const pointer = exports.updateBatchPointer();
+    if (pointer === 0)
+      throw new GlyphEngineStatusError('resolve Glyph shape batch', textShaperAbi.status.resultTooLarge);
+    const layout = textShaperAbi.layouts.engineUpdateBatchEntry;
+    const byteLength = count * layout.size;
+    if (pointer + byteLength > exports.memory.buffer.byteLength) {
+      throw new RangeError('Glyph shape batch descriptor arena is out of bounds');
+    }
+    let view = new DataView(exports.memory.buffer, pointer, byteLength);
+    for (let index = 0; index < count; index += 1) {
+      const planner = staged[index]!;
+      const offset = index * layout.size;
+      view.setUint32(offset + layout.rootId, planner.rootId, true);
+      view.setUint32(offset + layout.requestLength, planner.requestLength, true);
+      view.setUint32(offset + layout.resultPointer, 0, true);
+      view.setUint32(offset + layout.status, 0, true);
+    }
+    requireEngineStatus(exports.textUpdateBatch(pointer, count), 'publish Glyph shape batch');
+    const finalMemory = exports.memory.buffer as ArrayBuffer;
+    view = new DataView(finalMemory, pointer, byteLength);
+    for (let stagedIndex = 0; stagedIndex < staged.length; stagedIndex += 1) {
+      const registrationIndex = stagedRegistrationIndices[stagedIndex]!;
+      const planner = staged[stagedIndex]!;
+      const offset = stagedIndex * layout.size;
+      const status = view.getUint32(offset + layout.status, true);
+      const resultPointer = view.getUint32(offset + layout.resultPointer, true);
+      try {
+        if (resultPointer === 0) requireEngineStatus(status, 'publish Glyph root');
+        planner.adopt(resultPointer, finalMemory);
+      } catch (error) {
+        outcomes[registrationIndex] = asError(error);
+      }
+    }
+    const leaveBorrow = this.#enterBorrowedPlan();
+    try {
+      for (let stagedIndex = 0; stagedIndex < staged.length; stagedIndex += 1) {
+        const registrationIndex = stagedRegistrationIndices[stagedIndex]!;
+        if (outcomes[registrationIndex] instanceof Error) continue;
+        const planner = staged[stagedIndex]!;
+        try {
+          outcomes[registrationIndex] = planner.consume();
+        } catch (error) {
+          outcomes[registrationIndex] = asError(error);
+        }
+      }
+    } finally {
+      leaveBorrow();
+    }
+    for (let stagedIndex = 0; stagedIndex < staged.length; stagedIndex += 1) {
+      const registrationIndex = stagedRegistrationIndices[stagedIndex]!;
+      const outcome = outcomes[registrationIndex];
+      if (outcome === undefined || outcome === SKIPPED || outcome instanceof Error || !outcome.accepted) continue;
+      try {
+        staged[stagedIndex]!.settle();
+      } catch (error) {
+        outcomes[registrationIndex] = asError(error);
+      }
+    }
+  }
+
+  #settleShapeParticipants(registrations: GlyphShapeRegistrationImpl[], outcomes: ShapeOutcome[]): void {
+    const errors = new Set<Error>();
+    for (let index = 0; index < registrations.length; index += 1) {
+      const registration = registrations[index]!;
+      if (registration.disposed) continue;
+      const outcome = outcomes[index];
+      try {
+        if (outcome === SKIPPED) continue;
+        if (outcome === undefined || outcome instanceof Error) {
+          const error = outcome ?? new Error('Glyph root did not produce a shape outcome');
+          registration.rejected(error);
+          errors.add(error);
+        } else if (outcome.accepted) {
+          registration.accepted();
+        } else {
+          const error = asError(outcome.error);
+          registration.rejected(error);
+          errors.add(error);
+        }
+      } catch (error) {
+        errors.add(asError(error));
+      }
+    }
+    if (errors.size === 1) throw errors.values().next().value;
+    if (errors.size > 1) throw new AggregateError(errors, 'multiple Glyph roots rejected shape()');
   }
 
   #disposeFontRegistration(registration: EngineFontRegistration): void {
@@ -316,20 +539,18 @@ class GlyphEngineImpl implements GlyphEngine {
     try {
       this.#fontRegistry.delete(registration.font);
     } finally {
-      for (const variant of registration.variants.values()) {
-        variant.leases = 0;
-        variant.resources.dispose();
-      }
-      registration.variants.clear();
+      for (const resources of registration.resources) resources.dispose();
+      registration.resources.clear();
+      registration.leases = 0;
     }
   }
 
   #assertActive(): void {
     if (this.#disposed || this.#disposing) throw new Error('glyph engine has been disposed');
-    this.#assertBackendAvailable();
+    this.#assertHandleStateAvailable();
   }
 
-  #assertBackendAvailable(): void {
+  #assertHandleStateAvailable(): void {
     if (this.#disposed) throw new Error('glyph engine has been disposed');
     if (this.#borrowedPlanActive) {
       throw new Error('glyph engine cannot be reentered while a borrowed render plan is active');
@@ -366,28 +587,83 @@ class GlyphEngineImpl implements GlyphEngine {
   }
 }
 
-class EngineFontBindingLeaseImpl<Technique extends AnyRasterTechnique> implements EngineFontBindingLease<Technique> {
+const SKIPPED: unique symbol = Symbol('pmndrs.glyph.shape.skipped');
+type ShapeOutcome = PlanAcceptance | Error | typeof SKIPPED | undefined;
+
+class GlyphShapeRegistrationImpl implements GlyphShapeRegistration {
+  readonly #engine: GlyphEngineImpl;
+  readonly #participant: GlyphShapeParticipant;
+  #disposed = false;
+
+  constructor(engine: GlyphEngineImpl, participant: GlyphShapeParticipant) {
+    this.#engine = engine;
+    this.#participant = participant;
+  }
+
+  get disposed(): boolean {
+    return this.#disposed;
+  }
+
+  invalidate(): void {
+    if (this.#disposed) throw new Error('Glyph shape registration has been disposed');
+    this.#engine._invalidateShapeParticipant(this);
+  }
+
+  stage(): StagedRenderPlanner | undefined {
+    return this.#participant.stage();
+  }
+
+  accepted(): void {
+    this.#participant.accepted();
+  }
+
+  rejected(error: unknown): void {
+    this.#participant.rejected(error);
+  }
+
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#engine._disposeShapeParticipant(this);
+  }
+}
+
+function requireEngineStatus(status: number, operation: string): void {
+  if (status !== textShaperAbi.status.ok) throw new GlyphEngineStatusError(operation, status);
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+class EngineFontBindingLeaseImpl<Format extends RasterFormatMetadata> implements EngineFontBindingLease<Format> {
   readonly #glyphEngine: GlyphEngineImpl;
   readonly #registration: EngineFontRegistration;
-  readonly #variant: EngineFontVariantRegistration<Technique>;
+  readonly #identity: object;
+  readonly #raster: Format;
+  readonly #resources: ImmutableFontResourceLease<Format>;
   #disposed = false;
 
   constructor(
     glyphEngine: GlyphEngineImpl,
     registration: EngineFontRegistration,
-    variant: EngineFontVariantRegistration<Technique>,
+    identity: object,
+    raster: Format,
+    resources: ImmutableFontResourceLease<Format>,
   ) {
     this.#glyphEngine = glyphEngine;
     this.#registration = registration;
-    this.#variant = variant;
+    this.#identity = identity;
+    this.#raster = raster;
+    this.#resources = resources;
   }
 
   get disposed(): boolean {
     return this.#disposed || this.#registration.disposed;
   }
 
-  get technique(): Technique {
-    return this.#variant.technique;
+  get raster(): Format {
+    return this.#raster;
   }
 
   get handle(): FontHandle {
@@ -397,13 +673,13 @@ class EngineFontBindingLeaseImpl<Technique extends AnyRasterTechnique> implement
 
   get identity(): object {
     if (this.disposed) throw new Error('engine font binding has been disposed');
-    return this.#variant.identity;
+    return this.#identity;
   }
 
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    this.#glyphEngine._releaseFont(this.#registration, this.#variant);
+    this.#glyphEngine._releaseFont(this.#registration, this.#resources);
   }
 
   /** @internal */
@@ -412,12 +688,12 @@ class EngineFontBindingLeaseImpl<Technique extends AnyRasterTechnique> implement
   }
 
   /** @internal */
-  _resources(): EngineFontBindingResources<Technique> {
+  _resources(): EngineFontBindingResources<Format> {
     if (this.disposed) throw new Error('engine font binding has been disposed');
     return {
-      font: this.#variant.resources.font,
-      raster: this.#variant.resources.raster,
-      data: this.#variant.resources.data,
+      font: this.#resources.font,
+      raster: this.#resources.raster,
+      data: this.#resources.data,
     };
   }
 }

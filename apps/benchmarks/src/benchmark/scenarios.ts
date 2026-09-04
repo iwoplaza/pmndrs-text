@@ -129,8 +129,7 @@ function mtsdfTextValidation(values: readonly import('./contracts').BenchmarkMea
       metrics.textObjectCount !== 4 ||
       typeof metrics.glyphCount !== 'number' ||
       metrics.glyphCount < 40 ||
-      typeof metrics.drawCount !== 'number' ||
-      metrics.drawCount < 4 ||
+      metrics.drawCount !== 1 ||
       typeof metrics.changedPixels !== 'number' ||
       metrics.changedPixels < 500 ||
       typeof metrics.distinctRgbColors !== 'number' ||
@@ -193,8 +192,7 @@ function slugTextValidation(values: readonly import('./contracts').BenchmarkMeas
       metrics.textObjectCount !== 4 ||
       typeof metrics.glyphCount !== 'number' ||
       metrics.glyphCount < 40 ||
-      typeof metrics.drawCount !== 'number' ||
-      metrics.drawCount < 4 ||
+      metrics.drawCount !== 1 ||
       typeof metrics.changedPixels !== 'number' ||
       metrics.changedPixels < 500 ||
       typeof metrics.distinctRgbColors !== 'number' ||
@@ -328,7 +326,7 @@ function paragraphContractsValidation(values: readonly import('./contracts').Ben
       value.metrics.cjkLayoutCount !== 12 ||
       // One natural measurement per customLayouting() plus twenty-five constrained
       // probes: intrinsic widths ride the natural pass instead of a second zero-width
-      // query, which is exactly the saving the real Paragraph API exists for.
+      // query, which is exactly the saving the Text measurement path exists for.
       value.metrics.uikitMeasurementCount !== 24 ||
       value.metrics.uikitLayoutCount !== 1
     ) {

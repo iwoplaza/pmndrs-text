@@ -5,7 +5,23 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { after, before } from 'node:test';
 
-import { FontLoader, FontLoadError, FontRegistry } from '../../dist/loader.js';
+import {
+  createFontLibrary,
+  FontLoader,
+  GlyphFontError,
+  FontRegistry,
+  openFontFaceSource,
+  openSerializedFontFaceSource,
+} from '../../dist/loader.js';
+import { immutableFontResources } from '../../dist/loaded-font.js';
+import { claimSerializedFontFace } from '../../dist/internal/font-face-transfer.js';
+import { id as glyphId } from '../../dist/config/codec.js';
+import { defineRasterFormat } from '../../dist/config/raster-format.js';
+import { compileRasterFont, registerRasterCodec } from '../../dist/config/raster.js';
+import { defineTechniqueSchema } from '../../dist/config/schema.js';
+import { bitmap } from '../../dist/raster/bitmap.js';
+import { msdf } from '../../dist/raster/msdf.js';
+import { slug } from '../../dist/raster/slug.js';
 import { bakeFont } from '@pmndrs/glyph/bake';
 import { bitmapBaker } from '@pmndrs/glyph/bakers/bitmap';
 import { validateFontArtifact } from '@pmndrs/glyph/bake';
@@ -13,6 +29,8 @@ import { validateFontArtifact } from '@pmndrs/glyph/bake';
 import { getRegisteredFontData } from '../../dist/internal/registered-font.js';
 
 const fontUrl = new URL('../../../../apps/benchmarks/fixtures/fonts/inter-v4.1/Inter-Regular.ttf', import.meta.url);
+const multiFormatUrl = new URL('../../../../apps/r3f-hello-world/assets/inter-latin.font.glb', import.meta.url);
+const multiFormatBytes = await readFile(multiFormatUrl);
 
 let root;
 let sourceBytes;
@@ -294,11 +312,11 @@ test('baked-only failures never fetch a source or invoke fallback', async () => 
 
   await assert.rejects(
     loader.load({ baked: '/missing.glb' }),
-    (error) => error instanceof FontLoadError && error.code === 'BAKED_FONT_MISSING',
+    (error) => error instanceof GlyphFontError && error.reason === 'BAKED_FONT_MISSING',
   );
   await assert.rejects(
     loader.load('/invalid.glb'),
-    (error) => error instanceof FontLoadError && error.code === 'BAKED_FONT_INVALID',
+    (error) => error instanceof GlyphFontError && error.reason === 'BAKED_FONT_INVALID',
   );
   assert.equal(bakes, 0);
 });
@@ -317,7 +335,7 @@ test('runtime output cannot claim provenance for different source bytes', async 
 
   await assert.rejects(
     loader.load('/source.ttf'),
-    (error) => error instanceof FontLoadError && error.code === 'FONT_SOURCE_IDENTITY',
+    (error) => error instanceof GlyphFontError && error.reason === 'FONT_SOURCE_IDENTITY',
   );
 });
 
@@ -413,7 +431,7 @@ test('external raster loading resolves relative to the baked core and authentica
       byteLength: pageBytes.byteLength,
       artifactHash: '0'.repeat(64),
     }),
-    (error) => error instanceof FontLoadError && error.code === 'RASTER_RESOURCE_HASH',
+    (error) => error instanceof GlyphFontError && error.reason === 'RASTER_RESOURCE_HASH',
   );
   const controller = new AbortController();
   controller.abort(new Error('page cancelled'));
@@ -435,8 +453,209 @@ test('external raster loading resolves relative to the baked core and authentica
   const otherFont = await otherRegistry.registerAsset(externalCoreBytes);
   await assert.rejects(
     otherRegistry.attachRaster(otherFont, embeddedBytes),
-    (error) => error instanceof FontLoadError && error.code === 'RASTER_ARTIFACT_HASH',
+    (error) => error instanceof GlyphFontError && error.reason === 'RASTER_ARTIFACT_HASH',
   );
+});
+
+test('FontFace source leases share one canonical main and lazily loaded sidecar dependency graph', async () => {
+  const calls = [];
+  const coreUrl = 'https://assets.test/generated/Inter-Regular.font.glb';
+  const rasterUrl = `https://assets.test/generated/${externalRasterId}`;
+  const library = createFontLibrary({
+    fetch: fixtureFetch(
+      new Map([
+        [coreUrl, externalCoreBytes],
+        [rasterUrl, externalRasterBytes],
+      ]),
+      calls,
+    ),
+  });
+
+  const [first, second] = await Promise.all([
+    openFontFaceSource(library, { baked: `${coreUrl}#first` }, []),
+    openFontFaceSource(library, new URL(`${coreUrl}#second`), []),
+  ]);
+  assert.deepEqual(calls, [coreUrl]);
+  assert.deepEqual(first.formats, ['bitmap']);
+  assert.equal(first.formats, second.formats);
+  assert.equal(Object.isFrozen(first.formats), true);
+
+  const request = bitmap({ strikes: [16] });
+  const [firstFont, secondFont] = await Promise.all([first.load(request), second.load(request)]);
+  assert.deepEqual(calls, [coreUrl, rasterUrl]);
+  assert.equal(immutableFontResources(firstFont).font, immutableFontResources(secondFont).font);
+
+  firstFont.dispose();
+  first.dispose();
+  assert.equal(secondFont.disposed, false);
+  assert.equal(secondFont.glyphCount, 2937);
+  secondFont.dispose();
+  second.dispose();
+
+  const replacement = await openFontFaceSource(library, coreUrl, []);
+  assert.deepEqual(calls, [coreUrl, rasterUrl, coreUrl]);
+  replacement.dispose();
+  library.dispose();
+});
+
+test('a serialized FontFace carries an external raster and its resolved resources without another fetch', async () => {
+  const calls = [];
+  const coreUrl = 'https://assets.test/transfer/Inter-Regular.font.glb';
+  const rasterUrl = `https://assets.test/transfer/${externalRasterId}`;
+  const pageUrl = 'https://assets.test/transfer/page.bin';
+  const pageBytes = Uint8Array.of(3, 1, 4, 1, 5, 9);
+  const pageSource = {
+    type: 'external',
+    uri: 'page.bin',
+    byteLength: pageBytes.byteLength,
+    artifactHash: createHash('sha256').update(pageBytes).digest('hex'),
+  };
+  const sourceLibrary = createFontLibrary({
+    fetch: fixtureFetch(
+      new Map([
+        [coreUrl, externalCoreBytes],
+        [rasterUrl, externalRasterBytes],
+        [pageUrl, pageBytes],
+      ]),
+      calls,
+    ),
+  });
+  const source = await openFontFaceSource(sourceLibrary, coreUrl, []);
+  const request = bitmap({ strikes: [16] });
+  const font = await source.load(request);
+  await immutableFontResources(font).raster.resource(pageSource);
+
+  const snapshot = await source.snapshot([font]);
+  assert.equal(snapshot.rasters.length, 1);
+  assert.ok(snapshot.rasters[0].data instanceof ArrayBuffer, 'the external raster sidecar is carried');
+  assert.equal(snapshot.resources.length, 1);
+  assert.deepEqual(snapshot.rasters[0].resources, [
+    { artifactHash: pageSource.artifactHash, byteLength: pageSource.byteLength },
+  ]);
+  assert.deepEqual(calls, [coreUrl, rasterUrl, pageUrl]);
+
+  const copiedMain = snapshot.data;
+  const claimed = claimSerializedFontFace(snapshot);
+  assert.equal(copiedMain.byteLength, 0, 'claiming detaches only the explicit snapshot allocation');
+  assert.equal(font.disposed, false, 'the source graph remains live after its snapshot is claimed');
+  font.dispose();
+  source.dispose();
+  sourceLibrary.dispose();
+
+  const receiverLibrary = createFontLibrary({
+    fetch() {
+      throw new Error('a complete transferred graph must not fetch');
+    },
+  });
+  const receiver = await openSerializedFontFaceSource(receiverLibrary, claimed);
+  const receivedFont = await receiver.load(request);
+  const receivedPage = await immutableFontResources(receivedFont).raster.resource(pageSource);
+  assert.deepEqual(receivedPage, pageBytes);
+
+  receivedFont.dispose();
+  receiver.dispose();
+  receiverLibrary.dispose();
+});
+
+test('exact FontFace transfers progressively converge on one receiving content graph', async () => {
+  const sourceLibrary = createFontLibrary();
+  const source = await openFontFaceSource(sourceLibrary, { baked: { bytes: multiFormatBytes, ownership: 'copy' } }, []);
+  const sourceMsdf = await source.load(msdf);
+  const msdfSnapshot = claimSerializedFontFace(await source.snapshot([sourceMsdf]));
+  const sourceSlug = await source.load(slug);
+  const slugSnapshot = claimSerializedFontFace(await source.snapshot([sourceSlug]));
+  sourceMsdf.dispose();
+  sourceSlug.dispose();
+  source.dispose();
+  sourceLibrary.dispose();
+
+  assert.deepEqual(
+    msdfSnapshot.rasters.map(({ kind }) => kind),
+    ['msdf'],
+  );
+  assert.deepEqual(
+    slugSnapshot.rasters.map(({ kind }) => kind),
+    ['slug'],
+  );
+
+  const receiverLibrary = createFontLibrary({
+    fetch() {
+      throw new Error('progressive in-memory transfers must not fetch');
+    },
+  });
+  const msdfSource = await openSerializedFontFaceSource(receiverLibrary, msdfSnapshot);
+  const receivedMsdf = await msdfSource.load(msdf);
+  const slugSource = await openSerializedFontFaceSource(receiverLibrary, slugSnapshot);
+  const receivedSlug = await slugSource.load(slug);
+
+  assert.equal(
+    immutableFontResources(receivedMsdf).font,
+    immutableFontResources(receivedSlug).font,
+    'later exact transfers enrich the same canonical receiving font',
+  );
+
+  receivedMsdf.dispose();
+  receivedSlug.dispose();
+  msdfSource.dispose();
+  slugSource.dispose();
+  receiverLibrary.dispose();
+});
+
+test('serialized FontFace claiming trusts the package-produced transfer contract', async () => {
+  const sourceLibrary = createFontLibrary();
+  const source = await openFontFaceSource(sourceLibrary, { baked: { bytes: multiFormatBytes, ownership: 'copy' } }, []);
+  const sourceFont = await source.load(msdf);
+  const snapshot = await source.snapshot([sourceFont]);
+
+  const claimed = claimSerializedFontFace({ ...snapshot, artifactHash: 'forged' });
+  sourceFont.dispose();
+  source.dispose();
+  sourceLibrary.dispose();
+
+  const receiverLibrary = createFontLibrary();
+  const received = await openSerializedFontFaceSource(receiverLibrary, claimed);
+  const receivedFont = await received.load(msdf);
+  assert.equal(receivedFont.raster, msdf);
+  receivedFont.dispose();
+  received.dispose();
+  receiverLibrary.dispose();
+});
+
+test('FontFace source leases converge identical main content across locators and retain every dependency base', async () => {
+  const calls = [];
+  const firstCoreUrl = 'https://first.test/fonts/Inter-Regular.font.glb';
+  const secondCoreUrl = 'https://second.test/fonts/Inter-Regular.font.glb';
+  const firstRasterUrl = `https://first.test/fonts/${externalRasterId}`;
+  const secondRasterUrl = `https://second.test/fonts/${externalRasterId}`;
+  const library = createFontLibrary({
+    fetch: fixtureFetch(
+      new Map([
+        [firstCoreUrl, externalCoreBytes],
+        [secondCoreUrl, externalCoreBytes],
+        [secondRasterUrl, externalRasterBytes],
+      ]),
+      calls,
+    ),
+  });
+
+  // Establish the missing dependency base first so this test deterministically proves fallback to the equivalent source.
+  const first = await openFontFaceSource(library, firstCoreUrl, []);
+  const second = await openFontFaceSource(library, secondCoreUrl, []);
+  const request = bitmap({ strikes: [16] });
+  const firstFont = await first.load(request);
+  const secondFont = await second.load(request);
+
+  assert.equal(immutableFontResources(firstFont).font, immutableFontResources(secondFont).font);
+  assert.equal(calls.filter((url) => url === firstCoreUrl).length, 1);
+  assert.equal(calls.filter((url) => url === secondCoreUrl).length, 1);
+  assert.equal(calls.filter((url) => url === firstRasterUrl).length, 1);
+  assert.equal(calls.filter((url) => url === secondRasterUrl).length, 1);
+
+  firstFont.dispose();
+  secondFont.dispose();
+  first.dispose();
+  second.dispose();
+  library.dispose();
 });
 
 test('registries isolate generations, own their bytes, enforce limits, and invalidate disposal', async () => {
@@ -460,7 +679,7 @@ test('registries isolate generations, own their bytes, enforce limits, and inval
   const limited = new FontRegistry({ maxArtifactBytes: embeddedBytes.byteLength - 1 });
   await assert.rejects(
     limited.registerAsset(embeddedBytes),
-    (error) => error instanceof FontLoadError && error.code === 'FONT_RESOURCE_LIMIT',
+    (error) => error instanceof GlyphFontError && error.reason === 'FONT_RESOURCE_LIMIT',
   );
 });
 
@@ -476,7 +695,7 @@ test('raster handles are generation-scoped and become stale on disposal', async 
   assert.equal(font.getRaster(reference.rasterKey), undefined);
   assert.throws(
     () => first.view(view),
-    (error) => error instanceof FontLoadError && error.code === 'STALE_RASTER_HANDLE',
+    (error) => error instanceof GlyphFontError && error.reason === 'STALE_RASTER_HANDLE',
   );
 
   const second = await font.loadRaster({ rasterKey: reference.rasterKey, kind: 'bitmap' });
@@ -484,7 +703,7 @@ test('raster handles are generation-scoped and become stale on disposal', async 
   font.dispose();
   assert.throws(
     () => second.view(view),
-    (error) => error instanceof FontLoadError && error.code === 'STALE_FONT_HANDLE',
+    (error) => error instanceof GlyphFontError && error.reason === 'STALE_FONT_HANDLE',
   );
 });
 
@@ -495,7 +714,7 @@ test('fetch limits reject both declared and streamed excess before registration'
   });
   await assert.rejects(
     streamed.load({ baked: 'https://assets.test/streamed.glb' }),
-    (error) => error instanceof FontLoadError && error.code === 'BAKED_FONT_RESOURCE_LIMIT',
+    (error) => error instanceof GlyphFontError && error.reason === 'BAKED_FONT_RESOURCE_LIMIT',
   );
 
   const declared = new FontLoader({
@@ -506,7 +725,7 @@ test('fetch limits reject both declared and streamed excess before registration'
   });
   await assert.rejects(
     declared.load({ baked: 'https://assets.test/declared.glb' }),
-    (error) => error instanceof FontLoadError && error.code === 'BAKED_FONT_RESOURCE_LIMIT',
+    (error) => error instanceof GlyphFontError && error.reason === 'BAKED_FONT_RESOURCE_LIMIT',
   );
 });
 
@@ -567,6 +786,51 @@ test('the final detached caller aborts underlying work and a later request start
   assert.equal(recovered.glyphCount, 2937);
   assert.equal(calls, 2);
   assert.notEqual(signals[0], signals[1]);
+});
+
+test('a loaded format late-binds its exact Codec after loading', async () => {
+  const firstFormat = defineRasterFormat({
+    id: 'test.loader-concrete-witness',
+    kind: bitmap.kind,
+    extension: bitmap.extension,
+    version: bitmap.version,
+    textEffects: bitmap.textEffects,
+    descriptor: (options) => bitmap.descriptor(options),
+    decode: (font, raster, signal) => bitmap.decode(font, raster, signal),
+    dispose: (data) => bitmap.dispose(data),
+  });
+  const library = createFontLibrary();
+  const source = await openFontFaceSource(library, { baked: { bytes: embeddedBytes, ownership: 'copy' } }, []);
+  const firstFont = await source.load(firstFormat({ strikes: [16] }));
+
+  assert.equal(firstFont.raster, firstFormat);
+  assert.equal(compileRasterFont(firstFont, glyphId), undefined);
+
+  const schema = defineTechniqueSchema({
+    technique: firstFormat.id,
+    scope: 'glyph',
+    binding: {},
+    buffers: {},
+    resources: { atlas: { kind: 'buffer' } },
+    render: { resource: 'atlas', geometry: { kind: 'synthetic-quad' } },
+  });
+  const lateCompiler = new Error('late loader compiler invoked');
+  registerRasterCodec({
+    raster: firstFormat,
+    schema,
+    codecBody: () => ({ inputs: [], operations: [], f32InputCount: 0, u32InputCount: 0 }),
+    compileFont() {
+      throw lateCompiler;
+    },
+  });
+
+  assert.throws(
+    () => compileRasterFont(firstFont, glyphId),
+    (error) => error === lateCompiler,
+  );
+  firstFont.dispose();
+  source.dispose();
+  library.dispose();
 });
 
 function fixtureFetch(routes, calls) {

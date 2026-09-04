@@ -8,21 +8,17 @@ use alloc::vec::Vec;
 use core::mem;
 
 use super::{
-    identity_index::IdentitySet,
-    plan_draw::{GlyphDraw, push_glyph_draw},
-    plan_input::{
-        draw_fields_compatible, draw_span_compatible, indexed_span_bounds, span_bounds,
-        validate_glyph, validate_input,
+    codec::{
+        ALLOCATION_ORDERED_DIRECT, BATCH_MATERIAL, BATCH_TRANSFORM, BufferSchema, CapabilitySetId,
+        TechniqueId, ValidatedCodec,
     },
+    plan_draw::{GlyphDraw, independent_draw_sort_key, push_glyph_draw},
+    plan_input::{draw_fields_compatible, draw_span_compatible, indexed_span_bounds, span_bounds},
     plan_packing::{
         MAX_PHYSICAL_BUFFERS, PendingAllocation, PhysicalBufferState, RangeJob, RecordRange,
         align_record_range, align_up, apply_writes, buffer_record_alignment,
         coalesce_buffer_ranges, collect_range_jobs, execute_run, grown_capacity,
         push_pending_allocation, record_alignment, take_allocation,
-    },
-    policy::{
-        ALLOCATION_ORDERED_DIRECT, BATCH_MATERIAL, BATCH_TRANSFORM, BufferSchema, CapabilitySetId,
-        TechniqueId, ValidatedPolicy,
     },
     render_plan::{
         BUFFER_ORDERED_DIRECT, BufferRecord, DrawRecord, PATCH_ALLOCATE_OR_RESIZE, PATCH_WRITE,
@@ -86,9 +82,9 @@ struct PendingBatch {
 
 #[derive(Clone, Copy)]
 struct PrepareContext<'a> {
-    policy: &'a ValidatedPolicy,
+    codec: &'a ValidatedCodec,
     capability_set: CapabilitySetId,
-    capability: &'a super::policy::CapabilitySet,
+    capability: &'a super::codec::CapabilitySet,
     input: OrderedPlanInput<'a>,
     checkpoint: bool,
     publication_generation: u32,
@@ -106,7 +102,6 @@ pub struct OrderedPlanCompiler {
     pending_allocations: Vec<PendingAllocation>,
     input_batches: Vec<u32>,
     input_slots: Vec<u32>,
-    identity_set: IdentitySet,
     batch_cursors: Vec<u32>,
     changed_ranges: Vec<RecordRange>,
     buffer_ranges: [Vec<RecordRange>; MAX_PHYSICAL_BUFFERS],
@@ -123,8 +118,8 @@ pub struct OrderedPlanCompiler {
     payload: Vec<u8>,
     next_buffer_id: u32,
     pending_next_buffer_id: u32,
-    policy_fingerprint: u64,
-    pending_policy_fingerprint: u64,
+    codec_fingerprint: u64,
+    pending_codec_fingerprint: u64,
     capability_set: u32,
     pending_capability_set: u32,
     buffer_id_limit: u32,
@@ -144,14 +139,14 @@ impl OrderedPlanCompiler {
 
     pub fn prepare(
         &mut self,
-        policy: &ValidatedPolicy,
+        codec: &ValidatedCodec,
         capability_set: CapabilitySetId,
         input: OrderedPlanInput<'_>,
         checkpoint: bool,
         publication_generation: u32,
     ) -> Result<(), OrderedPlanError> {
         self.prepare_internal(
-            policy,
+            codec,
             capability_set,
             input,
             checkpoint,
@@ -162,14 +157,14 @@ impl OrderedPlanCompiler {
 
     pub(crate) fn prepare_filtered(
         &mut self,
-        policy: &ValidatedPolicy,
+        codec: &ValidatedCodec,
         capability_set: CapabilitySetId,
         input: OrderedPlanInput<'_>,
         checkpoint: bool,
         publication_generation: u32,
     ) -> Result<(), OrderedPlanError> {
         self.prepare_internal(
-            policy,
+            codec,
             capability_set,
             input,
             checkpoint,
@@ -180,7 +175,7 @@ impl OrderedPlanCompiler {
 
     fn prepare_internal(
         &mut self,
-        policy: &ValidatedPolicy,
+        codec: &ValidatedCodec,
         capability_set: CapabilitySetId,
         input: OrderedPlanInput<'_>,
         checkpoint: bool,
@@ -193,25 +188,25 @@ impl OrderedPlanCompiler {
         if publication_generation == 0 {
             return Err(OrderedPlanError::InvalidIdentity);
         }
-        let capability = policy
+        let capability = codec
             .capability_set(capability_set)
             .ok_or(OrderedPlanError::CapabilitySetMissing)?;
-        validate_input(input)?;
+        u32::try_from(input.glyphs.len()).map_err(|_| OrderedPlanError::ArithmeticOverflow)?;
         self.reset_pending();
         let retained_topology =
-            !checkpoint && self.prepare_retained_topology(policy, capability_set, input)?;
+            !checkpoint && self.prepare_retained_topology(codec, capability_set, input)?;
         #[cfg(test)]
         if retained_topology {
             self.retained_topology_preparations += 1;
         }
         if !retained_topology {
-            self.prepare_complete_topology(policy, capability_set, input, strict_strategy)?;
+            self.prepare_complete_topology(codec, capability_set, input, strict_strategy)?;
         }
         self.pending_next_buffer_id = self.next_buffer_id;
-        self.pending_policy_fingerprint = policy.fingerprint();
+        self.pending_codec_fingerprint = codec.fingerprint();
         self.pending_capability_set = capability_set.0;
         let context = PrepareContext {
-            policy,
+            codec,
             capability_set,
             capability,
             input,
@@ -237,27 +232,27 @@ impl OrderedPlanCompiler {
 
     pub fn plan_view(
         &self,
-        policy_handle: u32,
+        codec_handle: u32,
         capability_set: CapabilitySetId,
-        policy_fingerprint: u64,
+        codec_fingerprint: u64,
     ) -> Result<RenderPlanView<'_>, OrderedPlanError> {
-        self.plan_view_internal(policy_handle, capability_set, policy_fingerprint, false)
+        self.plan_view_internal(codec_handle, capability_set, codec_fingerprint, false)
     }
 
     pub(crate) fn plan_view_forced(
         &self,
-        policy_handle: u32,
+        codec_handle: u32,
         capability_set: CapabilitySetId,
-        policy_fingerprint: u64,
+        codec_fingerprint: u64,
     ) -> Result<RenderPlanView<'_>, OrderedPlanError> {
-        self.plan_view_internal(policy_handle, capability_set, policy_fingerprint, true)
+        self.plan_view_internal(codec_handle, capability_set, codec_fingerprint, true)
     }
 
     fn plan_view_internal(
         &self,
-        policy_handle: u32,
+        codec_handle: u32,
         capability_set: CapabilitySetId,
-        policy_fingerprint: u64,
+        codec_fingerprint: u64,
         force_bindings: bool,
     ) -> Result<RenderPlanView<'_>, OrderedPlanError> {
         if !self.prepared {
@@ -284,9 +279,9 @@ impl OrderedPlanCompiler {
             &[]
         };
         Ok(RenderPlanView {
-            policy_handle,
+            codec_handle,
             capability_set: capability_set.0,
-            policy_fingerprint,
+            codec_fingerprint,
             resources,
             buffers,
             patches: &self.patches,
@@ -343,7 +338,7 @@ impl OrderedPlanCompiler {
         mem::swap(&mut self.live_draws, &mut self.draws);
         self.draws.clear();
         self.next_buffer_id = self.pending_next_buffer_id;
-        self.policy_fingerprint = self.pending_policy_fingerprint;
+        self.codec_fingerprint = self.pending_codec_fingerprint;
         self.capability_set = self.pending_capability_set;
         self.prepared = false;
         Ok(())
@@ -386,7 +381,7 @@ impl OrderedPlanCompiler {
 
     fn prepare_complete_topology(
         &mut self,
-        policy: &ValidatedPolicy,
+        codec: &ValidatedCodec,
         capability_set: CapabilitySetId,
         input: OrderedPlanInput<'_>,
         strict_strategy: bool,
@@ -397,8 +392,6 @@ impl OrderedPlanCompiler {
         self.input_batches.resize(input.glyphs.len(), NONE);
         self.input_batches.fill(NONE);
         self.input_slots.resize(input.glyphs.len(), 0);
-        self.identity_set.prepare(input.glyphs.len())?;
-
         let mut cached_kind_program = None;
         for (input_index, glyph) in input.glyphs.iter().copied().enumerate() {
             let program = match cached_kind_program {
@@ -408,17 +401,13 @@ impl OrderedPlanCompiler {
                     program
                 }
                 _ => {
-                    let program = policy
+                    let program = codec
                         .program(capability_set, glyph.technique, glyph.program_variant)
                         .ok_or(OrderedPlanError::ProgramMissing)?;
                     cached_kind_program = Some((glyph.technique, glyph.program_variant, program));
                     program
                 }
             };
-            validate_glyph(glyph, program.primitive_kind == PRIMITIVE_DECORATION)?;
-            if !self.identity_set.insert(glyph.stable_id) {
-                return Err(OrderedPlanError::DuplicateIdentity);
-            }
             if program.allocation_strategy != ALLOCATION_ORDERED_DIRECT {
                 if strict_strategy {
                     return Err(OrderedPlanError::UnsupportedStrategy);
@@ -477,11 +466,11 @@ impl OrderedPlanCompiler {
 
     fn prepare_retained_topology(
         &mut self,
-        policy: &ValidatedPolicy,
+        codec: &ValidatedCodec,
         capability_set: CapabilitySetId,
         input: OrderedPlanInput<'_>,
     ) -> Result<bool, OrderedPlanError> {
-        if self.policy_fingerprint != policy.fingerprint()
+        if self.codec_fingerprint != codec.fingerprint()
             || self.capability_set != capability_set.0
             || self.input_batches.len() != input.glyphs.len()
             || self.input_slots.len() != input.glyphs.len()
@@ -489,27 +478,7 @@ impl OrderedPlanCompiler {
         {
             return Ok(false);
         }
-        self.identity_set.prepare(input.glyphs.len())?;
-        let mut cached_kind_program = None;
         for (input_index, glyph) in input.glyphs.iter().copied().enumerate() {
-            let program = match cached_kind_program {
-                Some((technique, variant, program))
-                    if technique == glyph.technique && variant == glyph.program_variant =>
-                {
-                    program
-                }
-                _ => {
-                    let program = policy
-                        .program(capability_set, glyph.technique, glyph.program_variant)
-                        .ok_or(OrderedPlanError::ProgramMissing)?;
-                    cached_kind_program = Some((glyph.technique, glyph.program_variant, program));
-                    program
-                }
-            };
-            validate_glyph(glyph, program.primitive_kind == PRIMITIVE_DECORATION)?;
-            if !self.identity_set.insert(glyph.stable_id) {
-                return Err(OrderedPlanError::DuplicateIdentity);
-            }
             let batch_index = self.input_batches[input_index];
             if batch_index == NONE {
                 return Ok(false);
@@ -633,7 +602,7 @@ impl OrderedPlanCompiler {
         batch_index: usize,
     ) -> Result<(), OrderedPlanError> {
         let PrepareContext {
-            policy,
+            codec,
             capability_set,
             capability,
             input,
@@ -642,7 +611,7 @@ impl OrderedPlanCompiler {
         } = context;
         let pending = self.pending_batches[batch_index];
         let key = pending.state.key;
-        let program = policy
+        let program = codec
             .program(capability_set, key.technique, key.program_variant)
             .ok_or(OrderedPlanError::ProgramMissing)?;
         let prior = pending
@@ -751,7 +720,7 @@ impl OrderedPlanCompiler {
         }
 
         self.write_changed_ranges(
-            policy,
+            codec,
             capability_set,
             capability,
             input,
@@ -788,11 +757,11 @@ impl OrderedPlanCompiler {
     #[allow(clippy::too_many_arguments)]
     fn write_changed_ranges(
         &mut self,
-        policy: &ValidatedPolicy,
+        codec: &ValidatedCodec,
         capability_set: CapabilitySetId,
-        capability: &super::policy::CapabilitySet,
+        capability: &super::codec::CapabilitySet,
         input: OrderedPlanInput<'_>,
-        program: &super::policy::ProgramDescriptor,
+        program: &super::codec::ProgramDescriptor,
         prior: Option<BatchState>,
         pending: PendingBatch,
         replace: bool,
@@ -811,7 +780,7 @@ impl OrderedPlanCompiler {
         }
         for changed in self.changed_ranges.iter().copied() {
             let active_buffers = active_buffers_for_range(
-                policy,
+                codec,
                 capability_set,
                 program,
                 prior_instances,
@@ -893,7 +862,7 @@ impl OrderedPlanCompiler {
                     slot += 1;
                 }
                 execute_run(
-                    policy,
+                    codec,
                     capability_set,
                     program,
                     input,
@@ -957,7 +926,7 @@ impl OrderedPlanCompiler {
         for batch_index in 0..self.pending_batches.len() {
             let batch = self.pending_batches[batch_index];
             let program = context
-                .policy
+                .codec
                 .program(
                     context.capability_set,
                     batch.state.key.technique,
@@ -976,7 +945,7 @@ impl OrderedPlanCompiler {
                     id: batch.buffer_ids[schema_index],
                     generation: batch.buffer_generations[schema_index],
                     program_id: batch.state.key.program_id,
-                    policy_buffer_id: schema.id.0,
+                    codec_buffer_id: schema.id.0,
                     scalar_type: schema.scalar as u8,
                     vector_width: schema.vector_width,
                     strategy: BUFFER_ORDERED_DIRECT,
@@ -1063,7 +1032,7 @@ impl OrderedPlanCompiler {
             let batch_index = self.input_batches[input_index] as usize;
             let first_slot = self.input_slots[input_index];
             let program = context
-                .policy
+                .codec
                 .program(
                     context.capability_set,
                     first.technique,
@@ -1150,7 +1119,7 @@ impl OrderedPlanCompiler {
         for batch_index in 0..self.pending_batches.len() {
             let batch = self.pending_batches[batch_index];
             let program = context
-                .policy
+                .codec
                 .program(
                     context.capability_set,
                     batch.state.key.technique,
@@ -1237,7 +1206,7 @@ impl OrderedPlanCompiler {
         reserve(&mut self.sort_pairs, self.draws.len())?;
         for (index, draw) in self.draws.iter().enumerate() {
             self.sort_pairs
-                .push((u64::from(draw.order_token), index as u32));
+                .push((independent_draw_sort_key(draw), index as u32));
         }
         sort::sort_pairs(&mut self.sort_pairs);
         sort::apply_pair_order(&mut self.draws, &mut self.sort_pairs);
@@ -1328,9 +1297,9 @@ impl OrderedPlanCompiler {
 }
 
 fn active_buffers_for_range(
-    policy: &ValidatedPolicy,
+    codec: &ValidatedCodec,
     capability_set: CapabilitySetId,
-    program: &super::policy::ProgramDescriptor,
+    program: &super::codec::ProgramDescriptor,
     previous: &[InstanceState],
     next: &[InstanceState],
     changed: RecordRange,
@@ -1340,7 +1309,7 @@ fn active_buffers_for_range(
     if replace {
         return Ok(all);
     }
-    let dependencies = policy
+    let dependencies = codec
         .buffer_dependency_masks(capability_set, program.technique, program.variant)
         .ok_or(OrderedPlanError::ProgramMissing)?;
     let mut active = 0_u32;
@@ -1430,7 +1399,7 @@ fn range(start: u32, count: u32) -> Result<core::ops::Range<usize>, OrderedPlanE
     Ok(start as usize..end as usize)
 }
 
-fn batch_key(program: &super::policy::ProgramDescriptor, glyph: OrderedGlyph) -> BatchKey {
+fn batch_key(program: &super::codec::ProgramDescriptor, glyph: OrderedGlyph) -> BatchKey {
     BatchKey {
         technique: glyph.technique,
         program_variant: glyph.program_variant,
@@ -1445,12 +1414,12 @@ fn batch_key(program: &super::policy::ProgramDescriptor, glyph: OrderedGlyph) ->
         } else {
             0
         },
-        clip_id: if program.storage_key_mask & super::policy::BATCH_CLIP != 0 {
+        clip_id: if program.storage_key_mask & super::codec::BATCH_CLIP != 0 {
             glyph.clip_id
         } else {
             0
         },
-        depth_key: if program.storage_key_mask & super::policy::BATCH_DEPTH != 0 {
+        depth_key: if program.storage_key_mask & super::codec::BATCH_DEPTH != 0 {
             glyph.depth_key
         } else {
             0
@@ -1466,8 +1435,8 @@ fn batch_key_matches(key: BatchKey, glyph: OrderedGlyph) -> bool {
         && key.resource_kind == glyph.resource_kind
         && key.resource_reference == glyph.resource_reference
         && (key.storage_key_mask & BATCH_MATERIAL == 0 || key.material_id == glyph.material_id)
-        && (key.storage_key_mask & super::policy::BATCH_CLIP == 0 || key.clip_id == glyph.clip_id)
-        && (key.storage_key_mask & super::policy::BATCH_DEPTH == 0
+        && (key.storage_key_mask & super::codec::BATCH_CLIP == 0 || key.clip_id == glyph.clip_id)
+        && (key.storage_key_mask & super::codec::BATCH_DEPTH == 0
             || key.depth_key == glyph.depth_key)
 }
 
@@ -1480,10 +1449,10 @@ fn reserve<T>(values: &mut Vec<T>, additional: usize) -> Result<(), OrderedPlanE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::policy::{
+    use crate::engine::codec::{
         BATCH_MATERIAL, BATCH_ORDER, BATCH_PROGRAM, BATCH_RESOURCE, BATCH_TECHNIQUE,
         BUFFER_USAGE_COPY_DST, BUFFER_USAGE_STORAGE, BufferId, CAP_ORDERED_DIRECT, CapabilitySet,
-        Operation, PolicyDescriptor, ProgramCapabilities, ProgramDescriptor, ProgramId, ScalarType,
+        CodecDescriptor, Operation, ProgramCapabilities, ProgramDescriptor, ProgramId, ScalarType,
     };
     use crate::engine::render_plan_wire::plan_layout;
     use alloc::vec;
@@ -1493,13 +1462,13 @@ mod tests {
 
     #[test]
     fn ordered_direct_uses_identity_revisions_instead_of_scanning_physical_bytes() {
-        let policy = policy();
+        let codec = codec();
         let mut compiler = OrderedPlanCompiler::default();
         let x = [1.0, 2.0, 3.0];
         let glyphs = [glyph(1, 1), glyph(2, 1), glyph(3, 1)];
-        prepare(&mut compiler, &policy, &glyphs, &x, true);
+        prepare(&mut compiler, &codec, &glyphs, &x, true);
         let first = compiler
-            .plan_view(7, CAPABILITY, policy.fingerprint())
+            .plan_view(7, CAPABILITY, codec.fingerprint())
             .unwrap();
         assert_eq!(first.buffers.len(), 1);
         assert_eq!(first.patches.len(), 2);
@@ -1513,9 +1482,9 @@ mod tests {
 
         let changed_x = [1.0, 20.0, 3.0];
         let changed = [glyph(1, 1), glyph(2, 2), glyph(3, 1)];
-        prepare(&mut compiler, &policy, &changed, &changed_x, false);
+        prepare(&mut compiler, &codec, &changed, &changed_x, false);
         let delta = compiler
-            .plan_view(7, CAPABILITY, policy.fingerprint())
+            .plan_view(7, CAPABILITY, codec.fingerprint())
             .unwrap();
         assert_eq!(delta.patches.len(), 1);
         assert_eq!(delta.patches[0].destination_offset, 4);
@@ -1529,17 +1498,17 @@ mod tests {
 
     #[test]
     fn semantic_dependencies_suppress_unrelated_physical_buffer_writes() {
-        let policy = policy();
+        let codec = codec();
         let mut compiler = OrderedPlanCompiler::default();
         let initial = [glyph(1, 1)];
-        prepare(&mut compiler, &policy, &initial, &[1.0], true);
+        prepare(&mut compiler, &codec, &initial, &[1.0], true);
         compiler.commit().unwrap();
 
         let mut block_changed = glyph(1, 2);
         block_changed.block_start = 4.0;
         compiler
             .prepare(
-                &policy,
+                &codec,
                 CAPABILITY,
                 OrderedPlanInput {
                     glyphs: &[block_changed],
@@ -1554,7 +1523,7 @@ mod tests {
             .unwrap();
         assert!(
             compiler
-                .plan_view(7, CAPABILITY, policy.fingerprint())
+                .plan_view(7, CAPABILITY, codec.fingerprint())
                 .unwrap()
                 .patches
                 .is_empty()
@@ -1563,7 +1532,7 @@ mod tests {
 
         compiler
             .prepare(
-                &policy,
+                &codec,
                 CAPABILITY,
                 OrderedPlanInput {
                     glyphs: &[glyph(1, 3)],
@@ -1577,7 +1546,7 @@ mod tests {
             )
             .unwrap();
         let plan = compiler
-            .plan_view(7, CAPABILITY, policy.fingerprint())
+            .plan_view(7, CAPABILITY, codec.fingerprint())
             .unwrap();
         assert_eq!(plan.patches.len(), 1);
         assert_eq!(plan.payload, 2.0_f32.to_le_bytes());
@@ -1585,22 +1554,22 @@ mod tests {
 
     #[test]
     fn insertion_rewrites_only_the_ordered_batch_suffix_and_abort_preserves_state() {
-        let policy = policy();
+        let codec = codec();
         let mut compiler = OrderedPlanCompiler::default();
         let initial = [glyph(1, 1), glyph(2, 1), glyph(3, 1)];
-        prepare(&mut compiler, &policy, &initial, &[1.0, 2.0, 3.0], true);
+        prepare(&mut compiler, &codec, &initial, &[1.0, 2.0, 3.0], true);
         compiler.commit().unwrap();
 
         let inserted = [glyph(1, 1), glyph(4, 1), glyph(2, 1), glyph(3, 1)];
         prepare(
             &mut compiler,
-            &policy,
+            &codec,
             &inserted,
             &[1.0, 4.0, 2.0, 3.0],
             false,
         );
         let plan = compiler
-            .plan_view(7, CAPABILITY, policy.fingerprint())
+            .plan_view(7, CAPABILITY, codec.fingerprint())
             .unwrap();
         assert_eq!(plan.patches[0].opcode, PATCH_WRITE);
         assert_eq!(plan.patches[0].destination_offset, 4);
@@ -1610,21 +1579,21 @@ mod tests {
 
     #[test]
     fn no_op_emits_nothing_and_tail_deletion_updates_only_live_metadata() {
-        let policy = policy();
+        let codec = codec();
         let mut compiler = OrderedPlanCompiler::default();
         let initial = [glyph(1, 1), glyph(2, 1), glyph(3, 1)];
-        prepare(&mut compiler, &policy, &initial, &[1.0, 2.0, 3.0], true);
+        prepare(&mut compiler, &codec, &initial, &[1.0, 2.0, 3.0], true);
         compiler.commit().unwrap();
 
         prepare(
             &mut compiler,
-            &policy,
+            &codec,
             &initial,
             &[999.0, 999.0, 999.0],
             false,
         );
         let no_op = compiler
-            .plan_view(7, CAPABILITY, policy.fingerprint())
+            .plan_view(7, CAPABILITY, codec.fingerprint())
             .unwrap();
         assert!(no_op.resources.is_empty());
         assert!(no_op.buffers.is_empty());
@@ -1635,9 +1604,9 @@ mod tests {
         compiler.commit().unwrap();
         assert_eq!(read_f32(compiler.buffer_bytes(1).unwrap(), 0), 1.0);
 
-        prepare(&mut compiler, &policy, &initial[..2], &[1.0, 2.0], false);
+        prepare(&mut compiler, &codec, &initial[..2], &[1.0, 2.0], false);
         let shrink = compiler
-            .plan_view(7, CAPABILITY, policy.fingerprint())
+            .plan_view(7, CAPABILITY, codec.fingerprint())
             .unwrap();
         assert_eq!(shrink.buffers[0].live_records, 2);
         assert!(shrink.patches.is_empty());
@@ -1648,7 +1617,7 @@ mod tests {
 
     #[test]
     fn interleaved_resources_compile_to_ordered_spans_with_shared_bindings() {
-        let policy = policy();
+        let codec = codec();
         let mut compiler = OrderedPlanCompiler::default();
         let a1 = glyph(1, 1);
         let a2 = glyph(2, 1);
@@ -1657,16 +1626,19 @@ mod tests {
         b.resource_reference = 100;
         let a3 = glyph(4, 1);
         let glyphs = [a1, a2, b, a3];
-        prepare(&mut compiler, &policy, &glyphs, &[1.0, 2.0, 3.0, 4.0], true);
+        prepare(&mut compiler, &codec, &glyphs, &[1.0, 2.0, 3.0, 4.0], true);
         let plan = compiler
-            .plan_view(7, CAPABILITY, policy.fingerprint())
+            .plan_view(7, CAPABILITY, codec.fingerprint())
             .unwrap();
 
         assert_eq!(plan.resources.len(), 2);
         assert_eq!(plan.buffers.len(), 2);
         assert_eq!(plan.primitives.len(), 3);
         assert_eq!(plan.draws.len(), 3);
-        assert_eq!(plan.primitives[0].record_count, 2);
+        assert_eq!(
+            plan.primitives[plan.draws[0].primitive_start as usize].record_count,
+            2
+        );
         assert_eq!(plan.primitives[0].record_index, 0);
         assert_eq!(plan.primitives[1].resource_id, 12);
         assert_eq!(plan.primitives[2].resource_id, 11);
@@ -1679,7 +1651,7 @@ mod tests {
 
     #[test]
     fn independent_compositing_batches_interleaved_resources() {
-        let policy = policy();
+        let codec = codec();
         let mut compiler = OrderedPlanCompiler::default();
         let a1 = glyph(1, 1);
         let a2 = glyph(2, 1);
@@ -1690,7 +1662,7 @@ mod tests {
         let glyphs = [a1, a2, b, a3];
         compiler
             .prepare(
-                &policy,
+                &codec,
                 CAPABILITY,
                 OrderedPlanInput {
                     glyphs: &glyphs,
@@ -1704,7 +1676,7 @@ mod tests {
             )
             .unwrap();
         let plan = compiler
-            .plan_view(7, CAPABILITY, policy.fingerprint())
+            .plan_view(7, CAPABILITY, codec.fingerprint())
             .unwrap();
 
         assert_eq!(plan.draws.len(), 2);
@@ -1719,16 +1691,88 @@ mod tests {
     }
 
     #[test]
+    fn independent_compositing_flattens_paint_layers_and_preserves_layer_order() {
+        let codec = codec();
+        let mut compiler = OrderedPlanCompiler::default();
+        let mut over = glyph(1, 1);
+        over.depth_key = 2;
+        let mut under_a = glyph(2, 1);
+        under_a.depth_key = 0;
+        let mut content = glyph(3, 1);
+        content.depth_key = 1;
+        let mut under_b = glyph(4, 1);
+        under_b.depth_key = 0;
+        let glyphs = [over, under_a, content, under_b];
+        compiler
+            .prepare(
+                &codec,
+                CAPABILITY,
+                OrderedPlanInput {
+                    glyphs: &glyphs,
+                    semantic_change_masks: &[],
+                    f32_fields: &[&[1.0, 2.0, 3.0, 4.0]],
+                    u32_fields: &[],
+                    order_independent: true,
+                },
+                true,
+                1,
+            )
+            .unwrap();
+        let plan = compiler
+            .plan_view(7, CAPABILITY, codec.fingerprint())
+            .unwrap();
+
+        assert_eq!(plan.draws.len(), 3);
+        assert_eq!(
+            plan.draws
+                .iter()
+                .map(|draw| (draw.depth_key, draw.order_token))
+                .collect::<Vec<_>>(),
+            vec![(0, 1), (1, 2), (2, 0)]
+        );
+        assert_eq!(
+            plan.primitives[plan.draws[0].primitive_start as usize].record_count,
+            2
+        );
+        assert!(plan_layout(plan).is_ok());
+    }
+
+    #[test]
+    fn ordered_compositing_keeps_authored_order_across_paint_layers() {
+        let codec = codec();
+        let mut compiler = OrderedPlanCompiler::default();
+        let mut over = glyph(1, 1);
+        over.depth_key = 2;
+        let mut under = glyph(2, 1);
+        under.depth_key = 0;
+        let mut content = glyph(3, 1);
+        content.depth_key = 1;
+        let glyphs = [over, under, content];
+        prepare(&mut compiler, &codec, &glyphs, &[1.0, 2.0, 3.0], true);
+        let plan = compiler
+            .plan_view(7, CAPABILITY, codec.fingerprint())
+            .unwrap();
+
+        assert_eq!(
+            plan.draws
+                .iter()
+                .map(|draw| (draw.depth_key, draw.order_token))
+                .collect::<Vec<_>>(),
+            vec![(2, 0), (0, 1), (1, 2)]
+        );
+    }
+
+    #[test]
     fn material_identity_splits_draws_without_splitting_physical_storage() {
-        let policy = policy();
+        let codec = codec();
         let mut compiler = OrderedPlanCompiler::default();
         let first = glyph(1, 1);
         let mut second = glyph(2, 1);
         second.material_id = 2;
         let glyphs = [first, second];
-        prepare(&mut compiler, &policy, &glyphs, &[1.0, 2.0], true);
+        prepare(&mut compiler, &codec, &glyphs, &[1.0, 2.0], true);
         let plan = compiler
-            .plan_view(7, CAPABILITY, policy.fingerprint())
+            .plan_view(7, CAPABILITY, codec.fingerprint())
             .unwrap();
 
         assert_eq!(plan.buffers.len(), 1);
@@ -1741,15 +1785,15 @@ mod tests {
     }
 
     #[test]
-    fn policy_selects_draw_split_or_instance_transform_indirection() {
+    fn codec_selects_draw_split_or_instance_transform_indirection() {
         let mut glyphs = [glyph(1, 1), glyph(2, 1)];
         glyphs[1].transform_id = 2;
         for (split_transform, expected) in [(true, &[1, 2][..]), (false, &[0][..])] {
-            let policy = policy_with_options(false, 1024, split_transform);
+            let codec = codec_with_options(false, 1024, split_transform);
             let mut compiler = OrderedPlanCompiler::default();
-            prepare(&mut compiler, &policy, &glyphs, &[1.0, 2.0], true);
+            prepare(&mut compiler, &codec, &glyphs, &[1.0, 2.0], true);
             let plan = compiler
-                .plan_view(7, CAPABILITY, policy.fingerprint())
+                .plan_view(7, CAPABILITY, codec.fingerprint())
                 .unwrap();
             assert_eq!(
                 plan.draws
@@ -1769,16 +1813,16 @@ mod tests {
     }
 
     #[test]
-    fn policy_can_partition_physical_storage_by_material() {
-        let policy = policy_with_material_storage(true);
+    fn codec_can_partition_physical_storage_by_material() {
+        let codec = codec_with_material_storage(true);
         let mut compiler = OrderedPlanCompiler::default();
         let first = glyph(1, 1);
         let mut second = glyph(2, 1);
         second.material_id = 2;
         let glyphs = [first, second];
-        prepare(&mut compiler, &policy, &glyphs, &[1.0, 2.0], true);
+        prepare(&mut compiler, &codec, &glyphs, &[1.0, 2.0], true);
         let plan = compiler
-            .plan_view(7, CAPABILITY, policy.fingerprint())
+            .plan_view(7, CAPABILITY, codec.fingerprint())
             .unwrap();
 
         assert_eq!(plan.buffers.len(), 2);
@@ -1789,20 +1833,14 @@ mod tests {
 
     #[test]
     fn retained_topology_requires_unchanged_physical_storage_membership() {
-        let policy = policy_with_material_storage(true);
+        let codec = codec_with_material_storage(true);
         let mut compiler = OrderedPlanCompiler::default();
         let initial = [glyph(1, 1), glyph(2, 1)];
-        prepare(&mut compiler, &policy, &initial, &[1.0, 2.0], true);
+        prepare(&mut compiler, &codec, &initial, &[1.0, 2.0], true);
         compiler.commit().unwrap();
 
         let content_changed = [glyph(1, 2), glyph(2, 1)];
-        prepare(
-            &mut compiler,
-            &policy,
-            &content_changed,
-            &[10.0, 2.0],
-            false,
-        );
+        prepare(&mut compiler, &codec, &content_changed, &[10.0, 2.0], false);
         assert_eq!(compiler.retained_topology_preparations, 1);
         compiler.commit().unwrap();
 
@@ -1811,14 +1849,14 @@ mod tests {
         let storage_changed = [glyph(1, 2), moved_material];
         prepare(
             &mut compiler,
-            &policy,
+            &codec,
             &storage_changed,
             &[10.0, 20.0],
             false,
         );
         assert_eq!(compiler.retained_topology_preparations, 1);
         let plan = compiler
-            .plan_view(7, CAPABILITY, policy.fingerprint())
+            .plan_view(7, CAPABILITY, codec.fingerprint())
             .unwrap();
         assert_eq!(plan.buffers.len(), 2);
         assert_eq!(plan.draws.len(), 2);
@@ -1826,15 +1864,15 @@ mod tests {
 
     #[test]
     fn glyph_spans_split_at_the_wire_record_limit() {
-        let policy = policy_with_limits(false, 512 * 1024);
+        let codec = codec_with_limits(false, 512 * 1024);
         let mut compiler = OrderedPlanCompiler::default();
         let glyphs: Vec<_> = (1..=u32::from(u16::MAX) + 1)
             .map(|stable_id| glyph(stable_id, 1))
             .collect();
         let x = vec![0.0; glyphs.len()];
-        prepare(&mut compiler, &policy, &glyphs, &x, true);
+        prepare(&mut compiler, &codec, &glyphs, &x, true);
         let plan = compiler
-            .plan_view(7, CAPABILITY, policy.fingerprint())
+            .plan_view(7, CAPABILITY, codec.fingerprint())
             .unwrap();
 
         assert_eq!(plan.primitives.len(), 2);
@@ -1847,21 +1885,15 @@ mod tests {
 
     #[test]
     fn repeated_warm_updates_keep_every_glyph_scaled_scratch_capacity() {
-        let policy = policy();
+        let codec = codec();
         let mut compiler = OrderedPlanCompiler::default();
         let initial = [glyph(1, 1), glyph(2, 1), glyph(3, 1), glyph(4, 1)];
-        prepare(
-            &mut compiler,
-            &policy,
-            &initial,
-            &[1.0, 2.0, 3.0, 4.0],
-            true,
-        );
+        prepare(&mut compiler, &codec, &initial, &[1.0, 2.0, 3.0, 4.0], true);
         compiler.commit().unwrap();
         let changed = [glyph(1, 1), glyph(2, 2), glyph(3, 1), glyph(4, 1)];
         prepare(
             &mut compiler,
-            &policy,
+            &codec,
             &changed,
             &[1.0, 20.0, 3.0, 4.0],
             false,
@@ -1871,7 +1903,7 @@ mod tests {
         let changed_again = [glyph(1, 1), glyph(2, 3), glyph(3, 1), glyph(4, 1)];
         prepare(
             &mut compiler,
-            &policy,
+            &codec,
             &changed_again,
             &[1.0, 21.0, 3.0, 4.0],
             false,
@@ -1882,14 +1914,14 @@ mod tests {
 
     fn prepare(
         compiler: &mut OrderedPlanCompiler,
-        policy: &ValidatedPolicy,
+        codec: &ValidatedCodec,
         glyphs: &[OrderedGlyph],
         x: &[f32],
         checkpoint: bool,
     ) {
         compiler
             .prepare(
-                policy,
+                codec,
                 CAPABILITY,
                 OrderedPlanInput {
                     glyphs,
@@ -1926,8 +1958,8 @@ mod tests {
         }
     }
 
-    fn policy() -> ValidatedPolicy {
-        policy_with_material_storage(false)
+    fn codec() -> ValidatedCodec {
+        codec_with_material_storage(false)
     }
 
     const DECORATION_TECHNIQUE: TechniqueId = TechniqueId(99);
@@ -1955,7 +1987,7 @@ mod tests {
     }
 
     /// Standard descriptor plus one resource-free decoration program.
-    fn decoration_policy() -> ValidatedPolicy {
+    fn decoration_codec() -> ValidatedCodec {
         let mut descriptor = descriptor_with_options(false, 1024, true);
         let mut program = descriptor.programs[0].clone();
         program.primitive_kind = PRIMITIVE_DECORATION;
@@ -1969,17 +2001,17 @@ mod tests {
             }
         }
         descriptor.programs.push(program);
-        ValidatedPolicy::new(descriptor).unwrap()
+        ValidatedCodec::new(descriptor).unwrap()
     }
 
     #[test]
     fn decoration_rows_pack_and_draw_without_resources() {
-        let policy = decoration_policy();
+        let codec = decoration_codec();
         let mut compiler = OrderedPlanCompiler::default();
         let rows = [glyph(1, 1), decoration_row(0x8000_0000)];
-        prepare(&mut compiler, &policy, &rows, &[1.0, 4.0], true);
+        prepare(&mut compiler, &codec, &rows, &[1.0, 4.0], true);
         let view = compiler
-            .plan_view(7, CAPABILITY, policy.fingerprint())
+            .plan_view(7, CAPABILITY, codec.fingerprint())
             .unwrap();
         assert_eq!(view.primitives.len(), 2);
         let decoration = view
@@ -2006,21 +2038,21 @@ mod tests {
         // already skips its resource lifecycle. Retiring it must skip the same way: a
         // RETIRE_RESOURCE record with id 0 is malformed, and the plan wire rejects the whole
         // publication rather than the record, which takes the frame down with it.
-        let policy = decoration_policy();
+        let codec = decoration_codec();
         let mut compiler = OrderedPlanCompiler::default();
 
         let with_decoration = [glyph(1, 1), decoration_row(0x8000_0000)];
-        prepare(&mut compiler, &policy, &with_decoration, &[1.0, 4.0], true);
+        prepare(&mut compiler, &codec, &with_decoration, &[1.0, 4.0], true);
         compiler
-            .plan_view(7, CAPABILITY, policy.fingerprint())
+            .plan_view(7, CAPABILITY, codec.fingerprint())
             .unwrap();
         compiler.commit().unwrap();
 
         // Drop the decoration row: its batch is removed, which is the retirement path.
         let without_decoration = [glyph(1, 2)];
-        prepare(&mut compiler, &policy, &without_decoration, &[1.0], true);
+        prepare(&mut compiler, &codec, &without_decoration, &[1.0], true);
         let view = compiler
-            .plan_view(7, CAPABILITY, policy.fingerprint())
+            .plan_view(7, CAPABILITY, codec.fingerprint())
             .unwrap();
 
         assert!(
@@ -2036,20 +2068,20 @@ mod tests {
         plan_layout(view).expect("resource-free retirement keeps the publication valid");
     }
 
-    fn policy_with_material_storage(partition_materials: bool) -> ValidatedPolicy {
-        policy_with_limits(partition_materials, 1024)
+    fn codec_with_material_storage(partition_materials: bool) -> ValidatedCodec {
+        codec_with_limits(partition_materials, 1024)
     }
 
-    fn policy_with_limits(partition_materials: bool, max_buffer_bytes: u32) -> ValidatedPolicy {
-        policy_with_options(partition_materials, max_buffer_bytes, true)
+    fn codec_with_limits(partition_materials: bool, max_buffer_bytes: u32) -> ValidatedCodec {
+        codec_with_options(partition_materials, max_buffer_bytes, true)
     }
 
-    fn policy_with_options(
+    fn codec_with_options(
         partition_materials: bool,
         max_buffer_bytes: u32,
         split_transform: bool,
-    ) -> ValidatedPolicy {
-        ValidatedPolicy::new(descriptor_with_options(
+    ) -> ValidatedCodec {
+        ValidatedCodec::new(descriptor_with_options(
             partition_materials,
             max_buffer_bytes,
             split_transform,
@@ -2061,8 +2093,8 @@ mod tests {
         partition_materials: bool,
         max_buffer_bytes: u32,
         split_transform: bool,
-    ) -> PolicyDescriptor {
-        PolicyDescriptor {
+    ) -> CodecDescriptor {
+        CodecDescriptor {
             capability_sets: vec![CapabilitySet {
                 id: CAPABILITY,
                 flags: CAP_ORDERED_DIRECT,
@@ -2087,6 +2119,7 @@ mod tests {
                 storage_key_mask: BATCH_TECHNIQUE
                     | BATCH_PROGRAM
                     | BATCH_RESOURCE
+                    | crate::engine::codec::BATCH_DEPTH
                     | if partition_materials {
                         BATCH_MATERIAL
                     } else {
@@ -2096,12 +2129,13 @@ mod tests {
                     | BATCH_PROGRAM
                     | BATCH_RESOURCE
                     | BATCH_MATERIAL
+                    | crate::engine::codec::BATCH_DEPTH
                     | BATCH_ORDER
                     | if split_transform { BATCH_TRANSFORM } else { 0 },
                 allocation_strategy: ALLOCATION_ORDERED_DIRECT,
                 f32_input_count: 1,
                 u32_input_count: 0,
-                inputs: vec![crate::engine::policy::InputSource::semantic(0)],
+                inputs: vec![crate::engine::codec::InputSource::semantic(0)],
                 capabilities: ProgramCapabilities::default(),
                 buffers: vec![BufferSchema::packed(
                     BufferId(1),
@@ -2152,15 +2186,13 @@ mod tests {
         }]
     }
 
-    fn capacities(compiler: &OrderedPlanCompiler) -> [usize; 18] {
+    fn capacities(compiler: &OrderedPlanCompiler) -> [usize; 16] {
         [
             compiler.pending_batches.capacity(),
             compiler.pending_instances.capacity(),
             compiler.pending_allocations.capacity(),
             compiler.input_batches.capacity(),
             compiler.input_slots.capacity(),
-            compiler.identity_set.capacities()[0],
-            compiler.identity_set.capacities()[1],
             compiler.batch_cursors.capacity(),
             compiler.changed_ranges.capacity(),
             compiler.resources.capacity(),
